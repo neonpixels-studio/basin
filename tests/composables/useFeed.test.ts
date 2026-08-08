@@ -1,6 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { setActivePinia, createPinia } from "pinia";
-import { useFeedStore, FEED_SYNC_TIMEOUT_MS } from "~/stores/feed";
+import {
+  useFeedStore,
+  FEED_SYNC_TIMEOUT_MS,
+  FEED_ITEMS_TIMEOUT_MS,
+} from "~/stores/feed";
 import { makeFeed, makeConnection } from "../fixtures";
 
 const item = (overrides: Record<string, unknown> = {}) => ({
@@ -292,6 +296,11 @@ describe("useFeedStore", () => {
       vi.mocked(globalThis.$fetch).mockReset();
     });
 
+    afterEach(() => {
+      vi.mocked(globalThis.$fetch).mockReset();
+      vi.unstubAllGlobals();
+    });
+
     it("replaces items when offset is 0 (first page)", async () => {
       vi.mocked(globalThis.$fetch).mockResolvedValue({
         items: pageOne,
@@ -347,6 +356,32 @@ describe("useFeedStore", () => {
       state.items = pageOne as never;
       await feed.loadItems({ offset: 1 });
       expect(state.items.map((i) => i.id)).toEqual([101, 102, 103]);
+    });
+
+    // A never-settling items request must time out rather than hang the load;
+    // advancing by the store's own constant proves loadItems is bounded by it.
+    it("times out a never-settling items request and surfaces an error toast", async () => {
+      const showToast = vi.fn();
+      vi.stubGlobal(
+        "useToast",
+        vi.fn(() => ({ showToast })),
+      );
+      vi.mocked(globalThis.$fetch).mockImplementation(
+        () => new Promise(() => {}),
+      );
+      state.items = [item({ id: 999 })];
+
+      const loading = feed.loadItems();
+      await vi.advanceTimersByTimeAsync(FEED_ITEMS_TIMEOUT_MS - 1);
+      expect(showToast).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await loading;
+
+      expect(showToast).toHaveBeenCalledWith(
+        "Failed to load feed items — please try again",
+      );
+      // A timed-out first-page load must not blank the existing feed.
+      expect(state.items.map((i) => i.id)).toEqual([999]);
     });
   });
 
@@ -724,6 +759,31 @@ describe("useFeedStore", () => {
         .mocked(globalThis.$fetch)
         .mock.calls.find((call) => call[0] === "/api/feed-items");
       expect(itemsCall).toBeUndefined();
+      expect(state.loading).toBe(false);
+    });
+
+    // The post-sync items load is the wedge FEED_ITEMS_TIMEOUT_MS guards: sync
+    // resolves but /api/feed-items never settles, so without the bound refresh()
+    // would leave loading stuck forever.
+    it("clears loading when the post-sync items load never settles", async () => {
+      vi.mocked(globalThis.$fetch).mockImplementation((url: string) => {
+        if (url === "/api/feed-sync") {
+          return Promise.resolve({ queued: 1, eventIds: ["a"] });
+        }
+        return new Promise(() => {});
+      });
+
+      const refreshing = feed.refresh();
+      await vi.advanceTimersByTimeAsync(FEED_ITEMS_TIMEOUT_MS - 1);
+      expect(showToast).not.toHaveBeenCalledWith(
+        "Failed to load feed items — please try again",
+      );
+      await vi.advanceTimersByTimeAsync(1);
+      await refreshing;
+
+      expect(showToast).toHaveBeenCalledWith(
+        "Failed to load feed items — please try again",
+      );
       expect(state.loading).toBe(false);
     });
   });
