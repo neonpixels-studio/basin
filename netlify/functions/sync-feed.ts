@@ -53,6 +53,7 @@ type FeedRecord = {
   title: string | null;
   source: string;
   lastFetched: Date | null;
+  paused: boolean;
 };
 
 async function fetchFeedRecord(
@@ -68,6 +69,7 @@ async function fetchFeedRecord(
       title: true,
       source: true,
       lastFetched: true,
+      paused: true,
     },
   });
 }
@@ -512,6 +514,16 @@ async function processSyncFeedEvent(
   const { userId, feedId, sourceType, mode } = eventData;
 
   const feed = await resolveFeedForSync(eventData);
+
+  // Authoritative pause enforcement for every dispatcher (scheduled cron and
+  // the on-demand "Refresh feeds" trigger alike): a source paused by a Pro→Free
+  // downgrade (see server/utils/feedPause.ts) pulls no new content regardless of
+  // how the sync was requested. Checked before the debounce so it short-circuits
+  // both modes.
+  if (feed.paused) {
+    logSyncEvent("sync-feed.paused", { feedId, userId, mode });
+    return;
+  }
 
   if (mode === "scheduled" && isWithinDebounceWindow(feed.lastFetched)) {
     logSyncEvent("sync-feed.debounced", {

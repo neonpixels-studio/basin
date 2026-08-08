@@ -1,6 +1,6 @@
 import type { Config } from "@netlify/functions";
 import { AsyncWorkloadsClient } from "@netlify/async-workloads";
-import { and, lt, or, isNull, inArray } from "drizzle-orm";
+import { and, eq, lt, or, isNull, inArray } from "drizzle-orm";
 import { feeds } from "../../server/db/schema";
 import { createDb } from "./db";
 import { SYNC_FEED_EVENT_NAME, DEBOUNCE_WINDOW_MS } from "./types";
@@ -19,6 +19,9 @@ async function fetchDueFeeds(): Promise<DueFeed[]> {
     where: and(
       inArray(feeds.source, [...SYNCABLE_SOURCE_TYPES]),
       or(isNull(feeds.lastFetched), lt(feeds.lastFetched, cutoffTime)),
+      // Paused sources (over the Free cap after a downgrade) stop pulling new
+      // content until the account upgrades again — see server/utils/feedPause.ts.
+      eq(feeds.paused, false),
     ),
     columns: {
       id: true,

@@ -5,19 +5,13 @@
 // funnel through createFeedForUser — share one plan/count check that can be
 // unit-tested on its own.
 //
-// @todo Pro→Free downgrade does not yet pause sources over the cap
-// (pricing.vue promises "sources beyond the free limit are paused"); this only
-// gates new adds.
+// The complementary Pro→Free downgrade path (pausing sources already over the
+// cap, which pricing.vue promises) lives in server/utils/feedPause.ts; both
+// reuse FREE_PLAN_FEED_LIMIT from planLimits.ts.
 import { count, eq } from "drizzle-orm";
 import { feeds } from "../db/schema";
+import { FREE_PLAN_FEED_LIMIT } from "./planLimits";
 import { getAccountPlan } from "./subscriptions";
-
-// The Free plan's advertised source cap — the server-side source of truth for
-// enforcement. Must stay in sync with the "Up to 10 sources" copy on the
-// pricing page (app/pages/pricing.vue), which states the number in prose, and
-// with the literal in migration 0011_enforce_source_cap.sql (a SQL trigger
-// can't import this constant), which is the race-proof DB backstop.
-export const FREE_PLAN_FEED_LIMIT = 10;
 
 // The message and SQLSTATE the DB trigger (migration 0011_enforce_source_cap.sql)
 // raises when a concurrent add slips past the app-level count and would breach
@@ -65,6 +59,11 @@ export function isFeedLimitDbError(error: unknown): boolean {
   return false;
 }
 
+// Counts every source the user owns, including paused ones: a paused source
+// (over-cap after a downgrade — see feedPause.ts) still occupies a slot toward
+// the "up to 10 sources" cap, so a Free user must delete or upgrade before
+// adding more. @todo Reconcile paused rows when a source is deleted so an
+// account that drops back under the cap can un-pause a source without upgrading.
 async function countUserFeeds(userId: number): Promise<number> {
   const [row] = await useDb()
     .select({ value: count() })

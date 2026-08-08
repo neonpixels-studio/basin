@@ -49,6 +49,12 @@ export const feeds = pgTable(
     syncStatus: text("sync_status").notNull().default(SYNC_STATUS.OK),
     syncError: text("sync_error"),
     syncFailedAt: timestamp("sync_failed_at"),
+    // Paused sources are kept (not removed) but excluded from scheduled sync,
+    // so they stop pulling new content while their existing items stay intact.
+    // Set when a Pro→Free downgrade pushes an account over the Free source cap
+    // (server/utils/feedPause.ts), honoring the pricing page's promise
+    // (app/pages/pricing.vue). Cleared again when the account upgrades back.
+    paused: boolean("paused").notNull().default(false),
     createdAt: timestamp("created_at").defaultNow(),
     updatedAt: timestamp("updated_at").defaultNow(),
   },

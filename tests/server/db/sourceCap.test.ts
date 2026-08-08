@@ -2,8 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { PGlite } from "@electric-sql/pglite";
+import { FREE_PLAN_FEED_LIMIT } from "../../../server/utils/planLimits";
 import {
-  FREE_PLAN_FEED_LIMIT,
   FEED_LIMIT_DB_ERROR_MARKER,
   FEED_LIMIT_SQLSTATE,
   isFeedLimitDbError,

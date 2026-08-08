@@ -37,8 +37,8 @@ vi.mock("../../../server/utils/feedSourceDetector", () => ({
 
 import { DrizzleQueryError } from "drizzle-orm";
 import { createFeedForUser } from "../../../server/utils/feedCreation";
+import { FREE_PLAN_FEED_LIMIT } from "../../../server/utils/planLimits";
 import {
-  FREE_PLAN_FEED_LIMIT,
   FEED_LIMIT_DB_ERROR_MARKER,
   FEED_LIMIT_SQLSTATE,
 } from "../../../server/utils/feedLimit";

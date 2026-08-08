@@ -21,6 +21,17 @@ vi.mock("../../../server/utils/stripe", () => ({
   deleteStripeCustomer: mockDeleteStripeCustomer,
 }));
 
+const { mockPauseFeedsOverFreeLimit, mockReactivateAllFeeds } = vi.hoisted(
+  () => ({
+    mockPauseFeedsOverFreeLimit: vi.fn(),
+    mockReactivateAllFeeds: vi.fn(),
+  }),
+);
+vi.mock("../../../server/utils/feedPause", () => ({
+  pauseFeedsOverFreeLimit: mockPauseFeedsOverFreeLimit,
+  reactivateAllFeeds: mockReactivateAllFeeds,
+}));
+
 // neon() validates the connection string shape eagerly (even though building
 // a client never opens a network connection), so a syntactically valid
 // user:password@host is required here. Built via concatenation, not a single
@@ -179,6 +190,10 @@ describe("upsertSubscriptionFromStripe", () => {
     // i.e. the database agreed the event wasn't stale. Individual tests
     // override this to simulate the database blocking a stale write.
     mockReturning.mockResolvedValue([{ id: 1 }]);
+    // The feed-effect helpers return their counts; default to no-ops so the
+    // handler can destructure them.
+    mockPauseFeedsOverFreeLimit.mockResolvedValue({ pausedCount: 0 });
+    mockReactivateAllFeeds.mockResolvedValue({ reactivatedCount: 0 });
   });
 
   // Only a minimal fake shape is needed for these tests; cast once here so
@@ -319,6 +334,98 @@ describe("upsertSubscriptionFromStripe", () => {
     );
     const values = mockValues.mock.calls[0][0] as { currentPeriodEnd: Date };
     expect(values.currentPeriodEnd).toEqual(new Date(1760000000 * 1000));
+  });
+
+  describe("plan-change feed effects (pause / reactivate)", () => {
+    // A subscription whose stripeSubscriptionId matches the event id, so
+    // isStaleEvent lets it through and the plan change is applied.
+    function existingRow(plan: string) {
+      return {
+        userId: 9,
+        plan,
+        stripeSubscriptionId: "sub_123",
+        lastStripeEventAt: null,
+      };
+    }
+
+    it("pauses over-cap sources when the resulting plan is Free (downgrade)", async () => {
+      mockFindFirst.mockResolvedValue(existingRow("pro"));
+      await upsertSubscriptionFromStripe(buildEvent({ status: "canceled" }));
+      expect(mockPauseFeedsOverFreeLimit).toHaveBeenCalledWith(9);
+      expect(mockReactivateAllFeeds).not.toHaveBeenCalled();
+    });
+
+    it("pauses when a Pro subscription lapses to past_due (Free access)", async () => {
+      mockFindFirst.mockResolvedValue(existingRow("pro"));
+      await upsertSubscriptionFromStripe(buildEvent({ status: "past_due" }));
+      expect(mockPauseFeedsOverFreeLimit).toHaveBeenCalledWith(9);
+    });
+
+    it("reactivates paused sources when the resulting plan is Pro", async () => {
+      mockFindFirst.mockResolvedValue(existingRow("free"));
+      await upsertSubscriptionFromStripe(buildEvent({ status: "active" }));
+      expect(mockReactivateAllFeeds).toHaveBeenCalledWith(9);
+      expect(mockPauseFeedsOverFreeLimit).not.toHaveBeenCalled();
+    });
+
+    // Keyed off the resulting plan, not the delta, so it runs on every applied
+    // Pro event; reactivateAllFeeds is idempotent (a no-op with nothing paused).
+    it("reactivates idempotently on a Pro→Pro renewal", async () => {
+      mockFindFirst.mockResolvedValue(existingRow("pro"));
+      await upsertSubscriptionFromStripe(buildEvent({ status: "active" }));
+      expect(mockReactivateAllFeeds).toHaveBeenCalledWith(9);
+      expect(mockPauseFeedsOverFreeLimit).not.toHaveBeenCalled();
+    });
+
+    // The self-healing property: on a Stripe retry the persisted row already
+    // reads "free", yet the pause must still run. A delta-based check would see
+    // free→free and skip it, permanently losing a pause whose first try failed.
+    it("still pauses on retry when the row already reads Free", async () => {
+      mockFindFirst.mockResolvedValue(existingRow("free"));
+      await upsertSubscriptionFromStripe(buildEvent({ status: "canceled" }));
+      expect(mockPauseFeedsOverFreeLimit).toHaveBeenCalledWith(9);
+    });
+
+    it("does not touch feeds when the DB blocks the write as stale", async () => {
+      mockFindFirst.mockResolvedValue(existingRow("pro"));
+      mockReturning.mockResolvedValueOnce([]);
+      await upsertSubscriptionFromStripe(buildEvent({ status: "canceled" }));
+      expect(mockPauseFeedsOverFreeLimit).not.toHaveBeenCalled();
+      expect(mockReactivateAllFeeds).not.toHaveBeenCalled();
+    });
+
+    it("pauses before marking the event processed so a retry can re-run it", async () => {
+      mockFindFirst.mockResolvedValue(existingRow("pro"));
+      const callOrder: string[] = [];
+      mockPauseFeedsOverFreeLimit.mockImplementation(() => {
+        callOrder.push("pause");
+        return Promise.resolve({ pausedCount: 1 });
+      });
+      mockInsert.mockImplementation((table: unknown) => {
+        if (table === processedStripeEvents) {
+          callOrder.push("markProcessed");
+        }
+        return { values: mockValues };
+      });
+
+      await upsertSubscriptionFromStripe(buildEvent({ status: "canceled" }));
+
+      expect(callOrder).toEqual(["pause", "markProcessed"]);
+    });
+
+    // Locks the self-healing guarantee: a failing pause must propagate so the
+    // event is never marked processed and Stripe retries it. Guards against a
+    // future try/catch that would swallow the pause and silently seal the event.
+    it("propagates a pause failure and leaves the event unmarked", async () => {
+      mockFindFirst.mockResolvedValue(existingRow("pro"));
+      mockPauseFeedsOverFreeLimit.mockRejectedValue(new Error("db down"));
+
+      await expect(
+        upsertSubscriptionFromStripe(buildEvent({ status: "canceled" })),
+      ).rejects.toThrow("db down");
+
+      expect(mockInsert).not.toHaveBeenCalledWith(processedStripeEvents);
+    });
   });
 
   describe("duplicate delivery (dedup on event id)", () => {

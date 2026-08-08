@@ -4,6 +4,7 @@
 import { and, eq, isNull, lte, ne, or } from "drizzle-orm";
 import type Stripe from "stripe";
 import { processedStripeEvents, subscriptions } from "../db/schema";
+import { pauseFeedsOverFreeLimit, reactivateAllFeeds } from "./feedPause";
 import { createStripeCustomer, deleteStripeCustomer } from "./stripe";
 
 export type PlanName = "free" | "pro";
@@ -14,6 +15,41 @@ const ACTIVE_SUBSCRIPTION_STATUSES = new Set(["trialing", "active"]);
 
 export function planForStatus(status: string): PlanName {
   return ACTIVE_SUBSCRIPTION_STATUSES.has(status) ? "pro" : "free";
+}
+
+function logFeedPauseChange(
+  userId: number,
+  action: "paused" | "reactivated",
+  count: number,
+): void {
+  if (count === 0) {
+    return;
+  }
+  console.log(
+    JSON.stringify({ event: `subscription.feeds-${action}`, userId, count }),
+  );
+}
+
+// Applies the pricing page's source promise after a plan change is persisted,
+// keyed off the *resulting* plan rather than the pro→free delta so it is
+// self-healing: the persisted row is already updated by the time this runs, so
+// on a Stripe retry a delta check would see free→free and skip the effect,
+// permanently losing a pause whose first attempt failed. Deriving the action
+// from the resulting plan instead means the retry re-runs the same idempotent
+// effect. Free accounts pause every source beyond the cap; Pro accounts
+// (unlimited) reactivate any paused source. Both are idempotent, so running
+// them on every applied event — including free→free and pro→pro — is safe.
+async function applyPlanChangeToFeeds(
+  userId: number,
+  plan: PlanName,
+): Promise<void> {
+  if (plan === "free") {
+    const { pausedCount } = await pauseFeedsOverFreeLimit(userId);
+    logFeedPauseChange(userId, "paused", pausedCount);
+    return;
+  }
+  const { reactivatedCount } = await reactivateAllFeeds(userId);
+  logFeedPauseChange(userId, "reactivated", reactivatedCount);
 }
 
 export interface AccountPlan {
@@ -304,6 +340,11 @@ export async function upsertSubscriptionFromStripe(
   if (written.length === 0) {
     return;
   }
+
+  // Runs before markEventProcessed so a failure here leaves the event unmarked
+  // and Stripe's retry re-runs the (idempotent) effect — see
+  // applyPlanChangeToFeeds for why this is keyed off the resulting plan.
+  await applyPlanChangeToFeeds(userId, values.plan);
 
   // Only recorded once the write above has actually succeeded — see
   // markEventProcessed's comment for why this ordering matters.
