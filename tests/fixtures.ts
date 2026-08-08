@@ -14,7 +14,7 @@ export const makeArticle = (overrides: Record<string, unknown> = {}) => ({
   unread: true,
   saved: false,
   url: "https://test.example.com/article-1",
-  body: ["First paragraph.", "Second paragraph."],
+  content: "First paragraph.\n\nSecond paragraph.",
   ...overrides,
 });
 
@@ -31,7 +31,7 @@ export const makeVideo = (overrides: Record<string, unknown> = {}) => ({
   saved: false,
   views: "10K views",
   thumb: "https://example.com/thumb.jpg",
-  desc: "Full video description here.",
+  content: "Full video description here.",
   url: "https://www.youtube.com/watch?v=test123",
   ...overrides,
 });
@@ -41,7 +41,10 @@ export const makeTweet = (overrides: Record<string, unknown> = {}) => ({
   type: "tweet",
   source: "Test User",
   handle: "@testuser",
+  // `text` is the legacy card-only field; `content` is the real synced post
+  // body (@todo migrate TweetCard off `text` onto `content`).
   text: "This is a test tweet body text.",
+  content: "This is a test tweet body text.",
   time: "3h",
   meta: "42 · 12",
   unread: true,
@@ -64,8 +67,8 @@ export const makePodcast = (overrides: Record<string, unknown> = {}) => ({
   progress: 0.3,
   url: "https://podcast.example.com/episode-1",
   mediaUrl: "https://podcast.example.com/episode-1.mp3",
+  content: "Show note one.\n\nShow note two.",
   mediaDuration: 2700,
-  notes: ["Show note one.", "Show note two."],
   ...overrides,
 });
 

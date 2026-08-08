@@ -6,6 +6,17 @@ const player = usePodcastPlayer();
 
 const item = computed(() => feedStore.state.activeItem);
 
+const EMPTY_ARTICLE_TEXT =
+  "No article text was included in this feed. Open the original to read the full piece.";
+const EMPTY_PODCAST_TEXT = "No show notes were included for this episode.";
+const EMPTY_VIDEO_TEXT = "No description was included for this video.";
+const EMPTY_POST_TEXT = "This post has no text.";
+
+const paragraphs = computed(() =>
+  item.value ? feedStore.contentParagraphs(item.value) : [],
+);
+const postText = computed(() => paragraphs.value.join("\n\n"));
+
 const podcastMediaUrl = computed(() => item.value?.mediaUrl || null);
 const podcastCanPlay = computed(() => player.canPlay(podcastMediaUrl.value));
 const podcastActive = computed(() => player.isActive(podcastMediaUrl.value));
@@ -136,11 +147,10 @@ function openOriginal() {
             >
               {{ item.source }} · {{ item.meta }} · {{ item.time }} ago
             </div>
-            <div class="detail-prose">
-              <p v-for="(p, i) in feedStore.articleBody(item)" :key="i">
-                {{ p }}
-              </p>
-            </div>
+            <DetailProse
+              :paragraphs="paragraphs"
+              :empty-text="EMPTY_ARTICLE_TEXT"
+            />
             <a
               v-if="safeHref(item.url)"
               :href="safeHref(item.url)"
@@ -179,9 +189,10 @@ function openOriginal() {
                 ><span>·</span><span>{{ item.views }}</span
                 ><span>·</span><span>{{ item.meta }}</span>
               </div>
-              <div class="detail-prose">
-                <p>{{ feedStore.videoDesc(item) }}</p>
-              </div>
+              <DetailProse
+                :paragraphs="paragraphs"
+                :empty-text="EMPTY_VIDEO_TEXT"
+              />
               <a
                 v-if="safeHref(item.url)"
                 :href="safeHref(item.url)"
@@ -263,11 +274,10 @@ function openOriginal() {
             <div class="text-faint mb-3 text-[10px] tracking-[.14em] uppercase">
               Show notes
             </div>
-            <div class="detail-prose">
-              <p v-for="(p, i) in feedStore.podcastNotes(item)" :key="i">
-                {{ p }}
-              </p>
-            </div>
+            <DetailProse
+              :paragraphs="paragraphs"
+              :empty-text="EMPTY_PODCAST_TEXT"
+            />
           </div>
 
           <!-- TWEET -->
@@ -294,39 +304,11 @@ function openOriginal() {
                 ><RIcon name="chat" :size="20"
               /></span>
             </div>
-            <p class="detail-tweet mb-5">{{ item.text }}</p>
-            <div
-              class="text-muted mb-5 pb-5 text-[12px]"
-              style="border-bottom: 1px solid var(--border)"
-            >
-              {{ item.time }} ago · {{ item.meta.split("·")[0].trim() }} likes ·
-              {{ item.meta.split("·")[1].trim() }} reposts
-            </div>
-            <div class="text-faint mb-3 text-[10px] tracking-[.14em] uppercase">
-              Replies
-            </div>
-            <div class="flex flex-col gap-4">
-              <div
-                v-for="(r, i) in feedStore.tweetReplies(item)"
-                :key="i"
-                class="flex gap-3"
-              >
-                <span
-                  class="avatar src-tweet"
-                  style="width: 36px; height: 36px; font-size: 11px"
-                  >{{ r.who.slice(0, 2).toUpperCase() }}</span
-                >
-                <div class="min-w-0">
-                  <div class="mb-0.5 text-[12.5px]">
-                    <b class="text-ink font-semibold">{{ r.who }}</b>
-                    <span class="text-muted">{{ r.handle }}</span>
-                  </div>
-                  <p class="text-ink-2 m-0 text-[14px] leading-snug">
-                    {{ r.text }}
-                  </p>
-                </div>
-              </div>
-            </div>
+            <p v-if="postText" class="detail-tweet mb-5">{{ postText }}</p>
+            <p v-else class="detail-tweet text-muted mb-5">
+              {{ EMPTY_POST_TEXT }}
+            </p>
+            <div class="text-muted text-[12px]">{{ item.time }} ago</div>
           </div>
         </template>
       </div>
@@ -394,6 +376,7 @@ function openOriginal() {
   line-height: 1.5;
   color: var(--ink);
   text-wrap: pretty;
+  white-space: pre-line;
   margin: 0;
 }
 .scrubber {

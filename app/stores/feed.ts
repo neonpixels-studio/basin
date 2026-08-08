@@ -378,40 +378,25 @@ export const useFeedStore = defineStore("feed", () => {
       tweet: "TweetCard",
     })[type];
 
-  const articleBody = (item: Record<string, unknown>) =>
-    item.body && (item.body as unknown[]).length
-      ? (item.body as string[])
-      : [
-          item.excerpt as string,
-          "Read the full piece at the source for the complete story, figures, and links.",
-        ];
+  const PARAGRAPH_BREAK = /\n\s*\n/;
+  const SOFT_WRAP = /\s*\n\s*/g;
 
-  const podcastNotes = (item: Record<string, unknown>) =>
-    item.notes && (item.notes as unknown[]).length
-      ? (item.notes as string[])
-      : [
-          (item.excerpt as string) ||
-            "Episode notes weren't provided for this show.",
-        ];
-
-  const videoDesc = (item: Record<string, unknown>) =>
-    (item.desc as string) ||
-    `${item.title} — watch the full video on the channel. ${item.views || ""}.`;
-
-  const tweetReplies = () => [
-    {
-      who: "replyguy",
-      handle: "@in_the_replies",
-      text: "this is going straight into my notes app, thank you",
-      likes: "12",
-    },
-    {
-      who: "Builder",
-      handle: "@ships_daily",
-      text: "needed to read this today honestly",
-      likes: "4",
-    },
-  ];
+  // Split a synced item's real `content` into display paragraphs: blank lines
+  // separate paragraphs, single (soft-wrap) newlines collapse to spaces.
+  // Returns an empty array when the feed carried no content, so the view can
+  // show an honest empty state instead of inventing filler.
+  // @todo `content` may carry raw HTML (e.g. podcast `itunes:summary`); it is
+  // rendered as escaped text for now. Sanitize + render markup in a follow-up.
+  const contentParagraphs = (item: Record<string, unknown>) => {
+    const content = typeof item.content === "string" ? item.content.trim() : "";
+    if (!content) {
+      return [];
+    }
+    return content
+      .split(PARAGRAPH_BREAK)
+      .map((paragraph) => paragraph.replace(SOFT_WRAP, " ").trim())
+      .filter(Boolean);
+  };
 
   const sourceMeta = (type: string) => SOURCES[type as keyof typeof SOURCES];
 
@@ -437,10 +422,7 @@ export const useFeedStore = defineStore("feed", () => {
     removeFeed,
     toggleConn,
     cardComponentName,
-    articleBody,
-    podcastNotes,
-    videoDesc,
-    tweetReplies,
+    contentParagraphs,
     sourceMeta,
   };
 });

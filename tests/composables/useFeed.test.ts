@@ -230,46 +230,58 @@ describe("useFeedStore", () => {
     });
   });
 
-  describe("articleBody", () => {
-    it("returns body paragraphs when present", () => {
+  describe("contentParagraphs", () => {
+    it("splits real synced content into paragraphs", () => {
       expect(
-        feed.articleBody({ body: ["Para 1", "Para 2"], excerpt: "Ex" }),
-      ).toEqual(["Para 1", "Para 2"]);
+        feed.contentParagraphs({
+          content: "First paragraph.\n\nSecond paragraph.",
+        }),
+      ).toEqual(["First paragraph.", "Second paragraph."]);
     });
 
-    it("falls back to excerpt when body is empty", () => {
-      const result = feed.articleBody({ body: [], excerpt: "Just an excerpt" });
-      expect(result[0]).toBe("Just an excerpt");
-    });
-  });
-
-  describe("podcastNotes", () => {
-    it("returns notes when present", () => {
-      expect(feed.podcastNotes({ notes: ["Note 1"], excerpt: "Ep" })).toEqual([
-        "Note 1",
-      ]);
+    it("collapses single (soft-wrap) newlines within a paragraph to spaces", () => {
+      expect(
+        feed.contentParagraphs({ content: "  Line one \n wrapped  " }),
+      ).toEqual(["Line one wrapped"]);
     });
 
-    it("falls back to excerpt when notes is empty", () => {
-      const result = feed.podcastNotes({
-        notes: [],
-        excerpt: "Episode excerpt",
+    it("handles CRLF paragraph breaks from real feeds", () => {
+      expect(
+        feed.contentParagraphs({ content: "First.\r\n\r\nSecond." }),
+      ).toEqual(["First.", "Second."]);
+    });
+
+    it("returns an empty array when content is missing", () => {
+      expect(feed.contentParagraphs({})).toEqual([]);
+    });
+
+    it("returns an empty array when content is a non-string value", () => {
+      expect(feed.contentParagraphs({ content: 42 })).toEqual([]);
+      expect(feed.contentParagraphs({ content: ["a"] })).toEqual([]);
+    });
+
+    it("returns an empty array when content is blank", () => {
+      expect(feed.contentParagraphs({ content: "   \n  " })).toEqual([]);
+    });
+
+    it("does not fabricate filler from excerpt/title when content is absent", () => {
+      const result = feed.contentParagraphs({
+        excerpt: "An excerpt",
+        title: "A title",
+        body: ["Old fake body"],
+        notes: ["Old fake note"],
+        desc: "Old fake desc",
       });
-      expect(result[0]).toBe("Episode excerpt");
+      expect(result).toEqual([]);
     });
   });
 
-  describe("videoDesc", () => {
-    it("returns desc when present", () => {
-      expect(
-        feed.videoDesc({ desc: "Full description", title: "Video", views: "" }),
-      ).toBe("Full description");
-    });
-
-    it("generates a description from title when desc is absent", () => {
-      const result = feed.videoDesc({ title: "My Video", views: "500 views" });
-      expect(result).toContain("My Video");
-    });
+  it("no longer exposes the fabricating content helpers", () => {
+    const store = feed as unknown as Record<string, unknown>;
+    expect(store.articleBody).toBeUndefined();
+    expect(store.podcastNotes).toBeUndefined();
+    expect(store.videoDesc).toBeUndefined();
+    expect(store.tweetReplies).toBeUndefined();
   });
 
   describe("loadItems", () => {
