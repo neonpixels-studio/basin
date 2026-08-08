@@ -32,7 +32,7 @@
   },
   "dependencies": {
     "@atproto/api": "^0.20.37",
-    "@clerk/nuxt": "^2.6.23",
+    "@clerk/nuxt": "^3.0.1",
     "@dotenvx/dotenvx": "^2.19.2",
     "@electric-sql/pglite": "^0.5.4",
     "@neondatabase/serverless": "^1.1.0",
