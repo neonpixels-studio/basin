@@ -40,6 +40,10 @@ export const useFeedStore = defineStore("feed", () => {
     // hasn't loaded yet or the last page returned no further offset (end of feed).
     nextOffset: null as number | null,
     loadingMore: false,
+    // Bumped whenever the item list is replaced (a fresh first page or refresh),
+    // never on an append. Consumers watch it to reset scroll windows on a new
+    // list without resetting when older pages are appended.
+    listVersion: 0,
   });
 
   const timers: Record<string, ReturnType<typeof setTimeout> | null> = {
@@ -104,7 +108,12 @@ export const useFeedStore = defineStore("feed", () => {
   const LOAD_ITEMS_ERROR_MESSAGE =
     "Failed to load feed items — please try again";
 
-  async function loadItems(params: { limit?: number; offset?: number } = {}) {
+  // Resolves to true when the page was fetched and applied, false when the
+  // request failed — so callers (loadMore) can tell success from a swallowed
+  // error rather than blindly advancing their scroll window.
+  async function loadItems(
+    params: { limit?: number; offset?: number } = {},
+  ): Promise<boolean> {
     const { showToast } = useToast();
     const headers = await buildAuthHeaders();
 
@@ -131,25 +140,30 @@ export const useFeedStore = defineStore("feed", () => {
         ];
       } else {
         state.items = response.items;
+        state.listVersion += 1;
       }
-      state.nextOffset = response.nextOffset;
+      state.nextOffset =
+        typeof response.nextOffset === "number" ? response.nextOffset : null;
+      return true;
     } catch {
       showToast(LOAD_ITEMS_ERROR_MESSAGE);
+      return false;
     }
   }
 
-  const hasMore = computed(() => state.nextOffset !== null);
+  const hasMore = computed(() => typeof state.nextOffset === "number");
 
   // Fetch and append the next page of feed items. Guarded so a burst of
-  // intersection events can't fire overlapping requests, and a no-op once the
-  // last page has been reached (nextOffset === null).
-  async function loadMore() {
-    if (state.loadingMore || state.nextOffset === null) {
-      return;
+  // intersection events can't fire overlapping requests, a first-page (re)load
+  // in flight can't be raced by a stale-offset append, and it no-ops once the
+  // last page has been reached. Returns whether a page was actually appended.
+  async function loadMore(): Promise<boolean> {
+    if (state.loadingMore || state.loading || state.nextOffset === null) {
+      return false;
     }
     state.loadingMore = true;
     try {
-      await loadItems({ offset: state.nextOffset });
+      return await loadItems({ offset: state.nextOffset });
     } finally {
       state.loadingMore = false;
     }

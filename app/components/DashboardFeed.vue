@@ -82,7 +82,8 @@ const staggerOn = computed(
 .feed-sentinel {
   height: 1px;
 }
-.feed-end {
+.feed-end,
+.feed-loading-more {
   text-align: center;
   padding: 24px 0;
   font-size: 12.5px;

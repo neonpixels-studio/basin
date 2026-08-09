@@ -423,6 +423,50 @@ describe("useFeedStore", () => {
       expect(feed.hasMore).toBe(false);
     });
 
+    it("treats a missing nextOffset as the end of the feed", async () => {
+      vi.mocked(globalThis.$fetch).mockResolvedValue({
+        items: pageOne,
+        total: 2,
+      });
+      await feed.loadItems();
+      expect(state.nextOffset).toBeNull();
+      expect(feed.hasMore).toBe(false);
+    });
+
+    it("returns false and appends nothing when the page fetch fails", async () => {
+      vi.stubGlobal(
+        "useToast",
+        vi.fn(() => ({ showToast: vi.fn() })),
+      );
+      vi.mocked(globalThis.$fetch)
+        .mockResolvedValueOnce({ items: pageOne, total: 4, nextOffset: 2 })
+        .mockRejectedValueOnce(new Error("network"));
+
+      await feed.loadItems();
+      const appended = await feed.loadMore();
+
+      expect(appended).toBe(false);
+      expect(state.items.map((i) => i.id)).toEqual([201, 202]);
+      // Cursor is untouched, so a later scroll can retry the same page.
+      expect(state.nextOffset).toBe(2);
+    });
+
+    it("does not fetch a next page while a fresh first-page load is in flight", async () => {
+      vi.mocked(globalThis.$fetch).mockResolvedValueOnce({
+        items: pageOne,
+        total: 4,
+        nextOffset: 2,
+      });
+      await feed.loadItems();
+
+      state.loading = true;
+      const appended = await feed.loadMore();
+
+      expect(appended).toBe(false);
+      // Only the initial first-page request fired.
+      expect(globalThis.$fetch).toHaveBeenCalledTimes(1);
+    });
+
     it("is a no-op once the last page has loaded (nextOffset null)", async () => {
       vi.mocked(globalThis.$fetch).mockResolvedValue({
         items: pageOne,

@@ -19,12 +19,12 @@ const state = feedStore.state;
 // page, so the feed is no longer capped at the first API page.
 const visibleCount = ref(PAGE_SIZE);
 
-// Reset the window only when the filter or unread toggle changes — those swap to
-// a different set and should start from the top. Appending a fetched page grows
-// visibleItems too, but must NOT reset the window, so we key on the filter inputs
-// rather than the item list identity.
+// Reset the window when the filter/unread toggle changes (those swap to a
+// different client-side set) or when the store replaces the list with a fresh
+// first page (listVersion bumps). Appending a fetched page grows visibleItems
+// but leaves listVersion untouched, so an append never resets the window.
 watch(
-  () => [state.filter, state.unreadOnly],
+  () => [state.filter, state.unreadOnly, state.listVersion],
   () => {
     visibleCount.value = PAGE_SIZE;
   },
@@ -55,7 +55,10 @@ async function loadNextPage() {
   if (!feedStore.hasMore) {
     return;
   }
-  await feedStore.loadMore();
+  const appended = await feedStore.loadMore();
+  if (!appended) {
+    return;
+  }
   advanceWindow();
 }
 
@@ -82,6 +85,10 @@ useInfiniteScroll(sentinelEl, loadNextPage);
       class="feed-sentinel"
       aria-hidden="true"
     ></div>
+
+    <div v-if="state.loadingMore" class="feed-loading-more" aria-live="polite">
+      Loading more…
+    </div>
 
     <div v-if="isEndOfFeed" class="feed-end" aria-live="polite">
       You've reached the end
