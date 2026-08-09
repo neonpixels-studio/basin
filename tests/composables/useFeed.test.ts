@@ -459,12 +459,36 @@ describe("useFeedStore", () => {
       });
       await feed.loadItems();
 
-      state.loading = true;
+      state.loadingFirstPage = true;
       const appended = await feed.loadMore();
 
       expect(appended).toBe(false);
       // Only the initial first-page request fired.
       expect(globalThis.$fetch).toHaveBeenCalledTimes(1);
+    });
+
+    it("drops a stale append when a fresh first page lands mid-flight", async () => {
+      let resolveAppend: (_value: unknown) => void = () => {};
+      vi.mocked(globalThis.$fetch).mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveAppend = resolve;
+        }),
+      );
+      state.items = pageOne as never;
+      state.nextOffset = 2;
+
+      const appending = feed.loadMore();
+      // A fresh first page replaces the list (bumps listVersion) before the
+      // append resolves.
+      state.items = [item({ id: 301 })] as never;
+      state.listVersion += 1;
+
+      resolveAppend({ items: pageTwo, total: 4, nextOffset: null });
+      const appended = await appending;
+
+      expect(appended).toBe(false);
+      // The stale page-two rows were discarded, not grafted onto the new list.
+      expect(state.items.map((item) => item.id)).toEqual([301]);
     });
 
     it("is a no-op once the last page has loaded (nextOffset null)", async () => {

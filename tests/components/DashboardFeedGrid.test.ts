@@ -115,6 +115,44 @@ describe("DashboardFeedGrid", () => {
     expect(wrapper.find(".feed-end").exists()).toBe(true);
   });
 
+  it("shows the loading-more indicator only while a page is in flight", async () => {
+    const triggerIntersect = captureOnIntersect();
+    const state = useFeedStore().state;
+    state.items = makeItems(PAGE_SIZE);
+    state.nextOffset = PAGE_SIZE;
+
+    let resolveFetch = () => {};
+    vi.stubGlobal(
+      "$fetch",
+      vi.fn(
+        () =>
+          new Promise((resolve) => {
+            resolveFetch = () =>
+              resolve({
+                items: makeItems(PAGE_SIZE, PAGE_SIZE + 1),
+                total: PAGE_SIZE * 2,
+                nextOffset: null,
+              });
+          }),
+      ),
+    );
+
+    const wrapper = shallowMount(DashboardFeedGrid, {
+      props: { stagger: false },
+    });
+
+    const pending = triggerIntersect();
+    // Flush microtasks up to the still-pending fetch so loadingMore is set and
+    // the deferred resolver is wired, without settling the request itself.
+    await flushPromises();
+    expect(wrapper.find(".feed-loading-more").exists()).toBe(true);
+
+    resolveFetch();
+    await pending;
+    await flushPromises();
+    expect(wrapper.find(".feed-loading-more").exists()).toBe(false);
+  });
+
   it("does not advance the window when a page fetch fails", async () => {
     const triggerIntersect = captureOnIntersect();
     const state = useFeedStore().state;

@@ -3,6 +3,12 @@ import { computed, ref } from "vue";
 
 const PAGE_SIZE = 20;
 
+// visibleItems is filtered client-side while the API paginates unfiltered, so a
+// fetched page may add zero items to the current filter. Bound how many pages a
+// single scroll will pull chasing visible growth so a sparse filter can't fire
+// an unbounded burst of requests; the user scrolls again to continue.
+const MAX_PAGES_PER_SCROLL = 5;
+
 defineProps({
   stagger: {
     type: Boolean,
@@ -47,6 +53,22 @@ function advanceWindow() {
   visibleCount.value = Math.min(nextCount, feedStore.visibleItems.length);
 }
 
+async function fetchUntilVisibleGrowth() {
+  const startCount = feedStore.visibleItems.length;
+  let attempts = 0;
+  while (feedStore.hasMore && attempts < MAX_PAGES_PER_SCROLL) {
+    attempts += 1;
+    const fetched = await feedStore.loadMore();
+    if (!fetched) {
+      return;
+    }
+    if (feedStore.visibleItems.length > startCount) {
+      advanceWindow();
+      return;
+    }
+  }
+}
+
 async function loadNextPage() {
   if (visibleCount.value < feedStore.visibleItems.length) {
     advanceWindow();
@@ -55,11 +77,7 @@ async function loadNextPage() {
   if (!feedStore.hasMore) {
     return;
   }
-  const appended = await feedStore.loadMore();
-  if (!appended) {
-    return;
-  }
-  advanceWindow();
+  await fetchUntilVisibleGrowth();
 }
 
 const sentinelEl = ref(null);
