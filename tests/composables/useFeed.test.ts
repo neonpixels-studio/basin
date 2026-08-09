@@ -385,6 +385,85 @@ describe("useFeedStore", () => {
     });
   });
 
+  describe("loadMore pagination", () => {
+    const pageOne = [item({ id: 201 }), item({ id: 202 })];
+    const pageTwo = [item({ id: 203 }), item({ id: 204 })];
+
+    beforeEach(() => {
+      vi.mocked(globalThis.$fetch).mockReset();
+    });
+
+    afterEach(() => {
+      vi.mocked(globalThis.$fetch).mockReset();
+    });
+
+    it("records nextOffset and reflects it in hasMore after the first page", async () => {
+      vi.mocked(globalThis.$fetch).mockResolvedValue({
+        items: pageOne,
+        total: 2,
+        nextOffset: 2,
+      });
+      await feed.loadItems();
+      expect(state.nextOffset).toBe(2);
+      expect(feed.hasMore).toBe(true);
+    });
+
+    it("fetches the next page at the stored offset and appends it", async () => {
+      vi.mocked(globalThis.$fetch)
+        .mockResolvedValueOnce({ items: pageOne, total: 4, nextOffset: 2 })
+        .mockResolvedValueOnce({ items: pageTwo, total: 4, nextOffset: null });
+
+      await feed.loadItems();
+      await feed.loadMore();
+
+      expect(state.items.map((i) => i.id)).toEqual([201, 202, 203, 204]);
+      const secondCallOptions = vi.mocked(globalThis.$fetch).mock.calls[1][1];
+      expect(secondCallOptions.query).toEqual({ offset: "2" });
+      expect(state.nextOffset).toBeNull();
+      expect(feed.hasMore).toBe(false);
+    });
+
+    it("is a no-op once the last page has loaded (nextOffset null)", async () => {
+      vi.mocked(globalThis.$fetch).mockResolvedValue({
+        items: pageOne,
+        total: 2,
+        nextOffset: null,
+      });
+      await feed.loadItems();
+      vi.mocked(globalThis.$fetch).mockClear();
+
+      await feed.loadMore();
+
+      expect(globalThis.$fetch).not.toHaveBeenCalled();
+      expect(state.items.map((i) => i.id)).toEqual([201, 202]);
+    });
+
+    it("does not fire overlapping requests while a page is in flight", async () => {
+      vi.mocked(globalThis.$fetch).mockResolvedValueOnce({
+        items: pageOne,
+        total: 4,
+        nextOffset: 2,
+      });
+      await feed.loadItems();
+
+      let resolveSecond: (_value: unknown) => void = () => {};
+      vi.mocked(globalThis.$fetch).mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveSecond = resolve;
+        }),
+      );
+
+      const first = feed.loadMore();
+      const second = feed.loadMore();
+      resolveSecond({ items: pageTwo, total: 4, nextOffset: null });
+      await Promise.all([first, second]);
+
+      // Two loadMore calls, but only one network request past the initial page.
+      expect(globalThis.$fetch).toHaveBeenCalledTimes(2);
+      expect(state.items.map((i) => i.id)).toEqual([201, 202, 203, 204]);
+    });
+  });
+
   describe("sync queue integration", () => {
     let queueAction: ReturnType<typeof vi.fn>;
     let showToast: ReturnType<typeof vi.fn>;

@@ -36,6 +36,10 @@ export const useFeedStore = defineStore("feed", () => {
     activeItem: null as Record<string, unknown> | null,
     detailLoading: false,
     newFeedUrl: "",
+    // Server pagination cursor for /api/feed-items. Null means the first page
+    // hasn't loaded yet or the last page returned no further offset (end of feed).
+    nextOffset: null as number | null,
+    loadingMore: false,
   });
 
   const timers: Record<string, ReturnType<typeof setTimeout> | null> = {
@@ -128,8 +132,26 @@ export const useFeedStore = defineStore("feed", () => {
       } else {
         state.items = response.items;
       }
+      state.nextOffset = response.nextOffset;
     } catch {
       showToast(LOAD_ITEMS_ERROR_MESSAGE);
+    }
+  }
+
+  const hasMore = computed(() => state.nextOffset !== null);
+
+  // Fetch and append the next page of feed items. Guarded so a burst of
+  // intersection events can't fire overlapping requests, and a no-op once the
+  // last page has been reached (nextOffset === null).
+  async function loadMore() {
+    if (state.loadingMore || state.nextOffset === null) {
+      return;
+    }
+    state.loadingMore = true;
+    try {
+      await loadItems({ offset: state.nextOffset });
+    } finally {
+      state.loadingMore = false;
     }
   }
 
@@ -419,6 +441,8 @@ export const useFeedStore = defineStore("feed", () => {
     decks,
     countFor,
     loadItems,
+    loadMore,
+    hasMore,
     setupWatchers,
     runFeedLoad,
     refresh,

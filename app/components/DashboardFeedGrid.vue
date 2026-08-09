@@ -13,16 +13,18 @@ defineProps({
 const feedStore = useFeedStore();
 const state = feedStore.state;
 
-// Infinite scroll: local windowing over the already-loaded visibleItems list.
-// We never modify feed.ts — the store owns all items; we just slice here.
+// Infinite scroll: a local reveal window over visibleItems, backed by real
+// server pagination. We reveal loaded items PAGE_SIZE at a time; once the window
+// reaches the end of what's loaded we ask the store to fetch and append the next
+// page, so the feed is no longer capped at the first API page.
 const visibleCount = ref(PAGE_SIZE);
 
-// Reset window when the list identity changes (e.g. filter or unread toggle switches
-// to a different set). Keying on length alone misses cases where a differently-filtered
-// list happens to have the same count, so we use a stable ID signature instead.
-// loadNextPage is synchronous (pure JS slice), so there is no async loading state to track.
+// Reset the window only when the filter or unread toggle changes — those swap to
+// a different set and should start from the top. Appending a fetched page grows
+// visibleItems too, but must NOT reset the window, so we key on the filter inputs
+// rather than the item list identity.
 watch(
-  () => feedStore.visibleItems.map((item) => item.id).join(","),
+  () => [state.filter, state.unreadOnly],
   () => {
     visibleCount.value = PAGE_SIZE;
   },
@@ -35,16 +37,26 @@ const windowedItems = computed(() =>
 const isEndOfFeed = computed(
   () =>
     !state.loading &&
+    !feedStore.hasMore &&
     feedStore.visibleItems.length > 0 &&
     visibleCount.value >= feedStore.visibleItems.length,
 );
 
-function loadNextPage() {
-  if (isEndOfFeed.value) {
-    return;
-  }
+function advanceWindow() {
   const nextCount = visibleCount.value + PAGE_SIZE;
   visibleCount.value = Math.min(nextCount, feedStore.visibleItems.length);
+}
+
+async function loadNextPage() {
+  if (visibleCount.value < feedStore.visibleItems.length) {
+    advanceWindow();
+    return;
+  }
+  if (!feedStore.hasMore) {
+    return;
+  }
+  await feedStore.loadMore();
+  advanceWindow();
 }
 
 const sentinelEl = ref(null);
