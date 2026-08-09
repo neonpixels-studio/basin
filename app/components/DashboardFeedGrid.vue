@@ -67,6 +67,7 @@ const isEndOfFeed = computed(
 const canManuallyLoad = computed(
   () =>
     !state.loading &&
+    !state.loadingMore &&
     !fetching.value &&
     feedStore.hasMore &&
     windowFullyRevealed.value,
@@ -109,7 +110,9 @@ async function fetchUntilVisibleGrowth() {
 }
 
 async function loadNextPage() {
-  if (fetching.value) {
+  // state.loading covers the refresh/reveal window during which the store is
+  // replacing the list; firing a page fetch then would be discarded anyway.
+  if (fetching.value || state.loading) {
     return;
   }
   if (!windowFullyRevealed.value) {

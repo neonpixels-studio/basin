@@ -88,7 +88,10 @@ describe("DashboardFeedGrid", () => {
     const triggerIntersect = captureOnIntersect();
     const state = useFeedStore().state;
     state.items = makeItems(PAGE_SIZE);
-    state.nextOffset = PAGE_SIZE;
+    // The server cursor is its own value (server page size, not the reveal
+    // PAGE_SIZE); loadMore must send exactly this offset back.
+    const SERVER_CURSOR = 50;
+    state.nextOffset = SERVER_CURSOR;
 
     const fetchMock = vi.fn().mockResolvedValue({
       items: makeItems(PAGE_SIZE, PAGE_SIZE + 1),
@@ -109,7 +112,7 @@ describe("DashboardFeedGrid", () => {
     // at the first page — and the newly loaded items are revealed.
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0][1].query).toEqual({
-      offset: String(PAGE_SIZE),
+      offset: String(SERVER_CURSOR),
     });
     expect(useFeedStore().state.items).toHaveLength(PAGE_SIZE * 2);
     expect(wrapper.findAll("feed-item-stub")).toHaveLength(PAGE_SIZE * 2);

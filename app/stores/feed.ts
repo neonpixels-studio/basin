@@ -161,10 +161,14 @@ export const useFeedStore = defineStore("feed", () => {
     isFirstPage: boolean,
     requestVersion: number,
   ): boolean {
-    // Fail loud on a malformed payload rather than assigning undefined to
-    // state.items and crashing every downstream consumer on the next render.
-    if (!Array.isArray(response?.items)) {
-      throw new TypeError("feed-items response missing items array");
+    // Surface a malformed payload as a load error (caught below → toast) rather
+    // than assigning undefined/id-less rows to state.items, which would crash
+    // every downstream consumer or wedge dedupe on a single `undefined` id.
+    const malformed =
+      !Array.isArray(response?.items) ||
+      response.items.some((item) => item?.id === undefined);
+    if (malformed) {
+      throw new TypeError("feed-items response items malformed");
     }
     if (!isFirstPage && state.listVersion !== requestVersion) {
       return false;
@@ -188,11 +192,6 @@ export const useFeedStore = defineStore("feed", () => {
     const { showToast } = useToast();
     const offset = params.offset ?? 0;
     const isFirstPage = offset === 0;
-    // Don't race a first page already in flight (mount load vs. refresh) — the
-    // in-flight one will populate; a second would apply out of order.
-    if (isFirstPage && state.loadingFirstPage) {
-      return false;
-    }
     // Snapshot the list generation before any await. If a fresh first page
     // lands while this append is in flight, listVersion moves and we drop the
     // stale append rather than grafting old-offset rows onto the new list.
