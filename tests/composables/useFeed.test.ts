@@ -417,7 +417,7 @@ describe("useFeedStore", () => {
       await feed.loadItems();
       await feed.loadMore();
 
-      expect(state.items.map((i) => i.id)).toEqual([201, 202, 203, 204]);
+      expect(state.items.map((item) => item.id)).toEqual([201, 202, 203, 204]);
       const secondCallOptions = vi.mocked(globalThis.$fetch).mock.calls[1][1];
       expect(secondCallOptions.query).toEqual({ offset: "2" });
       expect(state.nextOffset).toBeNull();
@@ -447,7 +447,7 @@ describe("useFeedStore", () => {
       const appended = await feed.loadMore();
 
       expect(appended).toBe(false);
-      expect(state.items.map((i) => i.id)).toEqual([201, 202]);
+      expect(state.items.map((item) => item.id)).toEqual([201, 202]);
       // Cursor is untouched, so a later scroll can retry the same page.
       expect(state.nextOffset).toBe(2);
     });
@@ -535,6 +535,42 @@ describe("useFeedStore", () => {
       expect(feed.hasMore).toBe(false);
     });
 
+    it("treats a decreasing server cursor as the end of the feed", async () => {
+      vi.mocked(globalThis.$fetch).mockResolvedValueOnce({
+        items: pageOne,
+        total: 4,
+        nextOffset: 2,
+      });
+      await feed.loadItems();
+
+      // The server hands back an offset lower than the one requested — must not
+      // be trusted (would re-serve earlier rows) and reads as end-of-feed.
+      vi.mocked(globalThis.$fetch).mockResolvedValueOnce({
+        items: pageTwo,
+        total: 4,
+        nextOffset: 1,
+      });
+      await feed.loadMore();
+
+      expect(state.nextOffset).toBeNull();
+      expect(feed.hasMore).toBe(false);
+    });
+
+    it("throws (and toasts) on a malformed first-page payload rather than blanking the feed", async () => {
+      vi.stubGlobal(
+        "useToast",
+        vi.fn(() => ({ showToast: vi.fn() })),
+      );
+      state.items = pageOne as never;
+      vi.mocked(globalThis.$fetch).mockResolvedValueOnce({ total: 0 });
+
+      const ok = await feed.loadItems();
+
+      expect(ok).toBe(false);
+      // The existing feed is untouched, not replaced with undefined.
+      expect(state.items.map((item) => item.id)).toEqual([201, 202]);
+    });
+
     it("is a no-op once the last page has loaded (nextOffset null)", async () => {
       vi.mocked(globalThis.$fetch).mockResolvedValue({
         items: pageOne,
@@ -547,7 +583,7 @@ describe("useFeedStore", () => {
       await feed.loadMore();
 
       expect(globalThis.$fetch).not.toHaveBeenCalled();
-      expect(state.items.map((i) => i.id)).toEqual([201, 202]);
+      expect(state.items.map((item) => item.id)).toEqual([201, 202]);
     });
 
     it("does not fire overlapping requests while a page is in flight", async () => {
@@ -572,7 +608,7 @@ describe("useFeedStore", () => {
 
       // Two loadMore calls, but only one network request past the initial page.
       expect(globalThis.$fetch).toHaveBeenCalledTimes(2);
-      expect(state.items.map((i) => i.id)).toEqual([201, 202, 203, 204]);
+      expect(state.items.map((item) => item.id)).toEqual([201, 202, 203, 204]);
     });
   });
 

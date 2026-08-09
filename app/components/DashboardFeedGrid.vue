@@ -27,22 +27,19 @@ const state = feedStore.state;
 // page, so the feed is no longer capped at the first API page.
 const visibleCount = ref(PAGE_SIZE);
 
-// True when a scroll burst hit the per-scroll page bound (or a fetch failed)
-// without revealing more items, so the sentinel can't self-recover — the manual
-// "Load more" button is offered instead. A sparse filter or a full-screen short
-// list keeps the sentinel intersecting with nothing to scroll, so without this
-// the feed would silently dead-end.
-const stalled = ref(false);
+// Serialize bursts so an overlapping sentinel fire can't kick off a second one
+// mid-flight, and so the template can show a single "loading more" state for the
+// whole multi-page burst rather than flickering per request.
+const fetching = ref(false);
 
-// Reset the window (and any stall) when the filter/unread toggle changes (those
-// swap to a different client-side set) or when the store replaces the list with
-// a fresh first page (listVersion bumps). Appending a fetched page grows
-// visibleItems but leaves listVersion untouched, so an append never resets it.
+// Reset the window when the filter/unread toggle changes (those swap to a
+// different client-side set) or when the store replaces the list with a fresh
+// first page (listVersion bumps). Appending a fetched page grows visibleItems
+// but leaves listVersion untouched, so an append never resets the window.
 watch(
   () => [state.filter, state.unreadOnly, state.listVersion],
   () => {
     visibleCount.value = PAGE_SIZE;
-    stalled.value = false;
   },
 );
 
@@ -50,18 +47,34 @@ const windowedItems = computed(() =>
   feedStore.visibleItems.slice(0, visibleCount.value),
 );
 
+const windowFullyRevealed = computed(
+  () => visibleCount.value >= feedStore.visibleItems.length,
+);
+
 const isEndOfFeed = computed(
   () =>
     !state.loading &&
     !feedStore.hasMore &&
     feedStore.visibleItems.length > 0 &&
-    visibleCount.value >= feedStore.visibleItems.length,
+    windowFullyRevealed.value,
+);
+
+// Offer a manual "Load more" whenever we're idle, everything loaded is revealed,
+// and the server still has pages. This is the escape hatch for cases the sentinel
+// can't self-recover: a sparse filter whose next match doesn't push the sentinel
+// out of view, or a burst that hit the per-scroll bound without a visible match.
+// In the normal case it appears only for the instant before the sentinel fires.
+const canManuallyLoad = computed(
+  () =>
+    !state.loading &&
+    !fetching.value &&
+    feedStore.hasMore &&
+    windowFullyRevealed.value,
 );
 
 function advanceWindow() {
   const nextCount = visibleCount.value + PAGE_SIZE;
   visibleCount.value = Math.min(nextCount, feedStore.visibleItems.length);
-  stalled.value = false;
 }
 
 // GREW — page revealed new visible items; STOPPED — fetch failed/no-op, give up
@@ -80,8 +93,6 @@ async function pullOnePage(startCount) {
 }
 
 async function fetchUntilVisibleGrowth() {
-  stalled.value = false;
-  const burstVersion = state.listVersion;
   const startCount = feedStore.visibleItems.length;
   let attempts = 0;
   while (feedStore.hasMore && attempts < MAX_PAGES_PER_SCROLL) {
@@ -92,28 +103,16 @@ async function fetchUntilVisibleGrowth() {
       return;
     }
     if (status === PAGE_RESULT.STOPPED) {
-      break;
+      return;
     }
   }
-  // A fresh first page landed mid-burst (refresh/filter) — the reset watch owns
-  // the new list's state, so don't stamp a stall from this superseded burst.
-  if (state.listVersion !== burstVersion) {
-    return;
-  }
-  // More pages exist but this burst surfaced nothing — offer manual recovery.
-  stalled.value = feedStore.hasMore;
 }
-
-// Serialize bursts so an overlapping sentinel fire can't observe a mid-flight
-// load as a stall (loadMore's own guard would return false and set stalled true
-// even though the first burst is about to succeed).
-const fetching = ref(false);
 
 async function loadNextPage() {
   if (fetching.value) {
     return;
   }
-  if (visibleCount.value < feedStore.visibleItems.length) {
+  if (!windowFullyRevealed.value) {
     advanceWindow();
     return;
   }
@@ -144,20 +143,21 @@ useInfiniteScroll(sentinelEl, loadNextPage);
       @open="feedStore.openItem(item)"
     />
 
-    <!-- sentinel: triggers next page load when it scrolls into view -->
+    <!-- sentinel: auto-triggers the next page as it scrolls into view -->
     <div
-      v-if="!isEndOfFeed && !stalled"
+      v-if="!isEndOfFeed"
       ref="sentinelEl"
       class="feed-sentinel"
       aria-hidden="true"
     ></div>
 
-    <div v-if="state.loadingMore" class="feed-loading-more" aria-live="polite">
+    <div v-if="fetching" class="feed-loading-more" aria-live="polite">
       Loading more…
     </div>
 
+    <!-- manual escape hatch when the sentinel can't self-recover -->
     <button
-      v-if="stalled && !state.loadingMore"
+      v-if="canManuallyLoad"
       type="button"
       class="feed-load-more"
       @click="loadNextPage"

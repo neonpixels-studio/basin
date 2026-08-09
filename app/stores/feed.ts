@@ -161,6 +161,11 @@ export const useFeedStore = defineStore("feed", () => {
     isFirstPage: boolean,
     requestVersion: number,
   ): boolean {
+    // Fail loud on a malformed payload rather than assigning undefined to
+    // state.items and crashing every downstream consumer on the next render.
+    if (!Array.isArray(response?.items)) {
+      throw new TypeError("feed-items response missing items array");
+    }
     if (!isFirstPage && state.listVersion !== requestVersion) {
       return false;
     }

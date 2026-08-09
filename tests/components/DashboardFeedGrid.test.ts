@@ -259,6 +259,39 @@ describe("DashboardFeedGrid", () => {
     expect(wrapper.findAll("feed-item-stub")).toHaveLength(PAGE_SIZE * 2);
   });
 
+  it("keeps fetching within the bound until a page yields a filter match", async () => {
+    const triggerIntersect = captureOnIntersect();
+    const state = useFeedStore().state;
+    state.items = [{ id: 1, type: "podcast" }]; // one visible podcast
+    state.filter = "podcast";
+    state.nextOffset = PAGE_SIZE;
+
+    let call = 0;
+    const fetchMock = vi.fn().mockImplementation(() => {
+      call += 1;
+      // Pages 1 and 2 of the burst are articles (no match); page 3 has a podcast.
+      const type = call < 3 ? "article" : "podcast";
+      const nextOffset = call * PAGE_SIZE + PAGE_SIZE;
+      return Promise.resolve({
+        items: [{ id: 100 + call, type }],
+        total: 1000,
+        nextOffset,
+      });
+    });
+    vi.stubGlobal("$fetch", fetchMock);
+
+    const wrapper = shallowMount(DashboardFeedGrid, {
+      props: { stagger: false },
+    });
+
+    await triggerIntersect();
+    await flushPromises();
+
+    // Exactly 3 pages fetched — stops the instant a match lands, not at the bound.
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(wrapper.findAll("feed-item-stub")).toHaveLength(2); // both podcasts
+  });
+
   it("stops at the per-scroll page bound when a filter matches nothing new", async () => {
     const triggerIntersect = captureOnIntersect();
     const state = useFeedStore().state;

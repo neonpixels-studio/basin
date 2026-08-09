@@ -35,9 +35,13 @@ const staggerOn = computed(
       <!-- Only truly caught up when nothing's visible AND no more pages remain.
            With more pages the filtered match may sit on page 2+, so hand off to
            the grid (its sentinel/Load more fetches deeper) instead of claiming
-           the feed is empty. -->
+           the feed is empty. The columns layout has no pagination, so it can't
+           fetch deeper — keep the honest empty state there. -->
       <div
-        v-if="!feedStore.visibleItems.length && !feedStore.hasMore"
+        v-if="
+          !feedStore.visibleItems.length &&
+          (!feedStore.hasMore || state.layout === 'columns')
+        "
         class="empty flex flex-col items-center"
       >
         <RIcon name="inbox" :size="40" />
