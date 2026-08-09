@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { shallowMount, flushPromises } from "@vue/test-utils";
 import { nextTick } from "vue";
-import DashboardFeedGrid from "~/components/DashboardFeedGrid.vue";
+import DashboardFeedGrid, {
+  PAGE_SIZE,
+  MAX_PAGES_PER_SCROLL,
+} from "~/components/DashboardFeedGrid.vue";
 import { useFeedStore } from "~/stores/feed";
-
-const PAGE_SIZE = 20;
 
 function makeItems(count, startId = 1) {
   return Array.from({ length: count }, (_, i) => ({
@@ -186,10 +187,79 @@ describe("DashboardFeedGrid", () => {
     expect(wrapper.find(".feed-load-more").exists()).toBe(true);
   });
 
+  it("recovers via the manual button after a failed fetch, reaching the end", async () => {
+    const triggerIntersect = captureOnIntersect();
+    const state = useFeedStore().state;
+    state.items = makeItems(PAGE_SIZE);
+    state.nextOffset = PAGE_SIZE;
+
+    const fetchMock = vi.fn().mockRejectedValueOnce(new Error("boom"));
+    vi.stubGlobal("$fetch", fetchMock);
+
+    const wrapper = shallowMount(DashboardFeedGrid, {
+      props: { stagger: false },
+    });
+
+    await triggerIntersect();
+    await flushPromises();
+    expect(wrapper.find(".feed-load-more").exists()).toBe(true);
+
+    // The retry succeeds and returns the final page.
+    fetchMock.mockResolvedValueOnce({
+      items: makeItems(PAGE_SIZE, PAGE_SIZE + 1),
+      total: PAGE_SIZE * 2,
+      nextOffset: null,
+    });
+    await wrapper.find(".feed-load-more").trigger("click");
+    await flushPromises();
+
+    expect(wrapper.find(".feed-load-more").exists()).toBe(false);
+    expect(useFeedStore().state.items).toHaveLength(PAGE_SIZE * 2);
+    expect(wrapper.findAll("feed-item-stub")).toHaveLength(PAGE_SIZE * 2);
+    expect(wrapper.find(".feed-end").exists()).toBe(true);
+  });
+
+  it("does not stall a successful load when the sentinel fires twice concurrently", async () => {
+    const triggerIntersect = captureOnIntersect();
+    const state = useFeedStore().state;
+    state.items = makeItems(PAGE_SIZE);
+    state.nextOffset = PAGE_SIZE;
+
+    let resolveFetch = () => {};
+    vi.stubGlobal(
+      "$fetch",
+      vi.fn(
+        () =>
+          new Promise((resolve) => {
+            resolveFetch = () =>
+              resolve({
+                items: makeItems(PAGE_SIZE, PAGE_SIZE + 1),
+                total: PAGE_SIZE * 2,
+                nextOffset: null,
+              });
+          }),
+      ),
+    );
+
+    const wrapper = shallowMount(DashboardFeedGrid, {
+      props: { stagger: false },
+    });
+
+    const first = triggerIntersect();
+    await flushPromises();
+    // A second intersect lands while the first fetch is still pending.
+    await triggerIntersect();
+
+    resolveFetch();
+    await first;
+    await flushPromises();
+
+    // The successful load is not misreported as a stall.
+    expect(wrapper.find(".feed-load-more").exists()).toBe(false);
+    expect(wrapper.findAll("feed-item-stub")).toHaveLength(PAGE_SIZE * 2);
+  });
+
   it("stops at the per-scroll page bound when a filter matches nothing new", async () => {
-    // 5 = MAX_PAGES_PER_SCROLL in DashboardFeedGrid.vue; a burst must not fetch
-    // unboundedly when every page is filtered out.
-    const MAX_PAGES_PER_SCROLL = 5;
     const triggerIntersect = captureOnIntersect();
     const state = useFeedStore().state;
     state.items = makeItems(PAGE_SIZE); // all type "article"

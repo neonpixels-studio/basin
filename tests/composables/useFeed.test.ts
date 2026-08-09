@@ -395,6 +395,7 @@ describe("useFeedStore", () => {
 
     afterEach(() => {
       vi.mocked(globalThis.$fetch).mockReset();
+      vi.unstubAllGlobals();
     });
 
     it("records nextOffset and reflects it in hasMore after the first page", async () => {
@@ -465,6 +466,28 @@ describe("useFeedStore", () => {
 
       const appended = await feed.loadMore();
       expect(appended).toBe(false);
+    });
+
+    it("resets loadingFirstPage after the auth call rejects", async () => {
+      vi.stubGlobal(
+        "useToast",
+        vi.fn(() => ({ showToast: vi.fn() })),
+      );
+      vi.stubGlobal(
+        "useAuth",
+        vi.fn(() => ({
+          getToken: { value: vi.fn().mockRejectedValue(new Error("no token")) },
+        })),
+      );
+      setActivePinia(createPinia());
+      const store = useFeedStore();
+
+      const ok = await store.loadItems();
+
+      // The failure is swallowed to a toast, and the guard flag is released so
+      // pagination isn't permanently wedged.
+      expect(ok).toBe(false);
+      expect(store.state.loadingFirstPage).toBe(false);
     });
 
     it("drops a stale append when a fresh first page lands mid-flight", async () => {

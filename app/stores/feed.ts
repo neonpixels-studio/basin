@@ -140,10 +140,24 @@ export const useFeedStore = defineStore("feed", () => {
     ];
   }
 
+  // The cursor must move strictly forward; a server that echoes back the same
+  // (or an earlier) offset would otherwise loop us on a page we already hold,
+  // so treat any non-advancing cursor as end-of-feed.
+  function resolveNextOffset(
+    rawNext: unknown,
+    currentOffset: number,
+  ): number | null {
+    if (typeof rawNext !== "number") {
+      return null;
+    }
+    return rawNext > currentOffset ? rawNext : null;
+  }
+
   // Apply a fetched page. Returns false only when a first page superseded this
   // append mid-flight (listVersion moved), so the stale rows are dropped.
   function applyItemsResponse(
     response: FeedItemsResponse,
+    currentOffset: number,
     isFirstPage: boolean,
     requestVersion: number,
   ): boolean {
@@ -156,8 +170,7 @@ export const useFeedStore = defineStore("feed", () => {
     } else {
       appendPage(response);
     }
-    state.nextOffset =
-      typeof response.nextOffset === "number" ? response.nextOffset : null;
+    state.nextOffset = resolveNextOffset(response.nextOffset, currentOffset);
     return true;
   }
 
@@ -168,7 +181,13 @@ export const useFeedStore = defineStore("feed", () => {
     params: { limit?: number; offset?: number } = {},
   ): Promise<boolean> {
     const { showToast } = useToast();
-    const isFirstPage = (params.offset ?? 0) === 0;
+    const offset = params.offset ?? 0;
+    const isFirstPage = offset === 0;
+    // Don't race a first page already in flight (mount load vs. refresh) — the
+    // in-flight one will populate; a second would apply out of order.
+    if (isFirstPage && state.loadingFirstPage) {
+      return false;
+    }
     // Snapshot the list generation before any await. If a fresh first page
     // lands while this append is in flight, listVersion moves and we drop the
     // stale append rather than grafting old-offset rows onto the new list.
@@ -178,16 +197,16 @@ export const useFeedStore = defineStore("feed", () => {
     if (isFirstPage) {
       state.loadingFirstPage = true;
     }
-    const headers = await buildAuthHeaders();
-    const query = buildItemsQuery(params);
 
     try {
+      const headers = await buildAuthHeaders();
+      const query = buildItemsQuery(params);
       const response = await $fetchWithTimeout<FeedItemsResponse>(
         "/api/feed-items",
         FEED_ITEMS_TIMEOUT_MS,
         { headers, query },
       );
-      return applyItemsResponse(response, isFirstPage, requestVersion);
+      return applyItemsResponse(response, offset, isFirstPage, requestVersion);
     } catch {
       showToast(LOAD_ITEMS_ERROR_MESSAGE);
       return false;

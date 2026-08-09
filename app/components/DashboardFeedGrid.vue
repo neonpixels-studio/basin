@@ -1,13 +1,15 @@
-<script setup>
-import { computed, ref } from "vue";
-
-const PAGE_SIZE = 20;
+<script>
+export const PAGE_SIZE = 20;
 
 // visibleItems is filtered client-side while the API paginates unfiltered, so a
 // fetched page may add zero items to the current filter. Bound how many pages a
 // single scroll will pull chasing visible growth so a sparse filter can't fire
-// an unbounded burst of requests; the user scrolls again to continue.
-const MAX_PAGES_PER_SCROLL = 5;
+// an unbounded burst of requests; a manual "Load more" then takes over.
+export const MAX_PAGES_PER_SCROLL = 5;
+</script>
+
+<script setup>
+import { computed, ref } from "vue";
 
 defineProps({
   stagger: {
@@ -59,6 +61,7 @@ const isEndOfFeed = computed(
 function advanceWindow() {
   const nextCount = visibleCount.value + PAGE_SIZE;
   visibleCount.value = Math.min(nextCount, feedStore.visibleItems.length);
+  stalled.value = false;
 }
 
 // "grew" — page revealed new visible items; "stop" — fetch failed/no-op, give up
@@ -93,7 +96,15 @@ async function fetchUntilVisibleGrowth() {
   stalled.value = feedStore.hasMore;
 }
 
+// Serialize bursts so an overlapping sentinel fire can't observe a mid-flight
+// load as a stall (loadMore's own guard would return false and set stalled true
+// even though the first burst is about to succeed).
+const fetching = ref(false);
+
 async function loadNextPage() {
+  if (fetching.value) {
+    return;
+  }
   if (visibleCount.value < feedStore.visibleItems.length) {
     advanceWindow();
     return;
@@ -101,7 +112,12 @@ async function loadNextPage() {
   if (!feedStore.hasMore) {
     return;
   }
-  await fetchUntilVisibleGrowth();
+  fetching.value = true;
+  try {
+    await fetchUntilVisibleGrowth();
+  } finally {
+    fetching.value = false;
+  }
 }
 
 const sentinelEl = ref(null);
