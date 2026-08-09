@@ -89,6 +89,17 @@ const staggerOn = computed(
   font-size: 12.5px;
   color: var(--muted);
 }
+.feed-load-more {
+  display: block;
+  margin: 16px auto;
+  padding: 8px 18px;
+  font-size: 12.5px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+}
 
 /* ---------- Layout variants ---------- */
 /* timeline — single column, comfortable reading width */

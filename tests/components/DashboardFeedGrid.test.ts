@@ -153,7 +153,12 @@ describe("DashboardFeedGrid", () => {
     expect(wrapper.find(".feed-loading-more").exists()).toBe(false);
   });
 
-  it("does not advance the window when a page fetch fails", async () => {
+  it("surfaces an error and offers manual retry when a page fetch fails", async () => {
+    const showToast = vi.fn();
+    vi.stubGlobal(
+      "useToast",
+      vi.fn(() => ({ showToast })),
+    );
     const triggerIntersect = captureOnIntersect();
     const state = useFeedStore().state;
     state.items = makeItems(PAGE_SIZE);
@@ -168,9 +173,51 @@ describe("DashboardFeedGrid", () => {
     await triggerIntersect();
     await flushPromises();
 
-    // Fetch failed: no items appended, window not advanced past the loaded page.
+    // Nothing appended, cursor untouched so a retry is still possible, and the
+    // failure is not misreported as end-of-feed.
     expect(useFeedStore().state.items).toHaveLength(PAGE_SIZE);
-    expect(wrapper.findAll("feed-item-stub")).toHaveLength(PAGE_SIZE);
+    expect(useFeedStore().state.nextOffset).toBe(PAGE_SIZE);
+    expect(wrapper.find(".feed-end").exists()).toBe(false);
+    expect(showToast).toHaveBeenCalledWith(
+      "Failed to load feed items — please try again",
+    );
+    // The sentinel can't self-recover on a full-screen list, so a manual
+    // "Load more" affordance is shown instead.
+    expect(wrapper.find(".feed-load-more").exists()).toBe(true);
+  });
+
+  it("stops at the per-scroll page bound when a filter matches nothing new", async () => {
+    // 5 = MAX_PAGES_PER_SCROLL in DashboardFeedGrid.vue; a burst must not fetch
+    // unboundedly when every page is filtered out.
+    const MAX_PAGES_PER_SCROLL = 5;
+    const triggerIntersect = captureOnIntersect();
+    const state = useFeedStore().state;
+    state.items = makeItems(PAGE_SIZE); // all type "article"
+    state.filter = "podcast"; // nothing in any fetched page will match
+    state.nextOffset = PAGE_SIZE;
+
+    let offset = PAGE_SIZE;
+    const fetchMock = vi.fn().mockImplementation(() => {
+      offset += PAGE_SIZE;
+      return Promise.resolve({
+        items: makeItems(PAGE_SIZE, offset), // more articles, still no podcasts
+        total: 1000,
+        nextOffset: offset, // always more pages available
+      });
+    });
+    vi.stubGlobal("$fetch", fetchMock);
+
+    const wrapper = shallowMount(DashboardFeedGrid, {
+      props: { stagger: false },
+    });
+
+    await triggerIntersect();
+    await flushPromises();
+
+    // Bounded: exactly MAX pages fetched, more still available, manual retry offered.
+    expect(fetchMock).toHaveBeenCalledTimes(MAX_PAGES_PER_SCROLL);
+    expect(useFeedStore().state.nextOffset).not.toBeNull();
+    expect(wrapper.find(".feed-load-more").exists()).toBe(true);
   });
 
   it("resets the window to the first page when the filter changes", async () => {

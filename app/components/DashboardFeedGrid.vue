@@ -25,14 +25,22 @@ const state = feedStore.state;
 // page, so the feed is no longer capped at the first API page.
 const visibleCount = ref(PAGE_SIZE);
 
-// Reset the window when the filter/unread toggle changes (those swap to a
-// different client-side set) or when the store replaces the list with a fresh
-// first page (listVersion bumps). Appending a fetched page grows visibleItems
-// but leaves listVersion untouched, so an append never resets the window.
+// True when a scroll burst hit the per-scroll page bound (or a fetch failed)
+// without revealing more items, so the sentinel can't self-recover — the manual
+// "Load more" button is offered instead. A sparse filter or a full-screen short
+// list keeps the sentinel intersecting with nothing to scroll, so without this
+// the feed would silently dead-end.
+const stalled = ref(false);
+
+// Reset the window (and any stall) when the filter/unread toggle changes (those
+// swap to a different client-side set) or when the store replaces the list with
+// a fresh first page (listVersion bumps). Appending a fetched page grows
+// visibleItems but leaves listVersion untouched, so an append never resets it.
 watch(
   () => [state.filter, state.unreadOnly, state.listVersion],
   () => {
     visibleCount.value = PAGE_SIZE;
+    stalled.value = false;
   },
 );
 
@@ -53,20 +61,36 @@ function advanceWindow() {
   visibleCount.value = Math.min(nextCount, feedStore.visibleItems.length);
 }
 
+// "grew" — page revealed new visible items; "stop" — fetch failed/no-op, give up
+// this burst; "continue" — page landed but nothing passed the filter, try again.
+async function pullOnePage(startCount) {
+  const fetched = await feedStore.loadMore();
+  if (!fetched) {
+    return "stop";
+  }
+  if (feedStore.visibleItems.length > startCount) {
+    return "grew";
+  }
+  return "continue";
+}
+
 async function fetchUntilVisibleGrowth() {
+  stalled.value = false;
   const startCount = feedStore.visibleItems.length;
   let attempts = 0;
   while (feedStore.hasMore && attempts < MAX_PAGES_PER_SCROLL) {
     attempts += 1;
-    const fetched = await feedStore.loadMore();
-    if (!fetched) {
-      return;
-    }
-    if (feedStore.visibleItems.length > startCount) {
+    const status = await pullOnePage(startCount);
+    if (status === "grew") {
       advanceWindow();
       return;
     }
+    if (status === "stop") {
+      break;
+    }
   }
+  // More pages exist but this burst surfaced nothing — offer manual recovery.
+  stalled.value = feedStore.hasMore;
 }
 
 async function loadNextPage() {
@@ -98,7 +122,7 @@ useInfiniteScroll(sentinelEl, loadNextPage);
 
     <!-- sentinel: triggers next page load when it scrolls into view -->
     <div
-      v-if="!isEndOfFeed"
+      v-if="!isEndOfFeed && !stalled"
       ref="sentinelEl"
       class="feed-sentinel"
       aria-hidden="true"
@@ -107,6 +131,15 @@ useInfiniteScroll(sentinelEl, loadNextPage);
     <div v-if="state.loadingMore" class="feed-loading-more" aria-live="polite">
       Loading more…
     </div>
+
+    <button
+      v-if="stalled && !state.loadingMore"
+      type="button"
+      class="feed-load-more"
+      @click="loadNextPage"
+    >
+      Load more
+    </button>
 
     <div v-if="isEndOfFeed" class="feed-end" aria-live="polite">
       You've reached the end

@@ -452,19 +452,19 @@ describe("useFeedStore", () => {
     });
 
     it("does not fetch a next page while a fresh first-page load is in flight", async () => {
-      vi.mocked(globalThis.$fetch).mockResolvedValueOnce({
-        items: pageOne,
-        total: 4,
-        nextOffset: 2,
-      });
-      await feed.loadItems();
+      // Seed a cursor, then start a real first-page load that stays pending
+      // (never resolves) at the auth/fetch await, so the guard — not a hand-set
+      // flag — is what blocks loadMore across the whole first-page window.
+      state.nextOffset = 2;
+      vi.mocked(globalThis.$fetch).mockReturnValueOnce(new Promise(() => {}));
 
-      state.loadingFirstPage = true;
+      feed.loadItems();
+      // The flag is set synchronously, before the auth round-trip's await, so it
+      // already covers loadMore here.
+      expect(state.loadingFirstPage).toBe(true);
+
       const appended = await feed.loadMore();
-
       expect(appended).toBe(false);
-      // Only the initial first-page request fired.
-      expect(globalThis.$fetch).toHaveBeenCalledTimes(1);
     });
 
     it("drops a stale append when a fresh first page lands mid-flight", async () => {

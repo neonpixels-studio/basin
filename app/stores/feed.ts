@@ -173,12 +173,14 @@ export const useFeedStore = defineStore("feed", () => {
     // lands while this append is in flight, listVersion moves and we drop the
     // stale append rather than grafting old-offset rows onto the new list.
     const requestVersion = state.listVersion;
-    const headers = await buildAuthHeaders();
-    const query = buildItemsQuery(params);
-
+    // Set before any await so loadMore's guard closes the whole first-page
+    // window, including the auth token round-trip, not just the items fetch.
     if (isFirstPage) {
       state.loadingFirstPage = true;
     }
+    const headers = await buildAuthHeaders();
+    const query = buildItemsQuery(params);
+
     try {
       const response = await $fetchWithTimeout<FeedItemsResponse>(
         "/api/feed-items",
