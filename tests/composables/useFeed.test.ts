@@ -514,6 +514,27 @@ describe("useFeedStore", () => {
       expect(state.items.map((item) => item.id)).toEqual([301]);
     });
 
+    it("treats a non-advancing server cursor as the end of the feed", async () => {
+      vi.mocked(globalThis.$fetch).mockResolvedValueOnce({
+        items: pageOne,
+        total: 4,
+        nextOffset: 2,
+      });
+      await feed.loadItems();
+
+      // Page two echoes back the same offset it was handed (2), which would loop
+      // us on a page we already hold — it must be read as end-of-feed instead.
+      vi.mocked(globalThis.$fetch).mockResolvedValueOnce({
+        items: pageTwo,
+        total: 4,
+        nextOffset: 2,
+      });
+      await feed.loadMore();
+
+      expect(state.nextOffset).toBeNull();
+      expect(feed.hasMore).toBe(false);
+    });
+
     it("is a no-op once the last page has loaded (nextOffset null)", async () => {
       vi.mocked(globalThis.$fetch).mockResolvedValue({
         items: pageOne,

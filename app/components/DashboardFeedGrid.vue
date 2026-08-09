@@ -64,33 +64,41 @@ function advanceWindow() {
   stalled.value = false;
 }
 
-// "grew" — page revealed new visible items; "stop" — fetch failed/no-op, give up
-// this burst; "continue" — page landed but nothing passed the filter, try again.
+// GREW — page revealed new visible items; STOPPED — fetch failed/no-op, give up
+// this burst; NO_MATCH — page landed but nothing passed the filter, try again.
+const PAGE_RESULT = { GREW: "grew", STOPPED: "stopped", NO_MATCH: "no-match" };
+
 async function pullOnePage(startCount) {
   const fetched = await feedStore.loadMore();
   if (!fetched) {
-    return "stop";
+    return PAGE_RESULT.STOPPED;
   }
   if (feedStore.visibleItems.length > startCount) {
-    return "grew";
+    return PAGE_RESULT.GREW;
   }
-  return "continue";
+  return PAGE_RESULT.NO_MATCH;
 }
 
 async function fetchUntilVisibleGrowth() {
   stalled.value = false;
+  const burstVersion = state.listVersion;
   const startCount = feedStore.visibleItems.length;
   let attempts = 0;
   while (feedStore.hasMore && attempts < MAX_PAGES_PER_SCROLL) {
     attempts += 1;
     const status = await pullOnePage(startCount);
-    if (status === "grew") {
+    if (status === PAGE_RESULT.GREW) {
       advanceWindow();
       return;
     }
-    if (status === "stop") {
+    if (status === PAGE_RESULT.STOPPED) {
       break;
     }
+  }
+  // A fresh first page landed mid-burst (refresh/filter) — the reset watch owns
+  // the new list's state, so don't stamp a stall from this superseded burst.
+  if (state.listVersion !== burstVersion) {
+    return;
   }
   // More pages exist but this burst surfaced nothing — offer manual recovery.
   stalled.value = feedStore.hasMore;

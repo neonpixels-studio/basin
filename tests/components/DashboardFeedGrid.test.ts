@@ -308,6 +308,24 @@ describe("DashboardFeedGrid", () => {
     expect(wrapper.vm.visibleCount).toBe(PAGE_SIZE);
   });
 
+  it("resets the window to the first page when the unread toggle changes", async () => {
+    const triggerIntersect = captureOnIntersect();
+    const state = useFeedStore().state;
+    state.items = makeItems(PAGE_SIZE * 3);
+    state.nextOffset = null;
+
+    const wrapper = shallowMount(DashboardFeedGrid, {
+      props: { stagger: false },
+    });
+    triggerIntersect();
+    await nextTick();
+    expect(wrapper.vm.visibleCount).toBe(PAGE_SIZE * 2);
+
+    state.unreadOnly = true;
+    await nextTick();
+    expect(wrapper.vm.visibleCount).toBe(PAGE_SIZE);
+  });
+
   it("does not reset the window when older items are appended to the list", async () => {
     const triggerIntersect = captureOnIntersect();
     const state = useFeedStore().state;

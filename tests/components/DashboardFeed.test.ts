@@ -40,6 +40,16 @@ describe("DashboardFeed", () => {
     expect(wrapper.find("dashboard-feed-columns-stub").exists()).toBe(false);
   });
 
+  it("renders the grid (not the empty state) when a filter is empty but more pages exist", () => {
+    const state = useFeedStore().state;
+    state.items = [{ id: 1, type: "article" }];
+    state.filter = "podcast"; // nothing loaded matches, so visibleItems is empty
+    state.nextOffset = 50; // but the server has more pages to search
+    const wrapper = shallowMount(DashboardFeed);
+    expect(wrapper.find(".empty").exists()).toBe(false);
+    expect(wrapper.find("dashboard-feed-grid-stub").exists()).toBe(true);
+  });
+
   it("renders the columns layout when the layout is columns", () => {
     setItems([{ id: 1, type: "article" }]);
     useFeedStore().state.layout = "columns";
