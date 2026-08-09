@@ -37,7 +37,7 @@ const fetching = ref(false);
 // first page (listVersion bumps). Appending a fetched page grows visibleItems
 // but leaves listVersion untouched, so an append never resets the window.
 watch(
-  () => [state.filter, state.unreadOnly, state.listVersion],
+  [() => state.filter, () => state.unreadOnly, () => state.listVersion],
   () => {
     visibleCount.value = PAGE_SIZE;
   },
@@ -60,10 +60,11 @@ const isEndOfFeed = computed(
 );
 
 // Offer a manual "Load more" whenever we're idle, everything loaded is revealed,
-// and the server still has pages. This is the escape hatch for cases the sentinel
-// can't self-recover: a sparse filter whose next match doesn't push the sentinel
-// out of view, or a burst that hit the per-scroll bound without a visible match.
+// and the server still has pages. Escape hatch for cases the sentinel can't
+// self-recover: a burst that hit the per-scroll bound, or a failed page fetch.
 // In the normal case it appears only for the instant before the sentinel fires.
+// (A filter with zero matches on page 1 shows the parent's empty state instead;
+// deeper search for empty filters is out of scope here — see PR follow-ups.)
 const canManuallyLoad = computed(
   () =>
     !state.loading &&
@@ -110,9 +111,12 @@ async function fetchUntilVisibleGrowth() {
 }
 
 async function loadNextPage() {
-  // state.loading covers the refresh/reveal window during which the store is
-  // replacing the list; firing a page fetch then would be discarded anyway.
-  if (fetching.value || state.loading) {
+  // Deliberately not gated on state.loading: that's a cosmetic reveal timer (see
+  // feed.ts), and gating an intersection-only callback on it can permanently
+  // drop a fire. A page fetched during a concurrent first-page load is dropped
+  // safely by the store's listVersion guard, and loadMore blocks on
+  // loadingFirstPage, so no gate is needed here.
+  if (fetching.value) {
     return;
   }
   if (!windowFullyRevealed.value) {
