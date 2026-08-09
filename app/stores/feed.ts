@@ -36,6 +36,18 @@ export const useFeedStore = defineStore("feed", () => {
     activeItem: null as Record<string, unknown> | null,
     detailLoading: false,
     newFeedUrl: "",
+    // Server pagination cursor for /api/feed-items. Null means the first page
+    // hasn't loaded yet or the last page returned no further offset (end of feed).
+    nextOffset: null as number | null,
+    loadingMore: false,
+    // True only while a first page (mount load or refresh) is actually in
+    // flight. loadMore checks this — not the cosmetic `loading` reveal timer —
+    // so it won't fire mid-refresh yet also won't be blocked by the stagger.
+    loadingFirstPage: false,
+    // Bumped whenever the item list is replaced (a fresh first page or refresh),
+    // never on an append. Consumers watch it to reset scroll windows on a new
+    // list without resetting when older pages are appended.
+    listVersion: 0,
   });
 
   const timers: Record<string, ReturnType<typeof setTimeout> | null> = {
@@ -100,10 +112,16 @@ export const useFeedStore = defineStore("feed", () => {
   const LOAD_ITEMS_ERROR_MESSAGE =
     "Failed to load feed items — please try again";
 
-  async function loadItems(params: { limit?: number; offset?: number } = {}) {
-    const { showToast } = useToast();
-    const headers = await buildAuthHeaders();
+  interface FeedItemsResponse {
+    items: Record<string, unknown>[];
+    total: number;
+    nextOffset: number | null;
+  }
 
+  function buildItemsQuery(params: {
+    limit?: number;
+    offset?: number;
+  }): Record<string, string> {
     const query: Record<string, string> = {};
     if (params.limit !== undefined) {
       query.limit = String(params.limit);
@@ -111,25 +129,117 @@ export const useFeedStore = defineStore("feed", () => {
     if (params.offset !== undefined) {
       query.offset = String(params.offset);
     }
+    return query;
+  }
+
+  function appendPage(response: FeedItemsResponse) {
+    const seen = new Set(state.items.map((item) => item.id));
+    state.items = [
+      ...state.items,
+      ...response.items.filter((item) => !seen.has(item.id)),
+    ];
+  }
+
+  // The cursor must move strictly forward; a server that echoes back the same
+  // (or an earlier) offset would otherwise loop us on a page we already hold,
+  // so treat any non-advancing cursor as end-of-feed.
+  function resolveNextOffset(
+    rawNext: unknown,
+    currentOffset: number,
+  ): number | null {
+    if (typeof rawNext !== "number") {
+      return null;
+    }
+    return rawNext > currentOffset ? rawNext : null;
+  }
+
+  // Apply a fetched page. Returns false only when a first page superseded this
+  // append mid-flight (listVersion moved), so the stale rows are dropped.
+  function applyItemsResponse(
+    response: FeedItemsResponse,
+    currentOffset: number,
+    isFirstPage: boolean,
+    requestVersion: number,
+  ): boolean {
+    // Surface a malformed payload as a load error (caught below → toast) rather
+    // than assigning undefined/id-less rows to state.items, which would crash
+    // every downstream consumer or wedge dedupe on a single `undefined` id.
+    const malformed =
+      !Array.isArray(response?.items) ||
+      response.items.some((item) => item?.id === undefined);
+    if (malformed) {
+      throw new TypeError("feed-items response items malformed");
+    }
+    if (!isFirstPage && state.listVersion !== requestVersion) {
+      return false;
+    }
+    if (isFirstPage) {
+      state.items = response.items;
+      state.listVersion += 1;
+    } else {
+      appendPage(response);
+    }
+    state.nextOffset = resolveNextOffset(response.nextOffset, currentOffset);
+    return true;
+  }
+
+  // Resolves to true when the page was fetched and applied, false when the
+  // request failed or was superseded — so callers (loadMore) can tell success
+  // from a swallowed error rather than blindly advancing their scroll window.
+  async function loadItems(
+    params: { limit?: number; offset?: number } = {},
+  ): Promise<boolean> {
+    const { showToast } = useToast();
+    const offset = params.offset ?? 0;
+    const isFirstPage = offset === 0;
+    // Snapshot the list generation before any await. If a fresh first page
+    // lands while this append is in flight, listVersion moves and we drop the
+    // stale append rather than grafting old-offset rows onto the new list.
+    const requestVersion = state.listVersion;
+    // Set before any await so loadMore's guard closes the whole first-page
+    // window, including the auth token round-trip, not just the items fetch.
+    if (isFirstPage) {
+      state.loadingFirstPage = true;
+    }
 
     try {
-      const response = await $fetchWithTimeout<{
-        items: Record<string, unknown>[];
-        total: number;
-        nextOffset: number | null;
-      }>("/api/feed-items", FEED_ITEMS_TIMEOUT_MS, { headers, query });
-
-      if ((params.offset ?? 0) > 0) {
-        const seen = new Set(state.items.map((i) => i.id));
-        state.items = [
-          ...state.items,
-          ...response.items.filter((i) => !seen.has(i.id)),
-        ];
-      } else {
-        state.items = response.items;
-      }
+      const headers = await buildAuthHeaders();
+      const query = buildItemsQuery(params);
+      const response = await $fetchWithTimeout<FeedItemsResponse>(
+        "/api/feed-items",
+        FEED_ITEMS_TIMEOUT_MS,
+        { headers, query },
+      );
+      return applyItemsResponse(response, offset, isFirstPage, requestVersion);
     } catch {
       showToast(LOAD_ITEMS_ERROR_MESSAGE);
+      return false;
+    } finally {
+      if (isFirstPage) {
+        state.loadingFirstPage = false;
+      }
+    }
+  }
+
+  const hasMore = computed(() => typeof state.nextOffset === "number");
+
+  // Fetch and append the next page of feed items. Guarded so a burst of
+  // intersection events can't fire overlapping requests, a first-page (re)load
+  // in flight can't be raced by a stale-offset append, and it no-ops once the
+  // last page has been reached. Returns whether a page was fetched and applied.
+  async function loadMore(): Promise<boolean> {
+    if (
+      state.loadingMore ||
+      state.loadingFirstPage ||
+      state.nextOffset === null
+    ) {
+      return false;
+    }
+    state.loadingMore = true;
+    try {
+      return await loadItems({ offset: state.nextOffset });
+    } finally {
+      state.loadingMore = false;
     }
   }
 
@@ -419,6 +529,8 @@ export const useFeedStore = defineStore("feed", () => {
     decks,
     countFor,
     loadItems,
+    loadMore,
+    hasMore,
     setupWatchers,
     runFeedLoad,
     refresh,

@@ -82,11 +82,23 @@ const staggerOn = computed(
 .feed-sentinel {
   height: 1px;
 }
-.feed-end {
+.feed-end,
+.feed-loading-more {
   text-align: center;
   padding: 24px 0;
   font-size: 12.5px;
   color: var(--muted);
+}
+.feed-load-more {
+  display: block;
+  margin: 16px auto;
+  padding: 8px 18px;
+  font-size: 12.5px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
 }
 
 /* ---------- Layout variants ---------- */

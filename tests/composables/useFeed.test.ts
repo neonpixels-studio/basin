@@ -385,6 +385,233 @@ describe("useFeedStore", () => {
     });
   });
 
+  describe("loadMore pagination", () => {
+    const pageOne = [item({ id: 201 }), item({ id: 202 })];
+    const pageTwo = [item({ id: 203 }), item({ id: 204 })];
+
+    beforeEach(() => {
+      vi.mocked(globalThis.$fetch).mockReset();
+    });
+
+    afterEach(() => {
+      vi.mocked(globalThis.$fetch).mockReset();
+      vi.unstubAllGlobals();
+    });
+
+    it("records nextOffset and reflects it in hasMore after the first page", async () => {
+      vi.mocked(globalThis.$fetch).mockResolvedValue({
+        items: pageOne,
+        total: 2,
+        nextOffset: 2,
+      });
+      await feed.loadItems();
+      expect(state.nextOffset).toBe(2);
+      expect(feed.hasMore).toBe(true);
+    });
+
+    it("fetches the next page at the stored offset and appends it", async () => {
+      vi.mocked(globalThis.$fetch)
+        .mockResolvedValueOnce({ items: pageOne, total: 4, nextOffset: 2 })
+        .mockResolvedValueOnce({ items: pageTwo, total: 4, nextOffset: null });
+
+      await feed.loadItems();
+      await feed.loadMore();
+
+      expect(state.items.map((item) => item.id)).toEqual([201, 202, 203, 204]);
+      const secondCallOptions = vi.mocked(globalThis.$fetch).mock.calls[1][1];
+      expect(secondCallOptions.query).toEqual({ offset: "2" });
+      expect(state.nextOffset).toBeNull();
+      expect(feed.hasMore).toBe(false);
+    });
+
+    it("treats a missing nextOffset as the end of the feed", async () => {
+      vi.mocked(globalThis.$fetch).mockResolvedValue({
+        items: pageOne,
+        total: 2,
+      });
+      await feed.loadItems();
+      expect(state.nextOffset).toBeNull();
+      expect(feed.hasMore).toBe(false);
+    });
+
+    it("returns false and appends nothing when the page fetch fails", async () => {
+      vi.stubGlobal(
+        "useToast",
+        vi.fn(() => ({ showToast: vi.fn() })),
+      );
+      vi.mocked(globalThis.$fetch)
+        .mockResolvedValueOnce({ items: pageOne, total: 4, nextOffset: 2 })
+        .mockRejectedValueOnce(new Error("network"));
+
+      await feed.loadItems();
+      const appended = await feed.loadMore();
+
+      expect(appended).toBe(false);
+      expect(state.items.map((item) => item.id)).toEqual([201, 202]);
+      // Cursor is untouched, so a later scroll can retry the same page.
+      expect(state.nextOffset).toBe(2);
+    });
+
+    it("does not fetch a next page while a fresh first-page load is in flight", async () => {
+      // Seed a cursor, then start a real first-page load that stays pending
+      // (never resolves) at the auth/fetch await, so the guard — not a hand-set
+      // flag — is what blocks loadMore across the whole first-page window.
+      state.nextOffset = 2;
+      vi.mocked(globalThis.$fetch).mockReturnValueOnce(new Promise(() => {}));
+
+      feed.loadItems();
+      // The flag is set synchronously, before the auth round-trip's await, so it
+      // already covers loadMore here.
+      expect(state.loadingFirstPage).toBe(true);
+
+      const appended = await feed.loadMore();
+      expect(appended).toBe(false);
+    });
+
+    it("resets loadingFirstPage after the auth call rejects", async () => {
+      vi.stubGlobal(
+        "useToast",
+        vi.fn(() => ({ showToast: vi.fn() })),
+      );
+      vi.stubGlobal(
+        "useAuth",
+        vi.fn(() => ({
+          getToken: { value: vi.fn().mockRejectedValue(new Error("no token")) },
+        })),
+      );
+      setActivePinia(createPinia());
+      const store = useFeedStore();
+
+      const ok = await store.loadItems();
+
+      // The failure is swallowed to a toast, and the guard flag is released so
+      // pagination isn't permanently wedged.
+      expect(ok).toBe(false);
+      expect(store.state.loadingFirstPage).toBe(false);
+    });
+
+    it("drops a stale append when a fresh first page lands mid-flight", async () => {
+      let resolveAppend: (_value: unknown) => void = () => {};
+      vi.mocked(globalThis.$fetch).mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveAppend = resolve;
+        }),
+      );
+      state.items = pageOne as never;
+      state.nextOffset = 2;
+
+      const appending = feed.loadMore();
+      // A fresh first page replaces the list (bumps listVersion) before the
+      // append resolves.
+      state.items = [item({ id: 301 })] as never;
+      state.listVersion += 1;
+
+      resolveAppend({ items: pageTwo, total: 4, nextOffset: null });
+      const appended = await appending;
+
+      expect(appended).toBe(false);
+      // The stale page-two rows were discarded, not grafted onto the new list.
+      expect(state.items.map((item) => item.id)).toEqual([301]);
+    });
+
+    it("treats a non-advancing server cursor as the end of the feed", async () => {
+      vi.mocked(globalThis.$fetch).mockResolvedValueOnce({
+        items: pageOne,
+        total: 4,
+        nextOffset: 2,
+      });
+      await feed.loadItems();
+
+      // Page two echoes back the same offset it was handed (2), which would loop
+      // us on a page we already hold — it must be read as end-of-feed instead.
+      vi.mocked(globalThis.$fetch).mockResolvedValueOnce({
+        items: pageTwo,
+        total: 4,
+        nextOffset: 2,
+      });
+      await feed.loadMore();
+
+      expect(state.nextOffset).toBeNull();
+      expect(feed.hasMore).toBe(false);
+    });
+
+    it("treats a decreasing server cursor as the end of the feed", async () => {
+      vi.mocked(globalThis.$fetch).mockResolvedValueOnce({
+        items: pageOne,
+        total: 4,
+        nextOffset: 2,
+      });
+      await feed.loadItems();
+
+      // The server hands back an offset lower than the one requested — must not
+      // be trusted (would re-serve earlier rows) and reads as end-of-feed.
+      vi.mocked(globalThis.$fetch).mockResolvedValueOnce({
+        items: pageTwo,
+        total: 4,
+        nextOffset: 1,
+      });
+      await feed.loadMore();
+
+      expect(state.nextOffset).toBeNull();
+      expect(feed.hasMore).toBe(false);
+    });
+
+    it("throws (and toasts) on a malformed first-page payload rather than blanking the feed", async () => {
+      vi.stubGlobal(
+        "useToast",
+        vi.fn(() => ({ showToast: vi.fn() })),
+      );
+      state.items = pageOne as never;
+      vi.mocked(globalThis.$fetch).mockResolvedValueOnce({ total: 0 });
+
+      const ok = await feed.loadItems();
+
+      expect(ok).toBe(false);
+      // The existing feed is untouched, not replaced with undefined.
+      expect(state.items.map((item) => item.id)).toEqual([201, 202]);
+    });
+
+    it("is a no-op once the last page has loaded (nextOffset null)", async () => {
+      vi.mocked(globalThis.$fetch).mockResolvedValue({
+        items: pageOne,
+        total: 2,
+        nextOffset: null,
+      });
+      await feed.loadItems();
+      vi.mocked(globalThis.$fetch).mockClear();
+
+      await feed.loadMore();
+
+      expect(globalThis.$fetch).not.toHaveBeenCalled();
+      expect(state.items.map((item) => item.id)).toEqual([201, 202]);
+    });
+
+    it("does not fire overlapping requests while a page is in flight", async () => {
+      vi.mocked(globalThis.$fetch).mockResolvedValueOnce({
+        items: pageOne,
+        total: 4,
+        nextOffset: 2,
+      });
+      await feed.loadItems();
+
+      let resolveSecond: (_value: unknown) => void = () => {};
+      vi.mocked(globalThis.$fetch).mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveSecond = resolve;
+        }),
+      );
+
+      const first = feed.loadMore();
+      const second = feed.loadMore();
+      resolveSecond({ items: pageTwo, total: 4, nextOffset: null });
+      await Promise.all([first, second]);
+
+      // Two loadMore calls, but only one network request past the initial page.
+      expect(globalThis.$fetch).toHaveBeenCalledTimes(2);
+      expect(state.items.map((item) => item.id)).toEqual([201, 202, 203, 204]);
+    });
+  });
+
   describe("sync queue integration", () => {
     let queueAction: ReturnType<typeof vi.fn>;
     let showToast: ReturnType<typeof vi.fn>;
