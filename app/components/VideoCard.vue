@@ -1,6 +1,6 @@
 <script setup>
 import { computed, ref } from "vue";
-import { durationLabel } from "~/composables/usePodcastPlayer";
+import { durationLabel } from "~/utils/duration";
 import { VIDEO_PLACEHOLDER_LABEL } from "~/utils/itemContent";
 
 const props = defineProps({ item: { type: Object, required: true } });
@@ -57,7 +57,7 @@ function handleVideoClick(event) {
         v-if="thumbnailUrl"
         class="thumb-img"
         :src="thumbnailUrl"
-        :alt="item.title"
+        alt=""
         loading="lazy"
         referrerpolicy="no-referrer"
         @error="imageFailed = true"

@@ -1,6 +1,6 @@
 <script setup>
-import { computed, ref } from "vue";
-import { durationLabel } from "~/composables/usePodcastPlayer";
+import { computed, ref, watch } from "vue";
+import { durationLabel } from "~/utils/duration";
 import { VIDEO_PLACEHOLDER_LABEL } from "~/utils/itemContent";
 
 const feedStore = useFeedStore();
@@ -40,8 +40,16 @@ const podcastTotalLabel = computed(() => {
 });
 
 // Feed thumbnails are untrusted cross-origin URLs; on a load failure fall back
-// to the striped placeholder instead of a broken-image glyph.
+// to the striped placeholder instead of a broken-image glyph. This detail view
+// is a single persistent instance reused as the reader navigates between items,
+// so reset the failure flag whenever the active item changes.
 const videoImageFailed = ref(false);
+watch(
+  () => item.value?.id,
+  () => {
+    videoImageFailed.value = false;
+  },
+);
 
 const videoThumbnailUrl = computed(() =>
   item.value?.imageUrl && !videoImageFailed.value ? item.value.imageUrl : null,
@@ -187,7 +195,7 @@ function openOriginal() {
                 v-if="videoThumbnailUrl"
                 class="thumb-img"
                 :src="videoThumbnailUrl"
-                :alt="item.title"
+                alt=""
                 loading="lazy"
                 referrerpolicy="no-referrer"
                 @error="videoImageFailed = true"

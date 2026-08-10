@@ -1,7 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import {
   createPodcastPlayer,
-  durationLabel,
   formatPlaybackTime,
   isPlayableUrl,
   pointerFraction,
@@ -70,20 +69,6 @@ describe("formatPlaybackTime", () => {
   it("guards against invalid input", () => {
     expect(formatPlaybackTime(NaN)).toBe("0:00");
     expect(formatPlaybackTime(-5)).toBe("0:00");
-  });
-});
-
-describe("durationLabel", () => {
-  it("formats a positive duration", () => {
-    expect(durationLabel(754)).toBe("12:34");
-    expect(durationLabel(3661)).toBe("1:01:01");
-  });
-
-  it("returns an empty string for null/undefined/non-numeric/zero durations", () => {
-    expect(durationLabel(null)).toBe("");
-    expect(durationLabel(undefined)).toBe("");
-    expect(durationLabel(0)).toBe("");
-    expect(durationLabel("nope")).toBe("");
   });
 });
 

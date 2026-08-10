@@ -3,6 +3,11 @@
 // mock-only card fields (text/meta/excerpt/views/thumb/progress) are gone on
 // purpose: real feeds never carry them, so cards must render without them.
 
+const PUBLISHED_AT = new Date("2026-01-01T00:00:00Z");
+const READ_AT = new Date("2026-01-02T00:00:00Z");
+const CREATED_AT = new Date("2026-01-01T00:05:00Z");
+const UPDATED_AT = new Date("2026-01-01T00:05:00Z");
+
 export const makeArticle = (overrides: Record<string, unknown> = {}) => ({
   id: 1,
   feedId: 10,
@@ -22,6 +27,11 @@ export const makeArticle = (overrides: Record<string, unknown> = {}) => ({
   content: "First paragraph.\n\nSecond paragraph.",
   mediaUrl: null,
   mediaDuration: null,
+  publishedAt: PUBLISHED_AT,
+  readAt: null,
+  savedAt: null,
+  createdAt: CREATED_AT,
+  updatedAt: UPDATED_AT,
   ...overrides,
 });
 
@@ -44,6 +54,11 @@ export const makeVideo = (overrides: Record<string, unknown> = {}) => ({
   content: "Full video description here.",
   mediaUrl: null,
   mediaDuration: 754,
+  publishedAt: PUBLISHED_AT,
+  readAt: READ_AT,
+  savedAt: null,
+  createdAt: CREATED_AT,
+  updatedAt: UPDATED_AT,
   ...overrides,
 });
 
@@ -66,6 +81,11 @@ export const makeTweet = (overrides: Record<string, unknown> = {}) => ({
   content: "This is a test tweet body text.",
   mediaUrl: null,
   mediaDuration: null,
+  publishedAt: PUBLISHED_AT,
+  readAt: null,
+  savedAt: null,
+  createdAt: CREATED_AT,
+  updatedAt: UPDATED_AT,
   ...overrides,
 });
 
@@ -88,6 +108,11 @@ export const makePodcast = (overrides: Record<string, unknown> = {}) => ({
   content: "Show note one.\n\nShow note two.",
   mediaUrl: "https://podcast.example.com/episode-1.mp3",
   mediaDuration: 2700,
+  publishedAt: PUBLISHED_AT,
+  readAt: READ_AT,
+  savedAt: null,
+  createdAt: CREATED_AT,
+  updatedAt: UPDATED_AT,
   ...overrides,
 });
 

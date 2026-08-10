@@ -114,6 +114,20 @@ describe("PodcastCard", () => {
     expect(wrapper.find(".pod-dur").text()).toBe("");
   });
 
+  it("shows only the current time (no dangling slash) while active with no known duration", () => {
+    stubPlayer({ active: true });
+    const wrapper = shallowMount(PodcastCard, {
+      props: {
+        item: makePodcast({
+          mediaDuration: null,
+          mediaUrl: "https://podcast.example.com/episode-1.mp3",
+        }),
+      },
+    });
+
+    expect(wrapper.find(".pod-dur").text()).toBe("0:00");
+  });
+
   it("renders an excerpt derived from the synced content field", () => {
     stubPlayer();
     const wrapper = shallowMount(PodcastCard, {
