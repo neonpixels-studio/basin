@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { durationLabel } from "~/utils/duration";
 import { VIDEO_PLACEHOLDER_LABEL } from "~/utils/itemContent";
 
@@ -9,8 +9,16 @@ defineEmits(["save", "open"]);
 const appearanceStore = useAppearanceStore();
 const videoRef = ref(null);
 // Feed thumbnails are untrusted cross-origin URLs; on a load failure fall back
-// to the striped placeholder instead of a broken-image glyph.
+// to the striped placeholder instead of a broken-image glyph. Reset the flag if
+// this instance is ever reused for a different thumbnail, so a good image is
+// never suppressed by a previous item's failure.
 const imageFailed = ref(false);
+watch(
+  () => props.item.imageUrl,
+  () => {
+    imageFailed.value = false;
+  },
+);
 
 const thumbnailUrl = computed(() =>
   props.item.imageUrl && !imageFailed.value ? props.item.imageUrl : null,
@@ -110,13 +118,6 @@ function handleVideoClick(event) {
 }
 .ratio-1x1 {
   aspect-ratio: 1/1;
-}
-.thumb-img {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
 }
 .thumb-video {
   position: absolute;

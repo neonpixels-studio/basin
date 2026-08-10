@@ -73,6 +73,21 @@ describe("VideoCard", () => {
     expect(wrapper.find(".thumb").classes()).toContain("ph");
   });
 
+  it("restores the thumbnail when the instance is reused for a new item image", async () => {
+    const wrapper = shallowMount(VideoCard, {
+      props: {
+        item: makeVideo({ imageUrl: "https://example.com/broken.jpg" }),
+      },
+    });
+    await wrapper.find("img.thumb-img").trigger("error");
+    expect(wrapper.find("img.thumb-img").exists()).toBe(false);
+
+    await wrapper.setProps({
+      item: makeVideo({ id: 99, imageUrl: "https://example.com/ok.jpg" }),
+    });
+    expect(wrapper.find("img.thumb-img").exists()).toBe(true);
+  });
+
   describe("autoplay wiring", () => {
     it("renders a video element when autoplay is off and item has a mediaUrl", () => {
       appearanceStore.state.autoplay = false;

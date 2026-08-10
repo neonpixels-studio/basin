@@ -339,6 +339,15 @@ body {
   display: grid;
   place-items: center;
 }
+/* real thumbnail image filling a .thumb box — shared by the video card and the
+   reader detail view, so it lives here rather than in one component's styles */
+.thumb-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
 .ph::after {
   content: attr(data-label);
   font-family: var(--font-mono);
