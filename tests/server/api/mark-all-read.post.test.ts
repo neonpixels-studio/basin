@@ -60,4 +60,11 @@ describe("POST /api/mark-all-read", () => {
     ).rejects.toMatchObject({ statusCode: 400 });
     expect(mockMarkAllItemsRead).not.toHaveBeenCalled();
   });
+
+  it("throws 400 for an explicit null filter instead of widening to account-wide", async () => {
+    await expect(
+      handler(makeEvent({ id: 1 }, { filter: null })),
+    ).rejects.toMatchObject({ statusCode: 400 });
+    expect(mockMarkAllItemsRead).not.toHaveBeenCalled();
+  });
 });

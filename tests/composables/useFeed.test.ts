@@ -6,6 +6,7 @@ import {
   FEED_ITEMS_TIMEOUT_MS,
   MARK_ALL_READ_TIMEOUT_MS,
 } from "~/stores/feed";
+import { VALID_MARK_ALL_READ_FILTERS } from "../../server/utils/markAllRead";
 import { makeFeed, makeConnection } from "../fixtures";
 
 const item = (overrides: Record<string, unknown> = {}) => ({
@@ -806,6 +807,30 @@ describe("useFeedStore", () => {
 
         expect(savedItem.unread).toBe(false);
         expect(unsavedItem.unread).toBe(true);
+      });
+
+      it("every dashboard filter id is accepted by the server endpoint", () => {
+        // Guards against drift: adding a filter chip whose id the server does
+        // not recognize would make "Mark all read" 400 under that filter.
+        const unknown = feed.filterDefs.filter(
+          (def) => !VALID_MARK_ALL_READ_FILTERS.has(def.id),
+        );
+        expect(unknown).toEqual([]);
+      });
+
+      it("ignores a second call while the first is still in flight", async () => {
+        state.items = [item({ feedId: 1, guid: "g1", unread: true })];
+
+        // The guard flips synchronously at the top of markAllRead, so a second
+        // call issued before the first resolves is a no-op — only one request.
+        const first = feed.markAllRead();
+        const second = feed.markAllRead();
+        await Promise.all([first, second]);
+
+        const markAllCalls = vi
+          .mocked(globalThis.$fetch)
+          .mock.calls.filter((call) => call[0] === "/api/mark-all-read");
+        expect(markAllCalls).toHaveLength(1);
       });
 
       it("rolls back and toasts when the request times out", async () => {

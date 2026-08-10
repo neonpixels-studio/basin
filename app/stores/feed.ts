@@ -62,6 +62,7 @@ export const useFeedStore = defineStore("feed", () => {
   };
   let initialized = false;
   let refreshing = false;
+  let markingAllRead = false;
 
   const filterDefs = [
     { id: "all", label: "All", c: "var(--accent)" },
@@ -405,6 +406,8 @@ export const useFeedStore = defineStore("feed", () => {
   // to reach items the client never loaded. It mirrors refresh()/triggerFeedSync,
   // the store's other account-wide server call. Trade-off: no offline replay —
   // an offline click rolls back and toasts, rather than being queued.
+  // @todo add an account-scoped markAllRead action to the sync outbox so an
+  // offline click replays on reconnect instead of failing.
   async function requestMarkAllRead(filter: string): Promise<void> {
     const headers = await buildAuthHeaders();
     await $fetchWithTimeout("/api/mark-all-read", MARK_ALL_READ_TIMEOUT_MS, {
@@ -418,6 +421,13 @@ export const useFeedStore = defineStore("feed", () => {
   // via a single account-scoped request, not one per loaded row — so items
   // beyond the currently-paginated page are marked too and the toast is honest.
   async function markAllRead() {
+    // Guard against overlapping account-wide requests (e.g. a double-click):
+    // a second, empty optimistic pass whose rollback could resurrect items an
+    // earlier request already marked read server-side. Mirrors refresh().
+    if (markingAllRead) {
+      return;
+    }
+    markingAllRead = true;
     const { showToast } = useToast();
     const filter = state.filter;
     const affected = state.items.filter(
@@ -436,6 +446,8 @@ export const useFeedStore = defineStore("feed", () => {
         i.unread = true;
       });
       showToast(MARK_ALL_READ_ERROR_MESSAGE);
+    } finally {
+      markingAllRead = false;
     }
   }
 

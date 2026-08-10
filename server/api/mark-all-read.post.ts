@@ -3,10 +3,12 @@ import {
   VALID_MARK_ALL_READ_FILTERS,
 } from "../utils/markAllRead";
 
-// Absent means "all"; a present filter must be a recognized dashboard filter id
-// so a typo or a never-added mapping fails loudly instead of marking nothing.
+// An absent key means "all"; any present value (including null) must be a
+// recognized dashboard filter id, so a typo, a null, or a never-added mapping
+// fails loudly with a 400 instead of silently widening to an irreversible
+// account-wide update or marking nothing.
 function parseFilter(raw: unknown): string | undefined {
-  if (raw === undefined || raw === null) {
+  if (raw === undefined) {
     return undefined;
   }
   if (typeof raw === "string" && VALID_MARK_ALL_READ_FILTERS.has(raw)) {
