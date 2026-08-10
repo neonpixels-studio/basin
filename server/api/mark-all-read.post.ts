@@ -1,4 +1,22 @@
-import { markAllItemsRead } from "../utils/markAllRead";
+import {
+  markAllItemsRead,
+  VALID_MARK_ALL_READ_FILTERS,
+} from "../utils/markAllRead";
+
+// Absent means "all"; a present filter must be a recognized dashboard filter id
+// so a typo or a never-added mapping fails loudly instead of marking nothing.
+function parseFilter(raw: unknown): string | undefined {
+  if (raw === undefined || raw === null) {
+    return undefined;
+  }
+  if (typeof raw === "string" && VALID_MARK_ALL_READ_FILTERS.has(raw)) {
+    return raw;
+  }
+  throw createError({
+    statusCode: 400,
+    statusMessage: `Unknown mark-all-read filter: ${String(raw)}`,
+  });
+}
 
 export default defineEventHandler(async (event) => {
   const user = event.context.user;
@@ -7,8 +25,8 @@ export default defineEventHandler(async (event) => {
   }
 
   const body = await readBody<{ filter?: unknown }>(event);
-  const filter = typeof body?.filter === "string" ? body.filter : undefined;
+  const filter = parseFilter(body?.filter);
 
-  const marked = await markAllItemsRead(user.id, { filter });
-  return { ok: true, marked };
+  await markAllItemsRead(user.id, { filter });
+  return { ok: true };
 });

@@ -1,6 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-vi.mock("../../../server/utils/markAllRead");
+vi.mock("../../../server/utils/markAllRead", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../../../server/utils/markAllRead")>();
+  return { ...actual, markAllItemsRead: vi.fn() };
+});
 
 import { markAllItemsRead } from "../../../server/utils/markAllRead";
 import handler from "../../../server/api/mark-all-read.post";
@@ -16,8 +20,8 @@ function makeEvent(
 
 describe("POST /api/mark-all-read", () => {
   beforeEach(() => {
-    vi.resetAllMocks();
-    mockMarkAllItemsRead.mockResolvedValue(0);
+    vi.clearAllMocks();
+    mockMarkAllItemsRead.mockResolvedValue(undefined);
   });
 
   it("throws 401 when unauthenticated", async () => {
@@ -27,28 +31,33 @@ describe("POST /api/mark-all-read", () => {
     expect(mockMarkAllItemsRead).not.toHaveBeenCalled();
   });
 
-  it("marks all read for the authenticated user and returns the count", async () => {
-    mockMarkAllItemsRead.mockResolvedValue(12);
-
+  it("marks all read for the authenticated user with no filter", async () => {
     const result = await handler(makeEvent({ id: 42 }));
 
     expect(mockMarkAllItemsRead).toHaveBeenCalledWith(42, {
       filter: undefined,
     });
-    expect(result).toEqual({ ok: true, marked: 12 });
+    expect(result).toEqual({ ok: true });
   });
 
-  it("passes a string filter through to the bulk update", async () => {
+  it("passes a recognized filter through to the bulk update", async () => {
     await handler(makeEvent({ id: 1 }, { filter: "podcast" }));
     expect(mockMarkAllItemsRead).toHaveBeenCalledWith(1, {
       filter: "podcast",
     });
   });
 
-  it("ignores a non-string filter", async () => {
-    await handler(makeEvent({ id: 1 }, { filter: 123 }));
-    expect(mockMarkAllItemsRead).toHaveBeenCalledWith(1, {
-      filter: undefined,
-    });
+  it("throws 400 for an unrecognized filter instead of marking nothing", async () => {
+    await expect(
+      handler(makeEvent({ id: 1 }, { filter: "bogus" })),
+    ).rejects.toMatchObject({ statusCode: 400 });
+    expect(mockMarkAllItemsRead).not.toHaveBeenCalled();
+  });
+
+  it("throws 400 for a non-string filter", async () => {
+    await expect(
+      handler(makeEvent({ id: 1 }, { filter: 123 })),
+    ).rejects.toMatchObject({ statusCode: 400 });
+    expect(mockMarkAllItemsRead).not.toHaveBeenCalled();
   });
 });

@@ -22,8 +22,9 @@ export const FEED_SYNC_TIMEOUT_MS = 15000;
 export const FEED_ITEMS_TIMEOUT_MS = 15000;
 
 // Bounds the account-scoped /api/mark-all-read request so a never-settling
-// response can't wedge the caller.
-const MARK_ALL_READ_TIMEOUT_MS = 15000;
+// response can't wedge the caller. Exported so tests advance their fake timers
+// by the exact same value.
+export const MARK_ALL_READ_TIMEOUT_MS = 15000;
 
 export const useFeedStore = defineStore("feed", () => {
   const { getToken } = useAuth();
@@ -73,21 +74,33 @@ export const useFeedStore = defineStore("feed", () => {
 
   const skeletonKinds = ["article", "video", "tweet", "podcast", "article"];
 
+  // Single predicate for "does this item belong to dashboard filter <id>",
+  // shared by visibleItems, countFor, and the mark-all-read optimistic update.
+  function itemMatchesFilter(
+    item: Record<string, unknown>,
+    filter: string,
+  ): boolean {
+    if (filter === "all") {
+      return true;
+    }
+    if (filter === "saved") {
+      return item.saved === true;
+    }
+    return item.type === filter;
+  }
+
   const unreadCount = computed(
     () => state.items.filter((i: Record<string, unknown>) => i.unread).length,
   );
 
   const visibleItems = computed(() => {
     let list = state.items;
-    if (state.unreadOnly)
+    if (state.unreadOnly) {
       list = list.filter((i: Record<string, unknown>) => i.unread);
-    if (state.filter === "saved")
-      return list.filter((i: Record<string, unknown>) => i.saved);
-    if (state.filter !== "all")
-      return list.filter(
-        (i: Record<string, unknown>) => i.type === state.filter,
-      );
-    return list;
+    }
+    return list.filter((i: Record<string, unknown>) =>
+      itemMatchesFilter(i, state.filter),
+    );
   });
 
   const decks = computed(() => {
@@ -340,11 +353,9 @@ export const useFeedStore = defineStore("feed", () => {
   }
 
   function countFor(id: string) {
-    if (id === "all") return state.items.length;
-    if (id === "saved")
-      return state.items.filter((i: Record<string, unknown>) => i.saved).length;
-    return state.items.filter((i: Record<string, unknown>) => i.type === id)
-      .length;
+    return state.items.filter((i: Record<string, unknown>) =>
+      itemMatchesFilter(i, id),
+    ).length;
   }
 
   const SYNC_ERROR_MESSAGE = "Could not queue change for sync";
@@ -388,21 +399,12 @@ export const useFeedStore = defineStore("feed", () => {
     }
   }
 
-  // Whether a loaded item falls under the active filter, so an optimistic
-  // "mark all read" only clears the rows the server call will actually touch.
-  function itemMatchesFilter(
-    item: Record<string, unknown>,
-    filter: string,
-  ): boolean {
-    if (filter === "all") {
-      return true;
-    }
-    if (filter === "saved") {
-      return item.saved === true;
-    }
-    return item.type === filter;
-  }
-
+  // Deliberately a direct request, not a useSyncQueue().queueAction like the
+  // per-item mutations: the queue models one row (feedId + guid) per action,
+  // whereas this is a single account-scoped bulk update whose whole purpose is
+  // to reach items the client never loaded. It mirrors refresh()/triggerFeedSync,
+  // the store's other account-wide server call. Trade-off: no offline replay —
+  // an offline click rolls back and toasts, rather than being queued.
   async function requestMarkAllRead(filter: string): Promise<void> {
     const headers = await buildAuthHeaders();
     await $fetchWithTimeout("/api/mark-all-read", MARK_ALL_READ_TIMEOUT_MS, {

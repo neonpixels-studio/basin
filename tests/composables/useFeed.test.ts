@@ -4,6 +4,7 @@ import {
   useFeedStore,
   FEED_SYNC_TIMEOUT_MS,
   FEED_ITEMS_TIMEOUT_MS,
+  MARK_ALL_READ_TIMEOUT_MS,
 } from "~/stores/feed";
 import { makeFeed, makeConnection } from "../fixtures";
 
@@ -780,6 +781,48 @@ describe("useFeedStore", () => {
         await feed.markAllRead();
 
         expect(state.items.every((i) => !i.unread)).toBe(true);
+      });
+
+      it("leaves items outside the active type filter untouched", async () => {
+        state.filter = "podcast";
+        const article = item({ type: "article", unread: true });
+        const podcast = item({ type: "podcast", unread: true });
+        state.items = [article, podcast];
+
+        await feed.markAllRead();
+
+        // Only the filtered-in podcast is optimistically cleared.
+        expect(podcast.unread).toBe(false);
+        expect(article.unread).toBe(true);
+      });
+
+      it("under the saved filter, leaves unsaved unread items untouched", async () => {
+        state.filter = "saved";
+        const savedItem = item({ unread: true, saved: true });
+        const unsavedItem = item({ unread: true, saved: false });
+        state.items = [savedItem, unsavedItem];
+
+        await feed.markAllRead();
+
+        expect(savedItem.unread).toBe(false);
+        expect(unsavedItem.unread).toBe(true);
+      });
+
+      it("rolls back and toasts when the request times out", async () => {
+        // A request that never settles must reject via the timeout guard, then
+        // roll the optimistic change back — not hang the store forever.
+        vi.mocked(globalThis.$fetch).mockReturnValue(new Promise(() => {}));
+        const unreadItem = item({ feedId: 1, guid: "g1", unread: true });
+        state.items = [unreadItem];
+
+        const pending = feed.markAllRead();
+        await vi.advanceTimersByTimeAsync(MARK_ALL_READ_TIMEOUT_MS);
+        await pending;
+
+        expect(unreadItem.unread).toBe(true);
+        expect(showToast).toHaveBeenCalledWith(
+          "Could not mark all as read — please try again",
+        );
       });
 
       it("rolls back optimistic changes and shows a toast when the request fails", async () => {

@@ -7,6 +7,15 @@ import { FEED_SOURCE_TO_ITEM_TYPE } from "../../app/utils/feedSources";
 export const ALL_FILTER = "all";
 export const SAVED_FILTER = "saved";
 
+// Every filter id the endpoint accepts: the two non-source views plus each
+// item type produced by a known feed source. Anything else is rejected up front
+// (fail loud) rather than silently marking nothing read.
+export const VALID_MARK_ALL_READ_FILTERS = new Set<string>([
+  ALL_FILTER,
+  SAVED_FILTER,
+  ...Object.values(FEED_SOURCE_TO_ITEM_TYPE),
+]);
+
 export interface MarkAllReadOptions {
   // A dashboard filter id (feed.ts filterDefs). When omitted or "all", every
   // unread item in the account is marked read; otherwise the update is scoped
@@ -62,20 +71,21 @@ function savedOnlyCondition(filter: string | undefined) {
 
 // Account-scoped bulk mark-as-read: marks every unread feed item the user owns
 // (optionally narrowed to the active dashboard filter) read in a single update,
-// independent of what the client has paginated in. Returns the number of items
-// actually flipped so the caller can report an honest count.
+// independent of what the client has paginated in. No .returning() — the count
+// is unused by callers and streaming one row per marked item back over the Neon
+// HTTP driver defeats the point of an intentionally unbounded operation.
 export async function markAllItemsRead(
   userId: number,
   options: MarkAllReadOptions = {},
-): Promise<number> {
+): Promise<void> {
   const db = useDb();
   const feedIds = await selectUserFeedIds(db, userId, options.filter);
   if (feedIds.length === 0) {
-    return 0;
+    return;
   }
 
   const readAt = new Date();
-  const updated = await db
+  await db
     .update(feedItems)
     .set({ readAt })
     .where(
@@ -84,8 +94,5 @@ export async function markAllItemsRead(
         isNull(feedItems.readAt),
         savedOnlyCondition(options.filter),
       ),
-    )
-    .returning({ id: feedItems.id });
-
-  return updated.length;
+    );
 }

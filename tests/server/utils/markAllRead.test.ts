@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { PgDialect } from "drizzle-orm/pg-core";
 
 const mockSelect = vi.fn();
 const mockFrom = vi.fn();
@@ -7,7 +8,6 @@ const mockSelectWhere = vi.fn();
 const mockUpdate = vi.fn();
 const mockSet = vi.fn();
 const mockUpdateWhere = vi.fn();
-const mockReturning = vi.fn();
 
 vi.stubGlobal("useDb", () => ({
   select: mockSelect,
@@ -16,41 +16,17 @@ vi.stubGlobal("useDb", () => ({
 
 import { markAllItemsRead } from "../../../server/utils/markAllRead";
 
-// Drizzle SQL objects hold circular references, so collect primitive leaves by
-// walking queryChunks recursively (mirrors tests/server/api/sync.post.test.ts).
-function collectLeaves(node: unknown, seen = new Set<unknown>()): unknown[] {
-  if (node === null || node === undefined) {
-    return [];
-  }
-  if (typeof node !== "object") {
-    return [node];
-  }
-  if (seen.has(node)) {
-    return [];
-  }
-  seen.add(node);
-  if (Array.isArray(node)) {
-    return node.flatMap((item) => collectLeaves(item, seen));
-  }
-  const obj = node as Record<string, unknown>;
-  if (obj.queryChunks !== undefined) {
-    return collectLeaves(obj.queryChunks, seen);
-  }
-  if (obj.value !== undefined) {
-    return collectLeaves(obj.value, seen);
-  }
-  if (obj.name !== undefined) {
-    return [obj.name];
-  }
-  return [];
+// Render the drizzle SQL condition passed to a mocked .where() into real SQL so
+// assertions pin the operator (is null / is not null / in), not just the column
+// name — an isNull→isNotNull swap must fail the test.
+const dialect = new PgDialect();
+
+function renderUpdateWhere(): { sql: string; params: unknown[] } {
+  return dialect.sqlToQuery(mockUpdateWhere.mock.calls[0][0]);
 }
 
-function updateWhereLeaves(): unknown[] {
-  return collectLeaves(mockUpdateWhere.mock.calls[0][0]);
-}
-
-function selectWhereLeaves(): unknown[] {
-  return collectLeaves(mockSelectWhere.mock.calls[0][0]);
+function renderSelectWhere(): { sql: string; params: unknown[] } {
+  return dialect.sqlToQuery(mockSelectWhere.mock.calls[0][0]);
 }
 
 describe("markAllItemsRead", () => {
@@ -62,18 +38,21 @@ describe("markAllItemsRead", () => {
 
     mockUpdate.mockReturnValue({ set: mockSet });
     mockSet.mockReturnValue({ where: mockUpdateWhere });
-    mockUpdateWhere.mockReturnValue({ returning: mockReturning });
-    mockReturning.mockResolvedValue([{ id: 10 }, { id: 11 }, { id: 12 }]);
+    mockUpdateWhere.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
     vi.useRealTimers();
   });
 
-  it("returns the number of items actually flipped to read", async () => {
-    const marked = await markAllItemsRead(1);
-    expect(marked).toBe(3);
+  it("issues a single update over the resolved feed ids", async () => {
+    await markAllItemsRead(1);
     expect(mockUpdate).toHaveBeenCalledTimes(1);
+
+    const { sql, params } = renderUpdateWhere();
+    expect(sql).toContain('"feed_id" in');
+    expect(params).toContain(1);
+    expect(params).toContain(2);
   });
 
   it("sets readAt to now, marking items read", async () => {
@@ -86,58 +65,54 @@ describe("markAllItemsRead", () => {
     expect(mockSet).toHaveBeenCalledWith({ readAt: now });
   });
 
-  it("only touches unread items (read_at IS NULL) owned by the user", async () => {
+  it("only touches unread items (read_at IS NULL), never already-read ones", async () => {
+    await markAllItemsRead(1);
+    // Fails if isNull(readAt) is swapped for isNotNull (would read "is not null").
+    expect(renderUpdateWhere().sql).toContain('"read_at" is null');
+  });
+
+  it("scopes the feed lookup to the user", async () => {
     await markAllItemsRead(7);
-
-    // Ownership scoping: the feed lookup filters on user_id.
-    expect(selectWhereLeaves()).toContain("user_id");
-    expect(selectWhereLeaves()).toContain(7);
-
-    // The update is bounded to the resolved feed ids and unread rows only.
-    const leaves = updateWhereLeaves();
-    expect(leaves).toContain("feed_id");
-    expect(leaves).toContain("read_at");
-    expect(leaves).toContain(1);
-    expect(leaves).toContain(2);
+    const { sql, params } = renderSelectWhere();
+    expect(sql).toContain('"user_id"');
+    expect(params).toContain(7);
   });
 
   it("scopes to the filter's feed sources for a type filter", async () => {
     await markAllItemsRead(1, { filter: "article" });
-
-    const leaves = selectWhereLeaves();
-    expect(leaves).toContain("source");
+    const { sql, params } = renderSelectWhere();
+    expect(sql).toContain('"source" in');
     // "article" items come from "rss" feeds (FEED_SOURCE_TO_ITEM_TYPE).
-    expect(leaves).toContain("rss");
+    expect(params).toContain("rss");
   });
 
   it("maps the tweet filter to both tweet and bluesky sources", async () => {
     await markAllItemsRead(1, { filter: "tweet" });
-
-    const leaves = selectWhereLeaves();
-    expect(leaves).toContain("tweet");
-    expect(leaves).toContain("bluesky");
+    const { params } = renderSelectWhere();
+    expect(params).toContain("tweet");
+    expect(params).toContain("bluesky");
   });
 
   it("narrows to saved items (saved_at IS NOT NULL) for the saved filter", async () => {
     await markAllItemsRead(1, { filter: "saved" });
 
     // "saved" is not a source, so the feed lookup stays unscoped by source...
-    expect(selectWhereLeaves()).not.toContain("source");
-    // ...but the item update is narrowed to saved rows.
-    expect(updateWhereLeaves()).toContain("saved_at");
+    expect(renderSelectWhere().sql).not.toContain('"source"');
+    // ...but the item update is narrowed to saved rows. Fails if isNotNull is
+    // swapped for isNull.
+    expect(renderUpdateWhere().sql).toContain('"saved_at" is not null');
   });
 
   it("does not restrict sources for the all filter", async () => {
     await markAllItemsRead(1, { filter: "all" });
-    expect(selectWhereLeaves()).not.toContain("source");
+    expect(renderSelectWhere().sql).not.toContain('"source"');
   });
 
-  it("skips the update and returns 0 when the user owns no matching feeds", async () => {
+  it("skips the update entirely when the user owns no matching feeds", async () => {
     mockSelectWhere.mockResolvedValue([]);
 
-    const marked = await markAllItemsRead(1);
+    await markAllItemsRead(1);
 
-    expect(marked).toBe(0);
     expect(mockUpdate).not.toHaveBeenCalled();
   });
 });
