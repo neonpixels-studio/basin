@@ -21,6 +21,10 @@ export const FEED_SYNC_TIMEOUT_MS = 15000;
 // advance their fake timers by the exact same value.
 export const FEED_ITEMS_TIMEOUT_MS = 15000;
 
+// Bounds the account-scoped /api/mark-all-read request so a never-settling
+// response can't wedge the caller.
+const MARK_ALL_READ_TIMEOUT_MS = 15000;
+
 export const useFeedStore = defineStore("feed", () => {
   const { getToken } = useAuth();
 
@@ -344,6 +348,8 @@ export const useFeedStore = defineStore("feed", () => {
   }
 
   const SYNC_ERROR_MESSAGE = "Could not queue change for sync";
+  const MARK_ALL_READ_ERROR_MESSAGE =
+    "Could not mark all as read — please try again";
 
   async function toggleSave(item: Record<string, unknown>) {
     const { showToast } = useToast();
@@ -382,29 +388,52 @@ export const useFeedStore = defineStore("feed", () => {
     }
   }
 
+  // Whether a loaded item falls under the active filter, so an optimistic
+  // "mark all read" only clears the rows the server call will actually touch.
+  function itemMatchesFilter(
+    item: Record<string, unknown>,
+    filter: string,
+  ): boolean {
+    if (filter === "all") {
+      return true;
+    }
+    if (filter === "saved") {
+      return item.saved === true;
+    }
+    return item.type === filter;
+  }
+
+  async function requestMarkAllRead(filter: string): Promise<void> {
+    const headers = await buildAuthHeaders();
+    await $fetchWithTimeout("/api/mark-all-read", MARK_ALL_READ_TIMEOUT_MS, {
+      method: "POST",
+      headers,
+      body: { filter },
+    });
+  }
+
+  // Marks every unread item in the account (scoped to the active filter) read
+  // via a single account-scoped request, not one per loaded row — so items
+  // beyond the currently-paginated page are marked too and the toast is honest.
   async function markAllRead() {
     const { showToast } = useToast();
-    const unreadItems = state.items.filter(
-      (i: Record<string, unknown>) => i.unread === true,
+    const filter = state.filter;
+    const affected = state.items.filter(
+      (i: Record<string, unknown>) =>
+        i.unread === true && itemMatchesFilter(i, filter),
     );
-    unreadItems.forEach((i: Record<string, unknown>) => {
+    affected.forEach((i: Record<string, unknown>) => {
       i.unread = false;
     });
     showToast("Marked all as read");
 
-    const { queueAction } = useSyncQueue();
-    const now = new Date().toISOString();
-    for (const feedItem of unreadItems) {
-      try {
-        await queueAction("markRead", {
-          feedId: feedItem.feedId,
-          guid: feedItem.guid,
-          readAt: now,
-        });
-      } catch {
-        feedItem.unread = true;
-        showToast(SYNC_ERROR_MESSAGE);
-      }
+    try {
+      await requestMarkAllRead(filter);
+    } catch {
+      affected.forEach((i: Record<string, unknown>) => {
+        i.unread = true;
+      });
+      showToast(MARK_ALL_READ_ERROR_MESSAGE);
     }
   }
 
