@@ -7,8 +7,8 @@ exports[`ArticleCard > matches snapshot 1`] = `
     <card-actions-stub item="[object Object]"></card-actions-stub>
   </div>
   <h3 class="card-title">Test Article Title</h3>
-  <p class="card-excerpt">A brief excerpt of the article content.</p>
-  <div class="card-foot"><span class="card-meta">5 min read</span>
+  <p class="card-excerpt">First paragraph. Second paragraph.</p>
+  <div class="card-foot">
     <div class="chips"><span class="chip">#design</span><span class="chip">#web</span></div>
   </div>
 </article>"

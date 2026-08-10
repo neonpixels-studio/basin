@@ -1,11 +1,19 @@
 <script setup>
-import { ref } from "vue";
+import { computed, ref } from "vue";
+import { formatPlaybackTime } from "~/composables/usePodcastPlayer";
 
-defineProps({ item: { type: Object, required: true } });
+const props = defineProps({ item: { type: Object, required: true } });
 defineEmits(["save", "open"]);
 
 const appearanceStore = useAppearanceStore();
 const videoRef = ref(null);
+
+const thumbnailUrl = computed(() => props.item.imageUrl || null);
+
+const durationLabel = computed(() => {
+  const seconds = Number(props.item.mediaDuration) || 0;
+  return seconds > 0 ? formatPlaybackTime(seconds) : "";
+});
 
 function handleMouseEnter() {
   if (appearanceStore.state.autoplay && videoRef.value) {
@@ -35,12 +43,22 @@ function handleVideoClick(event) {
     @mouseenter="handleMouseEnter"
     @mouseleave="handleMouseLeave"
   >
-    <div class="thumb ph ratio-16x9" :data-label="item.thumb">
+    <div
+      class="thumb ratio-16x9"
+      :class="{ ph: !thumbnailUrl }"
+      :data-label="thumbnailUrl ? undefined : 'video'"
+    >
+      <img
+        v-if="thumbnailUrl"
+        class="thumb-img"
+        :src="thumbnailUrl"
+        :alt="item.title"
+      />
       <video
-        v-if="item.videoUrl"
+        v-if="item.mediaUrl"
         ref="videoRef"
         class="thumb-video"
-        :src="item.videoUrl"
+        :src="item.mediaUrl"
         :controls="!appearanceStore.state.autoplay"
         :tabindex="appearanceStore.state.autoplay ? -1 : 0"
         :aria-hidden="appearanceStore.state.autoplay ? 'true' : undefined"
@@ -51,7 +69,7 @@ function handleVideoClick(event) {
         @click="handleVideoClick"
       ></video>
       <span class="thumb-play"><RIcon name="play" :size="22" /></span>
-      <span class="thumb-dur">{{ item.meta }}</span>
+      <span v-if="durationLabel" class="thumb-dur">{{ durationLabel }}</span>
     </div>
     <div class="card-body">
       <div class="card-head">
@@ -59,7 +77,6 @@ function handleVideoClick(event) {
         <CardActions :item="item" @save="$emit('save')" @open="$emit('open')" />
       </div>
       <h3 class="card-title">{{ item.title }}</h3>
-      <span class="card-meta">{{ item.views }}</span>
     </div>
   </article>
 </template>
@@ -83,6 +100,13 @@ function handleVideoClick(event) {
 }
 .ratio-1x1 {
   aspect-ratio: 1/1;
+}
+.thumb-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 .thumb-video {
   position: absolute;

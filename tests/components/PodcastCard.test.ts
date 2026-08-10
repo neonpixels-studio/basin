@@ -99,10 +99,37 @@ describe("PodcastCard", () => {
   it("shows the total duration formatted from mediaDuration when idle", () => {
     stubPlayer();
     const wrapper = shallowMount(PodcastCard, {
-      props: { item: makePodcast({ mediaDuration: 3661, meta: "ignored" }) },
+      props: { item: makePodcast({ mediaDuration: 3661 }) },
     });
 
     expect(wrapper.find(".pod-dur").text()).toBe("1:01:01");
+  });
+
+  it("shows an empty duration when idle with no mediaDuration (no meta fallback)", () => {
+    stubPlayer();
+    const wrapper = shallowMount(PodcastCard, {
+      props: { item: makePodcast({ mediaDuration: null }) },
+    });
+
+    expect(wrapper.find(".pod-dur").text()).toBe("");
+  });
+
+  it("renders an excerpt derived from the synced content field", () => {
+    stubPlayer();
+    const wrapper = shallowMount(PodcastCard, {
+      props: { item: makePodcast({ content: "Note one.\n\nNote two." }) },
+    });
+
+    expect(wrapper.find(".card-excerpt").text()).toBe("Note one. Note two.");
+  });
+
+  it("does not render mock-only fields (excerpt/meta)", () => {
+    stubPlayer();
+    const wrapper = shallowMount(PodcastCard, {
+      props: { item: makePodcast({ content: "Body." }) },
+    });
+
+    expect(wrapper.html()).not.toContain("undefined");
   });
 
   it("seeks via the progress bar with the episode media URL", async () => {

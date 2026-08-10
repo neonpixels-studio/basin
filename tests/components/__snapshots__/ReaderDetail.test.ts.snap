@@ -25,7 +25,7 @@ exports[`ReaderDetail > matches snapshot (with active article) 1`] = `
       <article class="p-7 sm:p-9">
         <div class="mb-4 flex flex-wrap items-center gap-2"><span class="chip">#design</span><span class="chip">#web</span></div>
         <h1 class="detail-title mb-4">Test Article Title</h1>
-        <div class="text-muted mb-7 pb-7 text-[12.5px]" style="border-bottom-width: var(--border); border-bottom-style: var(--border); border-bottom-color: var(--border);">Test Source · 5 min read · 2h ago </div>
+        <div class="text-muted mb-7 pb-7 text-[12.5px]" style="border-bottom-width: var(--border); border-bottom-style: var(--border); border-bottom-color: var(--border);">Test Source · 2h ago </div>
         <detail-prose-stub paragraphs="First paragraph.,Second paragraph." emptytext="No article text was included in this feed. Open the original to read the full piece."></detail-prose-stub><a href="https://test.example.com/article-1" target="_blank" rel="noopener noreferrer" class="btn mt-8">
           <r-icon-stub name="external" size="15"></r-icon-stub> Open original
         </a>
@@ -141,10 +141,10 @@ exports[`ReaderDetail > matches snapshot (with active video) 1`] = `
       <!-- ARTICLE -->
       <!-- VIDEO -->
       <div>
-        <div class="ph ratio-16x9" data-label="https://example.com/thumb.jpg" style="border-radius: 0px;"><span class="thumb-play" style="width: 64px; height: 64px;"><r-icon-stub name="play" size="28"></r-icon-stub></span><span class="thumb-dur">12:34</span></div>
+        <div class="thumb ratio-16x9" style="border-radius: 0px;"><img class="thumb-img" src="https://example.com/thumb.jpg" alt="Test Video Title"><span class="thumb-play" style="width: 64px; height: 64px;"><r-icon-stub name="play" size="28"></r-icon-stub></span><span class="thumb-dur">12:34</span></div>
         <div class="p-7 sm:p-8">
           <h2 class="detail-title mb-3" style="font-size: 22px;">Test Video Title</h2>
-          <div class="text-muted mb-6 flex flex-wrap items-center gap-2.5 pb-6 text-[12.5px]" style="border-bottom-width: var(--border); border-bottom-style: var(--border); border-bottom-color: var(--border);"><span class="src-ic src-video" style="--c: var(--src-video);"><r-icon-stub name="video" size="13"></r-icon-stub></span><b class="text-ink-2 font-medium">Test Channel</b><span>·</span><span>10K views</span><span>·</span><span>12:34</span></div>
+          <div class="text-muted mb-6 flex flex-wrap items-center gap-2.5 pb-6 text-[12.5px]" style="border-bottom-width: var(--border); border-bottom-style: var(--border); border-bottom-color: var(--border);"><span class="src-ic src-video" style="--c: var(--src-video);"><r-icon-stub name="video" size="13"></r-icon-stub></span><b class="text-ink-2 font-medium">Test Channel</b><span>·</span><span>12:34</span></div>
           <detail-prose-stub paragraphs="Full video description here." emptytext="No description was included for this video."></detail-prose-stub><a href="https://www.youtube.com/watch?v=test123" target="_blank" rel="noopener noreferrer" class="btn btn-primary mt-7">
             <r-icon-stub name="play" size="15"></r-icon-stub> Watch on YouTube
           </a>

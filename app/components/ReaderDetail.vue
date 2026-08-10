@@ -35,9 +35,14 @@ const podcastTotalLabel = computed(() => {
     return player.formatTime(player.state.duration);
   }
   const mediaDuration = Number(item.value?.mediaDuration) || 0;
-  return mediaDuration > 0
-    ? player.formatTime(mediaDuration)
-    : item.value?.meta || "";
+  return mediaDuration > 0 ? player.formatTime(mediaDuration) : "";
+});
+
+const videoThumbnailUrl = computed(() => item.value?.imageUrl || null);
+
+const videoDurationLabel = computed(() => {
+  const seconds = Number(item.value?.mediaDuration) || 0;
+  return seconds > 0 ? player.formatTime(seconds) : "";
 });
 
 function togglePodcast() {
@@ -145,7 +150,7 @@ function openOriginal() {
               class="text-muted mb-7 pb-7 text-[12.5px]"
               style="border-bottom: 1px solid var(--border)"
             >
-              {{ item.source }} · {{ item.meta }} · {{ item.time }} ago
+              {{ item.source }} · {{ item.time }} ago
             </div>
             <DetailProse
               :paragraphs="paragraphs"
@@ -165,14 +170,23 @@ function openOriginal() {
           <!-- VIDEO -->
           <div v-else-if="item.type === 'video'">
             <div
-              class="ph ratio-16x9"
-              :data-label="item.thumb"
+              class="thumb ratio-16x9"
+              :class="{ ph: !videoThumbnailUrl }"
+              :data-label="videoThumbnailUrl ? undefined : 'video'"
               style="border-radius: 0"
             >
+              <img
+                v-if="videoThumbnailUrl"
+                class="thumb-img"
+                :src="videoThumbnailUrl"
+                :alt="item.title"
+              />
               <span class="thumb-play" style="width: 64px; height: 64px"
                 ><RIcon name="play" :size="28"
               /></span>
-              <span class="thumb-dur">{{ item.meta }}</span>
+              <span v-if="videoDurationLabel" class="thumb-dur">{{
+                videoDurationLabel
+              }}</span>
             </div>
             <div class="p-7 sm:p-8">
               <h2 class="detail-title mb-3" style="font-size: 22px">
@@ -186,8 +200,9 @@ function openOriginal() {
                   ><RIcon name="video" :size="13"
                 /></span>
                 <b class="text-ink-2 font-medium">{{ item.source }}</b
-                ><span>·</span><span>{{ item.views }}</span
-                ><span>·</span><span>{{ item.meta }}</span>
+                ><template v-if="videoDurationLabel"
+                  ><span>·</span><span>{{ videoDurationLabel }}</span></template
+                >
               </div>
               <DetailProse
                 :paragraphs="paragraphs"

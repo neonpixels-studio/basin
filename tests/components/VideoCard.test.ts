@@ -26,11 +26,50 @@ describe("VideoCard", () => {
     expect(wrapper.html()).toMatchSnapshot();
   });
 
+  it("renders the real thumbnail from imageUrl", () => {
+    const wrapper = shallowMount(VideoCard, {
+      props: { item: makeVideo({ imageUrl: "https://example.com/t.jpg" }) },
+    });
+    const image = wrapper.find("img.thumb-img");
+    expect(image.exists()).toBe(true);
+    expect(image.attributes("src")).toBe("https://example.com/t.jpg");
+  });
+
+  it("falls back to the striped placeholder when imageUrl is absent", () => {
+    const wrapper = shallowMount(VideoCard, {
+      props: { item: makeVideo({ imageUrl: null }) },
+    });
+    expect(wrapper.find("img.thumb-img").exists()).toBe(false);
+    expect(wrapper.find(".thumb").classes()).toContain("ph");
+  });
+
+  it("renders the duration formatted from mediaDuration", () => {
+    const wrapper = shallowMount(VideoCard, {
+      props: { item: makeVideo({ mediaDuration: 754 }) },
+    });
+    expect(wrapper.find(".thumb-dur").text()).toBe("12:34");
+  });
+
+  it("renders no duration label when mediaDuration is absent", () => {
+    const wrapper = shallowMount(VideoCard, {
+      props: { item: makeVideo({ mediaDuration: null }) },
+    });
+    expect(wrapper.find(".thumb-dur").exists()).toBe(false);
+  });
+
+  it("does not render mock-only fields (thumb/views/meta)", () => {
+    // A real synced item has no thumb/views/meta; binding them would surface
+    // `undefined` in the output.
+    const wrapper = shallowMount(VideoCard, { props: { item: makeVideo() } });
+    expect(wrapper.html()).not.toContain("undefined");
+    expect(wrapper.find(".card-meta").exists()).toBe(false);
+  });
+
   describe("autoplay wiring", () => {
-    it("renders a video element when autoplay is off and item has a videoUrl", () => {
+    it("renders a video element when autoplay is off and item has a mediaUrl", () => {
       appearanceStore.state.autoplay = false;
       const wrapper = shallowMount(VideoCard, {
-        props: { item: makeVideo({ videoUrl: VIDEO_URL }) },
+        props: { item: makeVideo({ mediaUrl: VIDEO_URL }) },
       });
       expect(wrapper.find("video").exists()).toBe(true);
     });
@@ -38,7 +77,7 @@ describe("VideoCard", () => {
     it("shows controls when autoplay is off so the user can play manually", () => {
       appearanceStore.state.autoplay = false;
       const wrapper = shallowMount(VideoCard, {
-        props: { item: makeVideo({ videoUrl: VIDEO_URL }) },
+        props: { item: makeVideo({ mediaUrl: VIDEO_URL }) },
       });
       expect(wrapper.find("video").attributes("controls")).toBeDefined();
     });
@@ -46,12 +85,12 @@ describe("VideoCard", () => {
     it("hides controls when autoplay is on", () => {
       appearanceStore.state.autoplay = true;
       const wrapper = shallowMount(VideoCard, {
-        props: { item: makeVideo({ videoUrl: VIDEO_URL }) },
+        props: { item: makeVideo({ mediaUrl: VIDEO_URL }) },
       });
       expect(wrapper.find("video").attributes("controls")).toBeUndefined();
     });
 
-    it("does not render a video element when autoplay is on but item has no videoUrl", () => {
+    it("does not render a video element when autoplay is on but item has no mediaUrl", () => {
       appearanceStore.state.autoplay = true;
       const wrapper = shallowMount(VideoCard, {
         props: { item: makeVideo() },
@@ -59,7 +98,7 @@ describe("VideoCard", () => {
       expect(wrapper.find("video").exists()).toBe(false);
     });
 
-    it("does not render a video element when autoplay is off and item has no videoUrl", () => {
+    it("does not render a video element when autoplay is off and item has no mediaUrl", () => {
       appearanceStore.state.autoplay = false;
       const wrapper = shallowMount(VideoCard, {
         props: { item: makeVideo() },
@@ -67,10 +106,10 @@ describe("VideoCard", () => {
       expect(wrapper.find("video").exists()).toBe(false);
     });
 
-    it("renders a video element with muted and playsinline when autoplay is on and item has a videoUrl", () => {
+    it("renders a video element with muted and playsinline when autoplay is on and item has a mediaUrl", () => {
       appearanceStore.state.autoplay = true;
       const wrapper = shallowMount(VideoCard, {
-        props: { item: makeVideo({ videoUrl: VIDEO_URL }) },
+        props: { item: makeVideo({ mediaUrl: VIDEO_URL }) },
       });
       const video = wrapper.find("video");
       expect(video.exists()).toBe(true);
@@ -82,7 +121,7 @@ describe("VideoCard", () => {
     it("renders a video element with the correct src regardless of autoplay setting", () => {
       appearanceStore.state.autoplay = false;
       const wrapper = shallowMount(VideoCard, {
-        props: { item: makeVideo({ videoUrl: VIDEO_URL }) },
+        props: { item: makeVideo({ mediaUrl: VIDEO_URL }) },
       });
       expect(wrapper.find("video").attributes("src")).toBe(VIDEO_URL);
     });
@@ -90,7 +129,7 @@ describe("VideoCard", () => {
     it("does not call play on mouseenter when autoplay is off", async () => {
       appearanceStore.state.autoplay = false;
       const wrapper = shallowMount(VideoCard, {
-        props: { item: makeVideo({ videoUrl: VIDEO_URL }) },
+        props: { item: makeVideo({ mediaUrl: VIDEO_URL }) },
       });
       const video = wrapper.find("video").element as HTMLVideoElement;
       const playSpy = vi.spyOn(video, "play").mockResolvedValue(undefined);
@@ -101,7 +140,7 @@ describe("VideoCard", () => {
     it("calls play on mouseenter when autoplay is on", async () => {
       appearanceStore.state.autoplay = true;
       const wrapper = shallowMount(VideoCard, {
-        props: { item: makeVideo({ videoUrl: VIDEO_URL }) },
+        props: { item: makeVideo({ mediaUrl: VIDEO_URL }) },
       });
       const video = wrapper.find("video").element as HTMLVideoElement;
       const playSpy = vi.spyOn(video, "play").mockResolvedValue(undefined);
@@ -112,7 +151,7 @@ describe("VideoCard", () => {
     it("does not pause/reset on mouseleave when autoplay is off", async () => {
       appearanceStore.state.autoplay = false;
       const wrapper = shallowMount(VideoCard, {
-        props: { item: makeVideo({ videoUrl: VIDEO_URL }) },
+        props: { item: makeVideo({ mediaUrl: VIDEO_URL }) },
       });
       const video = wrapper.find("video").element as HTMLVideoElement;
       const pauseSpy = vi.spyOn(video, "pause");
@@ -123,7 +162,7 @@ describe("VideoCard", () => {
     it("pauses and resets on mouseleave when autoplay is on", async () => {
       appearanceStore.state.autoplay = true;
       const wrapper = shallowMount(VideoCard, {
-        props: { item: makeVideo({ videoUrl: VIDEO_URL }) },
+        props: { item: makeVideo({ mediaUrl: VIDEO_URL }) },
       });
       const video = wrapper.find("video").element as HTMLVideoElement;
       const pauseSpy = vi.spyOn(video, "pause");
@@ -136,7 +175,7 @@ describe("VideoCard", () => {
     it("video is not aria-hidden when autoplay is off", () => {
       appearanceStore.state.autoplay = false;
       const wrapper = shallowMount(VideoCard, {
-        props: { item: makeVideo({ videoUrl: VIDEO_URL }) },
+        props: { item: makeVideo({ mediaUrl: VIDEO_URL }) },
       });
       expect(wrapper.find("video").attributes("aria-hidden")).toBeUndefined();
     });
@@ -144,7 +183,7 @@ describe("VideoCard", () => {
     it("video is aria-hidden when autoplay is on", () => {
       appearanceStore.state.autoplay = true;
       const wrapper = shallowMount(VideoCard, {
-        props: { item: makeVideo({ videoUrl: VIDEO_URL }) },
+        props: { item: makeVideo({ mediaUrl: VIDEO_URL }) },
       });
       expect(wrapper.find("video").attributes("aria-hidden")).toBe("true");
     });
@@ -152,7 +191,7 @@ describe("VideoCard", () => {
     it("video click does not emit open when autoplay is off", async () => {
       appearanceStore.state.autoplay = false;
       const wrapper = shallowMount(VideoCard, {
-        props: { item: makeVideo({ videoUrl: VIDEO_URL }) },
+        props: { item: makeVideo({ mediaUrl: VIDEO_URL }) },
       });
       await wrapper.find("video").trigger("click");
       expect(wrapper.emitted("open")).toBeFalsy();

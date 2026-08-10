@@ -6,10 +6,30 @@ import { makeArticle } from "../fixtures";
 describe("ArticleCard", () => {
   const item = makeArticle();
 
-  it("renders title and excerpt", () => {
+  it("renders title and an excerpt derived from the synced content field", () => {
     const wrapper = shallowMount(ArticleCard, { props: { item } });
     expect(wrapper.find(".card-title").text()).toBe(item.title);
-    expect(wrapper.find(".card-excerpt").text()).toBe(item.excerpt);
+    // Real feeds return `content` (never `excerpt`); paragraphs collapse to one line.
+    expect(wrapper.find(".card-excerpt").text()).toBe(
+      "First paragraph. Second paragraph.",
+    );
+  });
+
+  it("renders no excerpt when the synced item has no content", () => {
+    const wrapper = shallowMount(ArticleCard, {
+      props: { item: makeArticle({ content: null }) },
+    });
+    expect(wrapper.find(".card-excerpt").exists()).toBe(false);
+  });
+
+  it("does not render mock-only fields (excerpt/meta)", () => {
+    // Guard against reintroducing item.excerpt / item.meta: a real synced item
+    // carries neither, so binding them would render `undefined` here.
+    const wrapper = shallowMount(ArticleCard, {
+      props: { item: makeArticle({ content: "Real body." }) },
+    });
+    expect(wrapper.html()).not.toContain("undefined");
+    expect(wrapper.find(".card-meta").exists()).toBe(false);
   });
 
   it("applies unread class when item is unread", () => {
