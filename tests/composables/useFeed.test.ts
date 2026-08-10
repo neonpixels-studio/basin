@@ -731,10 +731,7 @@ describe("useFeedStore", () => {
     describe("markAllRead", () => {
       beforeEach(() => {
         vi.mocked(globalThis.$fetch).mockReset();
-        vi.mocked(globalThis.$fetch).mockResolvedValue({
-          ok: true,
-          marked: 0,
-        });
+        vi.mocked(globalThis.$fetch).mockResolvedValue({ ok: true });
       });
 
       it("fires ONE account-scoped bulk request, never one per loaded item", async () => {
@@ -833,21 +830,40 @@ describe("useFeedStore", () => {
         expect(markAllCalls).toHaveLength(1);
       });
 
-      it("rolls back and toasts when the request times out", async () => {
-        // A request that never settles must reject via the timeout guard, then
-        // roll the optimistic change back — not hang the store forever.
-        vi.mocked(globalThis.$fetch).mockReturnValue(new Promise(() => {}));
-        const unreadItem = item({ feedId: 1, guid: "g1", unread: true });
-        state.items = [unreadItem];
+      it("resyncs from the server (not a blind rollback) when the request times out", async () => {
+        // On timeout the bulk update may have committed after we stopped
+        // waiting, so a blind rollback would desync the UI. Instead re-read the
+        // list from the server. The mark-all-read call never settles (forcing
+        // the timeout); the follow-up feed-items read resolves.
+        vi.mocked(globalThis.$fetch).mockImplementation((url: string) => {
+          if (url === "/api/mark-all-read") {
+            return new Promise(() => {});
+          }
+          return Promise.resolve({ items: [], total: 0, nextOffset: null });
+        });
+        state.items = [item({ feedId: 1, guid: "g1", unread: true })];
 
         const pending = feed.markAllRead();
         await vi.advanceTimersByTimeAsync(MARK_ALL_READ_TIMEOUT_MS);
         await pending;
 
-        expect(unreadItem.unread).toBe(true);
+        const reloadCalls = vi
+          .mocked(globalThis.$fetch)
+          .mock.calls.filter((call) => call[0] === "/api/feed-items");
+        expect(reloadCalls).toHaveLength(1);
         expect(showToast).toHaveBeenCalledWith(
-          "Could not mark all as read — please try again",
+          "Still marking as read — refreshing to confirm",
         );
+      });
+
+      it("gives feedback (no silent drop) when a second call is suppressed", async () => {
+        state.items = [item({ feedId: 1, guid: "g1", unread: true })];
+
+        const first = feed.markAllRead();
+        const second = feed.markAllRead();
+        await Promise.all([first, second]);
+
+        expect(showToast).toHaveBeenCalledWith("Still marking as read…");
       });
 
       it("rolls back optimistic changes and shows a toast when the request fails", async () => {

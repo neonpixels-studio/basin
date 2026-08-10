@@ -108,6 +108,14 @@ describe("markAllItemsRead", () => {
     expect(renderSelectWhere().sql).not.toContain('"source"');
   });
 
+  it("resolves to no feeds for an unrecognized item type (empty source list)", async () => {
+    // The endpoint validates filters, but markAllItemsRead is exported for
+    // direct use: an unknown type must render an unmatchable source predicate
+    // (drizzle emits `false` for inArray(col, [])), not throw or match all.
+    await markAllItemsRead(1, { filter: "newsletter" });
+    expect(renderSelectWhere().sql).toContain("false");
+  });
+
   it("skips the update entirely when the user owns no matching feeds", async () => {
     mockSelectWhere.mockResolvedValue([]);
 

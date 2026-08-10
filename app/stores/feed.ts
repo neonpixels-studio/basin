@@ -5,7 +5,7 @@ import {
   connections as seedConnections,
 } from "~/data/mock";
 import { SOURCES } from "~/lib/icons";
-import { $fetchWithTimeout } from "~/utils/fetchWithTimeout";
+import { $fetchWithTimeout, FetchTimeoutError } from "~/utils/fetchWithTimeout";
 
 const clone = (x: unknown) => JSON.parse(JSON.stringify(x));
 
@@ -362,6 +362,11 @@ export const useFeedStore = defineStore("feed", () => {
   const SYNC_ERROR_MESSAGE = "Could not queue change for sync";
   const MARK_ALL_READ_ERROR_MESSAGE =
     "Could not mark all as read — please try again";
+  // A timeout means we stopped waiting, not that the server did nothing — the
+  // bulk update may have committed after we aborted. Resync rather than guess.
+  const MARK_ALL_READ_UNCONFIRMED_MESSAGE =
+    "Still marking as read — refreshing to confirm";
+  const MARK_ALL_READ_IN_FLIGHT_MESSAGE = "Still marking as read…";
 
   async function toggleSave(item: Record<string, unknown>) {
     const { showToast } = useToast();
@@ -420,15 +425,38 @@ export const useFeedStore = defineStore("feed", () => {
   // Marks every unread item in the account (scoped to the active filter) read
   // via a single account-scoped request, not one per loaded row — so items
   // beyond the currently-paginated page are marked too and the toast is honest.
+  // A timeout can't distinguish "server did nothing" from "server committed
+  // after we stopped waiting", so the only honest recovery is to re-read the
+  // list from the server rather than roll the optimistic change back.
+  async function resyncAfterMarkAllReadTimeout(
+    showToast: (_m: string) => void,
+  ) {
+    showToast(MARK_ALL_READ_UNCONFIRMED_MESSAGE);
+    await loadItems();
+  }
+
+  function rollbackMarkAllRead(
+    affected: Record<string, unknown>[],
+    showToast: (_m: string) => void,
+  ) {
+    affected.forEach((i: Record<string, unknown>) => {
+      i.unread = true;
+    });
+    showToast(MARK_ALL_READ_ERROR_MESSAGE);
+  }
+
   async function markAllRead() {
-    // Guard against overlapping account-wide requests (e.g. a double-click):
-    // a second, empty optimistic pass whose rollback could resurrect items an
-    // earlier request already marked read server-side. Mirrors refresh().
+    const { showToast } = useToast();
+    // Guard against overlapping account-wide requests (e.g. a double-click, or a
+    // second click after switching filter): a second optimistic pass whose
+    // rollback could resurrect items an earlier request already marked read
+    // server-side. Give feedback so the suppressed click isn't silent. Mirrors
+    // refresh().
     if (markingAllRead) {
+      showToast(MARK_ALL_READ_IN_FLIGHT_MESSAGE);
       return;
     }
     markingAllRead = true;
-    const { showToast } = useToast();
     const filter = state.filter;
     const affected = state.items.filter(
       (i: Record<string, unknown>) =>
@@ -441,11 +469,12 @@ export const useFeedStore = defineStore("feed", () => {
 
     try {
       await requestMarkAllRead(filter);
-    } catch {
-      affected.forEach((i: Record<string, unknown>) => {
-        i.unread = true;
-      });
-      showToast(MARK_ALL_READ_ERROR_MESSAGE);
+    } catch (error) {
+      if (error instanceof FetchTimeoutError) {
+        await resyncAfterMarkAllReadTimeout(showToast);
+        return;
+      }
+      rollbackMarkAllRead(affected, showToast);
     } finally {
       markingAllRead = false;
     }

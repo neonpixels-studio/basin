@@ -1,4 +1,5 @@
 import { and, eq, inArray, isNull, isNotNull } from "drizzle-orm";
+import type { useDb } from "../db/index";
 import { feedItems, feeds } from "../db/schema";
 import { FEED_SOURCE_TO_ITEM_TYPE } from "../../app/utils/feedSources";
 
