@@ -1,5 +1,6 @@
 <script setup>
 import { computed } from "vue";
+import { durationLabel } from "~/composables/usePodcastPlayer";
 import { contentText } from "~/utils/itemContent";
 
 const props = defineProps({ item: { type: Object, required: true } });
@@ -25,11 +26,9 @@ const totalSeconds = computed(() => {
   return Number(props.item.mediaDuration) || 0;
 });
 
-const totalLabel = computed(() =>
-  totalSeconds.value > 0 ? player.formatTime(totalSeconds.value) : "",
-);
+const totalLabel = computed(() => durationLabel(totalSeconds.value));
 
-const durationLabel = computed(() =>
+const playbackLabel = computed(() =>
   active.value
     ? `${player.formatTime(player.state.currentTime)} / ${totalLabel.value}`
     : totalLabel.value,
@@ -75,7 +74,7 @@ function togglePlay() {
       >
         <i :style="{ width: progressPct + '%' }"></i>
       </div>
-      <span class="pod-dur">{{ durationLabel }}</span>
+      <span class="pod-dur">{{ playbackLabel }}</span>
     </div>
   </article>
 </template>

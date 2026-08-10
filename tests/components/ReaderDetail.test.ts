@@ -360,6 +360,33 @@ describe("ReaderDetail", () => {
       expect(prose.props("emptyText")).toContain("No description was included");
     });
 
+    it("renders the real video thumbnail from imageUrl with a formatted duration", async () => {
+      state.activeItem = makeVideo({
+        imageUrl: "https://example.com/v.jpg",
+        mediaDuration: 754,
+      }) as never;
+      const wrapper = mountDetail();
+      await wrapper.vm.$nextTick();
+
+      const image = wrapper.find("img.thumb-img");
+      expect(image.exists()).toBe(true);
+      expect(image.attributes("src")).toBe("https://example.com/v.jpg");
+      expect(wrapper.find(".thumb-dur").text()).toBe("12:34");
+    });
+
+    it("falls back to the striped placeholder and omits duration when the video has no image or duration", async () => {
+      state.activeItem = makeVideo({
+        imageUrl: null,
+        mediaDuration: null,
+      }) as never;
+      const wrapper = mountDetail();
+      await wrapper.vm.$nextTick();
+
+      expect(wrapper.find("img.thumb-img").exists()).toBe(false);
+      expect(wrapper.find(".thumb").classes()).toContain("ph");
+      expect(wrapper.find(".thumb-dur").exists()).toBe(false);
+    });
+
     it("renders the real tweet body from content", async () => {
       state.activeItem = makeTweet({
         content: "The actual synced post text.",

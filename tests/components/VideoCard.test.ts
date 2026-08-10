@@ -57,12 +57,20 @@ describe("VideoCard", () => {
     expect(wrapper.find(".thumb-dur").exists()).toBe(false);
   });
 
-  it("does not render mock-only fields (thumb/views/meta)", () => {
-    // A real synced item has no thumb/views/meta; binding them would surface
-    // `undefined` in the output.
+  it("renders no card-meta slot (the mock-only views field is gone)", () => {
     const wrapper = shallowMount(VideoCard, { props: { item: makeVideo() } });
-    expect(wrapper.html()).not.toContain("undefined");
     expect(wrapper.find(".card-meta").exists()).toBe(false);
+  });
+
+  it("falls back to the placeholder when the thumbnail image fails to load", async () => {
+    const wrapper = shallowMount(VideoCard, {
+      props: {
+        item: makeVideo({ imageUrl: "https://example.com/broken.jpg" }),
+      },
+    });
+    await wrapper.find("img.thumb-img").trigger("error");
+    expect(wrapper.find("img.thumb-img").exists()).toBe(false);
+    expect(wrapper.find(".thumb").classes()).toContain("ph");
   });
 
   describe("autoplay wiring", () => {

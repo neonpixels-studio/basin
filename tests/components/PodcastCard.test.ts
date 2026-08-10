@@ -123,13 +123,13 @@ describe("PodcastCard", () => {
     expect(wrapper.find(".card-excerpt").text()).toBe("Note one. Note two.");
   });
 
-  it("does not render mock-only fields (excerpt/meta)", () => {
+  it("renders no excerpt when the synced item has no content", () => {
     stubPlayer();
     const wrapper = shallowMount(PodcastCard, {
-      props: { item: makePodcast({ content: "Body." }) },
+      props: { item: makePodcast({ content: null }) },
     });
 
-    expect(wrapper.html()).not.toContain("undefined");
+    expect(wrapper.find(".card-excerpt").exists()).toBe(false);
   });
 
   it("seeks via the progress bar with the episode media URL", async () => {

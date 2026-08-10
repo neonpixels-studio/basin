@@ -37,6 +37,14 @@ export function formatPlaybackTime(totalSeconds: number): string {
   return `${minutes}:${paddedSeconds}`;
 }
 
+// Formats a synced item's `mediaDuration` (seconds, possibly null/non-numeric)
+// into a display label, or an empty string when the feed carried no duration —
+// so cards omit the field entirely instead of showing "0:00" or a blank slot.
+export function durationLabel(mediaDuration: unknown): string {
+  const seconds = Number(mediaDuration) || 0;
+  return seconds > 0 ? formatPlaybackTime(seconds) : "";
+}
+
 // Returns the click position as a 0-1 fraction of the bar's width, or null
 // when the bar cannot be measured (so callers can distinguish "unmeasurable"
 // from a genuine seek to the very start).

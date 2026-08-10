@@ -2,7 +2,7 @@
 
 exports[`VideoCard > matches snapshot 1`] = `
 "<article class="card card-video">
-  <div class="thumb ratio-16x9"><img class="thumb-img" src="https://example.com/thumb.jpg" alt="Test Video Title">
+  <div class="thumb ratio-16x9"><img class="thumb-img" src="https://example.com/thumb.jpg" alt="Test Video Title" loading="lazy" referrerpolicy="no-referrer">
     <!--v-if--><span class="thumb-play"><r-icon-stub name="play" size="22"></r-icon-stub></span><span class="thumb-dur">12:34</span>
   </div>
   <div class="card-body">

@@ -1,5 +1,7 @@
 <script setup>
-import { computed } from "vue";
+import { computed, ref } from "vue";
+import { durationLabel } from "~/composables/usePodcastPlayer";
+import { VIDEO_PLACEHOLDER_LABEL } from "~/utils/itemContent";
 
 const feedStore = useFeedStore();
 const player = usePodcastPlayer();
@@ -34,16 +36,20 @@ const podcastTotalLabel = computed(() => {
   if (podcastActive.value && player.state.duration > 0) {
     return player.formatTime(player.state.duration);
   }
-  const mediaDuration = Number(item.value?.mediaDuration) || 0;
-  return mediaDuration > 0 ? player.formatTime(mediaDuration) : "";
+  return durationLabel(item.value?.mediaDuration);
 });
 
-const videoThumbnailUrl = computed(() => item.value?.imageUrl || null);
+// Feed thumbnails are untrusted cross-origin URLs; on a load failure fall back
+// to the striped placeholder instead of a broken-image glyph.
+const videoImageFailed = ref(false);
 
-const videoDurationLabel = computed(() => {
-  const seconds = Number(item.value?.mediaDuration) || 0;
-  return seconds > 0 ? player.formatTime(seconds) : "";
-});
+const videoThumbnailUrl = computed(() =>
+  item.value?.imageUrl && !videoImageFailed.value ? item.value.imageUrl : null,
+);
+
+const videoDurationLabel = computed(() =>
+  durationLabel(item.value?.mediaDuration),
+);
 
 function togglePodcast() {
   player.toggle(podcastMediaUrl.value);
@@ -172,7 +178,9 @@ function openOriginal() {
             <div
               class="thumb ratio-16x9"
               :class="{ ph: !videoThumbnailUrl }"
-              :data-label="videoThumbnailUrl ? undefined : 'video'"
+              :data-label="
+                videoThumbnailUrl ? undefined : VIDEO_PLACEHOLDER_LABEL
+              "
               style="border-radius: 0"
             >
               <img
@@ -180,6 +188,9 @@ function openOriginal() {
                 class="thumb-img"
                 :src="videoThumbnailUrl"
                 :alt="item.title"
+                loading="lazy"
+                referrerpolicy="no-referrer"
+                @error="videoImageFailed = true"
               />
               <span class="thumb-play" style="width: 64px; height: 64px"
                 ><RIcon name="play" :size="28"

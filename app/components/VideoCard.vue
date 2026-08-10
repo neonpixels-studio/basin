@@ -1,19 +1,24 @@
 <script setup>
 import { computed, ref } from "vue";
-import { formatPlaybackTime } from "~/composables/usePodcastPlayer";
+import { durationLabel } from "~/composables/usePodcastPlayer";
+import { VIDEO_PLACEHOLDER_LABEL } from "~/utils/itemContent";
 
 const props = defineProps({ item: { type: Object, required: true } });
 defineEmits(["save", "open"]);
 
 const appearanceStore = useAppearanceStore();
 const videoRef = ref(null);
+// Feed thumbnails are untrusted cross-origin URLs; on a load failure fall back
+// to the striped placeholder instead of a broken-image glyph.
+const imageFailed = ref(false);
 
-const thumbnailUrl = computed(() => props.item.imageUrl || null);
+const thumbnailUrl = computed(() =>
+  props.item.imageUrl && !imageFailed.value ? props.item.imageUrl : null,
+);
 
-const durationLabel = computed(() => {
-  const seconds = Number(props.item.mediaDuration) || 0;
-  return seconds > 0 ? formatPlaybackTime(seconds) : "";
-});
+const videoDurationLabel = computed(() =>
+  durationLabel(props.item.mediaDuration),
+);
 
 function handleMouseEnter() {
   if (appearanceStore.state.autoplay && videoRef.value) {
@@ -46,13 +51,16 @@ function handleVideoClick(event) {
     <div
       class="thumb ratio-16x9"
       :class="{ ph: !thumbnailUrl }"
-      :data-label="thumbnailUrl ? undefined : 'video'"
+      :data-label="thumbnailUrl ? undefined : VIDEO_PLACEHOLDER_LABEL"
     >
       <img
         v-if="thumbnailUrl"
         class="thumb-img"
         :src="thumbnailUrl"
         :alt="item.title"
+        loading="lazy"
+        referrerpolicy="no-referrer"
+        @error="imageFailed = true"
       />
       <video
         v-if="item.mediaUrl"
@@ -69,7 +77,9 @@ function handleVideoClick(event) {
         @click="handleVideoClick"
       ></video>
       <span class="thumb-play"><RIcon name="play" :size="22" /></span>
-      <span v-if="durationLabel" class="thumb-dur">{{ durationLabel }}</span>
+      <span v-if="videoDurationLabel" class="thumb-dur">{{
+        videoDurationLabel
+      }}</span>
     </div>
     <div class="card-body">
       <div class="card-head">

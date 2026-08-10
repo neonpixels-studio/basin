@@ -141,7 +141,7 @@ exports[`ReaderDetail > matches snapshot (with active video) 1`] = `
       <!-- ARTICLE -->
       <!-- VIDEO -->
       <div>
-        <div class="thumb ratio-16x9" style="border-radius: 0px;"><img class="thumb-img" src="https://example.com/thumb.jpg" alt="Test Video Title"><span class="thumb-play" style="width: 64px; height: 64px;"><r-icon-stub name="play" size="28"></r-icon-stub></span><span class="thumb-dur">12:34</span></div>
+        <div class="thumb ratio-16x9" style="border-radius: 0px;"><img class="thumb-img" src="https://example.com/thumb.jpg" alt="Test Video Title" loading="lazy" referrerpolicy="no-referrer"><span class="thumb-play" style="width: 64px; height: 64px;"><r-icon-stub name="play" size="28"></r-icon-stub></span><span class="thumb-dur">12:34</span></div>
         <div class="p-7 sm:p-8">
           <h2 class="detail-title mb-3" style="font-size: 22px;">Test Video Title</h2>
           <div class="text-muted mb-6 flex flex-wrap items-center gap-2.5 pb-6 text-[12.5px]" style="border-bottom-width: var(--border); border-bottom-style: var(--border); border-bottom-color: var(--border);"><span class="src-ic src-video" style="--c: var(--src-video);"><r-icon-stub name="video" size="13"></r-icon-stub></span><b class="text-ink-2 font-medium">Test Channel</b><span>·</span><span>12:34</span></div>

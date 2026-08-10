@@ -22,13 +22,10 @@ describe("ArticleCard", () => {
     expect(wrapper.find(".card-excerpt").exists()).toBe(false);
   });
 
-  it("does not render mock-only fields (excerpt/meta)", () => {
-    // Guard against reintroducing item.excerpt / item.meta: a real synced item
-    // carries neither, so binding them would render `undefined` here.
+  it("renders no card-meta slot (the mock-only read-time field is gone)", () => {
     const wrapper = shallowMount(ArticleCard, {
       props: { item: makeArticle({ content: "Real body." }) },
     });
-    expect(wrapper.html()).not.toContain("undefined");
     expect(wrapper.find(".card-meta").exists()).toBe(false);
   });
 

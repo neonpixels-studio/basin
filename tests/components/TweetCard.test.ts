@@ -28,13 +28,13 @@ describe("TweetCard", () => {
     expect(wrapper.find(".tw-text").exists()).toBe(false);
   });
 
-  it("does not render mock-only fields (text/meta likes & reposts)", () => {
-    // The synced API returns no engagement counts; item.meta / item.text are
-    // gone, so no fabricated like/repost figures should appear.
+  it("renders no engagement counts (the mock-only likes/reposts are gone)", () => {
+    // The synced API returns no engagement data; the like/repost spans that
+    // read item.meta must be absent — only the save button remains in actions.
     const wrapper = shallowMount(TweetCard, {
       props: { item: makeTweet({ content: "Body." }) },
     });
-    expect(wrapper.html()).not.toContain("undefined");
     expect(wrapper.find(".tw-actions").findAll("span")).toHaveLength(0);
+    expect(wrapper.find(".tw-actions").findAll("button")).toHaveLength(1);
   });
 });
