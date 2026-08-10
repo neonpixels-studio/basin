@@ -9,8 +9,30 @@ export type NewFeedItem = Omit<
   "id" | "createdAt" | "updatedAt"
 >;
 
-const parser = new RssParser({
+// Media RSS (used by YouTube Atom feeds) carries the item body in
+// media:group > media:description rather than <content>/<description>.
+// rss-parser only surfaces namespaced elements when told to via customFields.
+interface MediaNode {
+  _?: unknown;
+}
+
+interface MediaGroup {
+  "media:description"?: Array<string | MediaNode>;
+}
+
+type MediaItemFields = { mediaGroup?: MediaGroup };
+type MediaRssItem = RssParser.Item & MediaItemFields;
+
+// Tell rss-parser to surface the namespaced media:group element as `mediaGroup`.
+const MEDIA_ITEM_FIELDS: Array<[string, string]> = [
+  ["media:group", "mediaGroup"],
+];
+
+const parser = new RssParser<Record<string, unknown>, MediaItemFields>({
   timeout: 10_000,
+  customFields: {
+    item: MEDIA_ITEM_FIELDS,
+  },
 });
 
 function hashString(input: string): string {
@@ -71,8 +93,20 @@ function resolveImageUrl(
   return null;
 }
 
+function extractMediaDescription(item: MediaRssItem): string | null {
+  const node = item.mediaGroup?.["media:description"]?.[0];
+  // A plain text element parses to a string; one with attributes
+  // (e.g. media:description type="plain") parses to { _: text, $: attrs },
+  // mirroring rss-parser's own `._` unwrap for nested nodes.
+  const description = typeof node === "string" ? node : node?._;
+  if (typeof description !== "string") {
+    return null;
+  }
+  return description.trim() || null;
+}
+
 function mapItemToFeedItem(
-  item: RssParser.Item,
+  item: MediaRssItem,
   feedId: number,
   feedTitle: string | undefined,
   feedImageUrl: string | undefined,
@@ -80,7 +114,8 @@ function mapItemToFeedItem(
   const guid = resolveGuid(item);
   const publishedAt = resolvePublishedAt(item.isoDate, item.pubDate);
   const author = item.creator ?? feedTitle ?? null;
-  const content = item.contentSnippet ?? item.content ?? null;
+  const content =
+    item.contentSnippet ?? item.content ?? extractMediaDescription(item);
   const imageUrl = resolveImageUrl(item, feedImageUrl);
 
   return {

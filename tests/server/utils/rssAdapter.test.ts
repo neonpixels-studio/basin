@@ -140,6 +140,97 @@ describe("parseRssFeedFromXml", () => {
     expect(item.content).toBe("Full HTML");
   });
 
+  it("falls back to media:group description when no content is present", async () => {
+    mockParseString.mockResolvedValue(
+      makeFeedOutput([
+        makeRssItem({
+          contentSnippet: undefined,
+          content: undefined,
+          mediaGroup: { "media:description": ["The video description."] },
+        }),
+      ]),
+    );
+
+    const [item] = await parseRssFeedFromXml("<rss/>", FEED_ID);
+    expect(item.content).toBe("The video description.");
+  });
+
+  it("prefers item content over the media:group description", async () => {
+    mockParseString.mockResolvedValue(
+      makeFeedOutput([
+        makeRssItem({
+          contentSnippet: undefined,
+          content: "Real article body",
+          mediaGroup: { "media:description": ["Should not win"] },
+        }),
+      ]),
+    );
+
+    const [item] = await parseRssFeedFromXml("<rss/>", FEED_ID);
+    expect(item.content).toBe("Real article body");
+  });
+
+  it("unwraps the text when the media:group description carries attributes", async () => {
+    mockParseString.mockResolvedValue(
+      makeFeedOutput([
+        makeRssItem({
+          contentSnippet: undefined,
+          content: undefined,
+          // Attributed elements parse to { _: text, $: attrs }.
+          mediaGroup: {
+            "media:description": [
+              { _: "Attributed text", $: { type: "plain" } },
+            ],
+          },
+        }),
+      ]),
+    );
+
+    const [item] = await parseRssFeedFromXml("<rss/>", FEED_ID);
+    expect(item.content).toBe("Attributed text");
+  });
+
+  it("sets content to null for a whitespace-only media:group description", async () => {
+    mockParseString.mockResolvedValue(
+      makeFeedOutput([
+        makeRssItem({
+          contentSnippet: undefined,
+          content: undefined,
+          mediaGroup: { "media:description": ["   \n  "] },
+        }),
+      ]),
+    );
+
+    const [item] = await parseRssFeedFromXml("<rss/>", FEED_ID);
+    expect(item.content).toBeNull();
+  });
+
+  it("sets content to null when the media:group description node has no text", async () => {
+    mockParseString.mockResolvedValue(
+      makeFeedOutput([
+        makeRssItem({
+          contentSnippet: undefined,
+          content: undefined,
+          mediaGroup: { "media:description": [{}] },
+        }),
+      ]),
+    );
+
+    const [item] = await parseRssFeedFromXml("<rss/>", FEED_ID);
+    expect(item.content).toBeNull();
+  });
+
+  it("keeps content null for a plain feed with no content or media:group", async () => {
+    mockParseString.mockResolvedValue(
+      makeFeedOutput([
+        makeRssItem({ contentSnippet: undefined, content: undefined }),
+      ]),
+    );
+
+    const [item] = await parseRssFeedFromXml("<rss/>", FEED_ID);
+    expect(item.content).toBeNull();
+  });
+
   it("maps publishedAt from isoDate", async () => {
     mockParseString.mockResolvedValue(
       makeFeedOutput([
