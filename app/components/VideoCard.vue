@@ -109,16 +109,6 @@ function handleVideoClick(event) {
 .card-video .thumb {
   border-radius: 0;
 }
-.thumb {
-  width: 100%;
-  position: relative;
-}
-.ratio-16x9 {
-  aspect-ratio: 16/9;
-}
-.ratio-1x1 {
-  aspect-ratio: 1/1;
-}
 .thumb-video {
   position: absolute;
   inset: 0;
@@ -127,37 +117,8 @@ function handleVideoClick(event) {
   object-fit: cover;
   z-index: 1;
 }
-.thumb-play {
-  position: absolute;
-  inset: 0;
-  margin: auto;
-  width: 50px;
-  height: 50px;
-  border-radius: 50%;
-  display: grid;
-  place-items: center;
-  background: color-mix(in oklab, #000 55%, transparent);
-  color: #fff;
-  backdrop-filter: blur(2px);
-  transition:
-    transform 0.2s var(--ease),
-    background 0.2s;
-  z-index: 2;
-}
 .card-video:hover .thumb-play {
   transform: scale(1.08);
   background: var(--accent);
-}
-.thumb-dur {
-  position: absolute;
-  right: 8px;
-  bottom: 8px;
-  font-size: 11px;
-  font-weight: 600;
-  color: #fff;
-  background: color-mix(in oklab, #000 70%, transparent);
-  padding: 3px 7px;
-  border-radius: 6px;
-  z-index: 2;
 }
 </style>

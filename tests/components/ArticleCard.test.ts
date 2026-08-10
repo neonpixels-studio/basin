@@ -29,6 +29,14 @@ describe("ArticleCard", () => {
     expect(wrapper.find(".card-meta").exists()).toBe(false);
   });
 
+  it("omits the footer entirely when the item has no tags", () => {
+    // Adapters write tags: null for most feeds, so this is the common path.
+    const wrapper = shallowMount(ArticleCard, {
+      props: { item: makeArticle({ tags: null }) },
+    });
+    expect(wrapper.find(".card-foot").exists()).toBe(false);
+  });
+
   it("applies unread class when item is unread", () => {
     const wrapper = shallowMount(ArticleCard, {
       props: { item: makeArticle({ unread: true }) },

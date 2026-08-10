@@ -22,4 +22,16 @@ describe("contentText", () => {
   it("returns an empty string for whitespace-only content", () => {
     expect(contentText("   \n\t  ")).toBe("");
   });
+
+  it("strips HTML tags and decodes entities from feed content", () => {
+    expect(contentText("<p>One.</p><p>Two &amp; three.</p>")).toBe(
+      "One. Two & three.",
+    );
+    expect(contentText("In this episode&#8230; we <b>talk</b>")).toBe(
+      "In this episode… we talk",
+    );
+    expect(contentText("a &lt;tag&gt; &#x27;quoted&#x27;")).toBe(
+      "a <tag> 'quoted'",
+    );
+  });
 });

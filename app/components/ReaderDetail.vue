@@ -42,10 +42,11 @@ const podcastTotalLabel = computed(() => {
 // Feed thumbnails are untrusted cross-origin URLs; on a load failure fall back
 // to the striped placeholder instead of a broken-image glyph. This detail view
 // is a single persistent instance reused as the reader navigates between items,
-// so reset the failure flag whenever the active item changes.
+// so reset the failure flag whenever the thumbnail URL changes (keyed on the
+// URL, not the id, so a re-synced item with a new image recovers too).
 const videoImageFailed = ref(false);
 watch(
-  () => item.value?.id,
+  () => item.value?.imageUrl,
   () => {
     videoImageFailed.value = false;
   },

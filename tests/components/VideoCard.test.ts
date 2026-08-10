@@ -26,21 +26,23 @@ describe("VideoCard", () => {
     expect(wrapper.html()).toMatchSnapshot();
   });
 
-  it("renders the real thumbnail from imageUrl", () => {
+  it("renders the real thumbnail from imageUrl with no placeholder label", () => {
     const wrapper = shallowMount(VideoCard, {
       props: { item: makeVideo({ imageUrl: "https://example.com/t.jpg" }) },
     });
     const image = wrapper.find("img.thumb-img");
     expect(image.exists()).toBe(true);
     expect(image.attributes("src")).toBe("https://example.com/t.jpg");
+    expect(wrapper.find(".thumb").attributes("data-label")).toBeUndefined();
   });
 
-  it("falls back to the striped placeholder when imageUrl is absent", () => {
+  it("falls back to the striped placeholder with a 'video' label when imageUrl is absent", () => {
     const wrapper = shallowMount(VideoCard, {
       props: { item: makeVideo({ imageUrl: null }) },
     });
     expect(wrapper.find("img.thumb-img").exists()).toBe(false);
     expect(wrapper.find(".thumb").classes()).toContain("ph");
+    expect(wrapper.find(".thumb").attributes("data-label")).toBe("video");
   });
 
   it("renders the duration formatted from mediaDuration", () => {
