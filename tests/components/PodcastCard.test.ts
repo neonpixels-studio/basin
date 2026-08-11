@@ -99,10 +99,51 @@ describe("PodcastCard", () => {
   it("shows the total duration formatted from mediaDuration when idle", () => {
     stubPlayer();
     const wrapper = shallowMount(PodcastCard, {
-      props: { item: makePodcast({ mediaDuration: 3661, meta: "ignored" }) },
+      props: { item: makePodcast({ mediaDuration: 3661 }) },
     });
 
     expect(wrapper.find(".pod-dur").text()).toBe("1:01:01");
+  });
+
+  it("shows an empty duration when idle with no mediaDuration (no meta fallback)", () => {
+    stubPlayer();
+    const wrapper = shallowMount(PodcastCard, {
+      props: { item: makePodcast({ mediaDuration: null }) },
+    });
+
+    expect(wrapper.find(".pod-dur").text()).toBe("");
+  });
+
+  it("shows only the current time (no dangling slash) while active with no known duration", () => {
+    stubPlayer({ active: true });
+    const wrapper = shallowMount(PodcastCard, {
+      props: {
+        item: makePodcast({
+          mediaDuration: null,
+          mediaUrl: "https://podcast.example.com/episode-1.mp3",
+        }),
+      },
+    });
+
+    expect(wrapper.find(".pod-dur").text()).toBe("0:00");
+  });
+
+  it("renders an excerpt derived from the synced content field", () => {
+    stubPlayer();
+    const wrapper = shallowMount(PodcastCard, {
+      props: { item: makePodcast({ content: "Note one.\n\nNote two." }) },
+    });
+
+    expect(wrapper.find(".card-excerpt").text()).toBe("Note one. Note two.");
+  });
+
+  it("renders no excerpt when the synced item has no content", () => {
+    stubPlayer();
+    const wrapper = shallowMount(PodcastCard, {
+      props: { item: makePodcast({ content: null }) },
+    });
+
+    expect(wrapper.find(".card-excerpt").exists()).toBe(false);
   });
 
   it("seeks via the progress bar with the episode media URL", async () => {

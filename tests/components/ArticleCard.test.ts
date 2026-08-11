@@ -6,10 +6,35 @@ import { makeArticle } from "../fixtures";
 describe("ArticleCard", () => {
   const item = makeArticle();
 
-  it("renders title and excerpt", () => {
+  it("renders title and an excerpt derived from the synced content field", () => {
     const wrapper = shallowMount(ArticleCard, { props: { item } });
     expect(wrapper.find(".card-title").text()).toBe(item.title);
-    expect(wrapper.find(".card-excerpt").text()).toBe(item.excerpt);
+    // Real feeds return `content` (never `excerpt`); paragraphs collapse to one line.
+    expect(wrapper.find(".card-excerpt").text()).toBe(
+      "First paragraph. Second paragraph.",
+    );
+  });
+
+  it("renders no excerpt when the synced item has no content", () => {
+    const wrapper = shallowMount(ArticleCard, {
+      props: { item: makeArticle({ content: null }) },
+    });
+    expect(wrapper.find(".card-excerpt").exists()).toBe(false);
+  });
+
+  it("renders no card-meta slot (the mock-only read-time field is gone)", () => {
+    const wrapper = shallowMount(ArticleCard, {
+      props: { item: makeArticle({ content: "Real body." }) },
+    });
+    expect(wrapper.find(".card-meta").exists()).toBe(false);
+  });
+
+  it("omits the footer entirely when the item has no tags", () => {
+    // Adapters write tags: null for most feeds, so this is the common path.
+    const wrapper = shallowMount(ArticleCard, {
+      props: { item: makeArticle({ tags: null }) },
+    });
+    expect(wrapper.find(".card-foot").exists()).toBe(false);
   });
 
   it("applies unread class when item is unread", () => {

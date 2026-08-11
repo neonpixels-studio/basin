@@ -1,5 +1,6 @@
 <script setup>
 import { computed } from "vue";
+import { contentText } from "~/utils/itemContent";
 
 const props = defineProps({ item: { type: Object, required: true } });
 defineEmits(["save", "open"]);
@@ -11,11 +12,7 @@ const initials = computed(() =>
     .slice(0, 2)
     .join(""),
 );
-const likes = computed(() => (props.item.meta || "").split("·")[0].trim());
-const reposts = computed(() => {
-  const parts = (props.item.meta || "").split("·");
-  return parts[1] ? parts[1].trim() : "0";
-});
+const postText = computed(() => contentText(props.item.content));
 </script>
 
 <template>
@@ -28,10 +25,8 @@ const reposts = computed(() => {
       </div>
       <span class="tw-glyph src-tweet"><RIcon name="chat" :size="15" /></span>
     </div>
-    <p class="tw-text">{{ item.text }}</p>
+    <p v-if="postText" class="tw-text">{{ postText }}</p>
     <div class="tw-actions">
-      <span><RIcon name="heart" :size="15" />{{ likes }}</span>
-      <span><RIcon name="repost" :size="15" />{{ reposts }}</span>
       <button
         class="icon-btn ml-auto"
         :class="{ on: item.saved }"

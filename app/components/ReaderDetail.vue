@@ -1,5 +1,7 @@
 <script setup>
-import { computed } from "vue";
+import { computed, ref, watch } from "vue";
+import { durationLabel } from "~/utils/duration";
+import { VIDEO_PLACEHOLDER_LABEL } from "~/utils/itemContent";
 
 const feedStore = useFeedStore();
 const player = usePodcastPlayer();
@@ -34,11 +36,29 @@ const podcastTotalLabel = computed(() => {
   if (podcastActive.value && player.state.duration > 0) {
     return player.formatTime(player.state.duration);
   }
-  const mediaDuration = Number(item.value?.mediaDuration) || 0;
-  return mediaDuration > 0
-    ? player.formatTime(mediaDuration)
-    : item.value?.meta || "";
+  return durationLabel(item.value?.mediaDuration);
 });
+
+// Feed thumbnails are untrusted cross-origin URLs; on a load failure fall back
+// to the striped placeholder instead of a broken-image glyph. This detail view
+// is a single persistent instance reused as the reader navigates between items,
+// so reset the failure flag whenever the thumbnail URL changes (keyed on the
+// URL, not the id, so a re-synced item with a new image recovers too).
+const videoImageFailed = ref(false);
+watch(
+  () => item.value?.imageUrl,
+  () => {
+    videoImageFailed.value = false;
+  },
+);
+
+const videoThumbnailUrl = computed(() =>
+  item.value?.imageUrl && !videoImageFailed.value ? item.value.imageUrl : null,
+);
+
+const videoDurationLabel = computed(() =>
+  durationLabel(item.value?.mediaDuration),
+);
 
 function togglePodcast() {
   player.toggle(podcastMediaUrl.value);
@@ -145,7 +165,7 @@ function openOriginal() {
               class="text-muted mb-7 pb-7 text-[12.5px]"
               style="border-bottom: 1px solid var(--border)"
             >
-              {{ item.source }} · {{ item.meta }} · {{ item.time }} ago
+              {{ item.source }} · {{ item.time }} ago
             </div>
             <DetailProse
               :paragraphs="paragraphs"
@@ -165,14 +185,28 @@ function openOriginal() {
           <!-- VIDEO -->
           <div v-else-if="item.type === 'video'">
             <div
-              class="ph ratio-16x9"
-              :data-label="item.thumb"
+              class="thumb ratio-16x9"
+              :class="{ ph: !videoThumbnailUrl }"
+              :data-label="
+                videoThumbnailUrl ? undefined : VIDEO_PLACEHOLDER_LABEL
+              "
               style="border-radius: 0"
             >
+              <img
+                v-if="videoThumbnailUrl"
+                class="thumb-img"
+                :src="videoThumbnailUrl"
+                alt=""
+                loading="lazy"
+                referrerpolicy="no-referrer"
+                @error="videoImageFailed = true"
+              />
               <span class="thumb-play" style="width: 64px; height: 64px"
                 ><RIcon name="play" :size="28"
               /></span>
-              <span class="thumb-dur">{{ item.meta }}</span>
+              <span v-if="videoDurationLabel" class="thumb-dur">{{
+                videoDurationLabel
+              }}</span>
             </div>
             <div class="p-7 sm:p-8">
               <h2 class="detail-title mb-3" style="font-size: 22px">
@@ -186,8 +220,9 @@ function openOriginal() {
                   ><RIcon name="video" :size="13"
                 /></span>
                 <b class="text-ink-2 font-medium">{{ item.source }}</b
-                ><span>·</span><span>{{ item.views }}</span
-                ><span>·</span><span>{{ item.meta }}</span>
+                ><template v-if="videoDurationLabel"
+                  ><span>·</span><span>{{ videoDurationLabel }}</span></template
+                >
               </div>
               <DetailProse
                 :paragraphs="paragraphs"

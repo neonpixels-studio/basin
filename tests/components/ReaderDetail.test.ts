@@ -360,6 +360,55 @@ describe("ReaderDetail", () => {
       expect(prose.props("emptyText")).toContain("No description was included");
     });
 
+    it("renders the real video thumbnail from imageUrl with a formatted duration", async () => {
+      state.activeItem = makeVideo({
+        imageUrl: "https://example.com/v.jpg",
+        mediaDuration: 754,
+      }) as never;
+      const wrapper = mountDetail();
+      await wrapper.vm.$nextTick();
+
+      const image = wrapper.find("img.thumb-img");
+      expect(image.exists()).toBe(true);
+      expect(image.attributes("src")).toBe("https://example.com/v.jpg");
+      expect(wrapper.find(".thumb-dur").text()).toBe("12:34");
+    });
+
+    it("falls back to the striped placeholder and omits duration when the video has no image or duration", async () => {
+      state.activeItem = makeVideo({
+        imageUrl: null,
+        mediaDuration: null,
+      }) as never;
+      const wrapper = mountDetail();
+      await wrapper.vm.$nextTick();
+
+      expect(wrapper.find("img.thumb-img").exists()).toBe(false);
+      expect(wrapper.find(".thumb").classes()).toContain("ph");
+      expect(wrapper.find(".thumb-dur").exists()).toBe(false);
+    });
+
+    it("restores the thumbnail after a broken image when navigating to another video", async () => {
+      state.activeItem = makeVideo({
+        id: 21,
+        imageUrl: "https://example.com/broken.jpg",
+      }) as never;
+      const wrapper = mountDetail();
+      await wrapper.vm.$nextTick();
+
+      await wrapper.find("img.thumb-img").trigger("error");
+      expect(wrapper.find("img.thumb-img").exists()).toBe(false);
+
+      // The detail view is one persistent instance; a new active item must not
+      // inherit the previous item's image-failure state.
+      state.activeItem = makeVideo({
+        id: 22,
+        imageUrl: "https://example.com/ok.jpg",
+      }) as never;
+      await wrapper.vm.$nextTick();
+
+      expect(wrapper.find("img.thumb-img").exists()).toBe(true);
+    });
+
     it("renders the real tweet body from content", async () => {
       state.activeItem = makeTweet({
         content: "The actual synced post text.",

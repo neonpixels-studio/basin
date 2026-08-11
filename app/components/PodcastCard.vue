@@ -1,10 +1,14 @@
 <script setup>
 import { computed } from "vue";
+import { durationLabel } from "~/utils/duration";
+import { contentText } from "~/utils/itemContent";
 
 const props = defineProps({ item: { type: Object, required: true } });
 defineEmits(["save", "open"]);
 
 const player = usePodcastPlayer();
+
+const excerpt = computed(() => contentText(props.item.content));
 
 const mediaUrl = computed(() => props.item.mediaUrl || null);
 const canPlay = computed(() => player.canPlay(mediaUrl.value));
@@ -22,17 +26,15 @@ const totalSeconds = computed(() => {
   return Number(props.item.mediaDuration) || 0;
 });
 
-const totalLabel = computed(() =>
-  totalSeconds.value > 0
-    ? player.formatTime(totalSeconds.value)
-    : props.item.meta || "",
-);
+const totalLabel = computed(() => durationLabel(totalSeconds.value));
 
-const durationLabel = computed(() =>
-  active.value
-    ? `${player.formatTime(player.state.currentTime)} / ${totalLabel.value}`
-    : totalLabel.value,
-);
+const playbackLabel = computed(() => {
+  if (!active.value) {
+    return totalLabel.value;
+  }
+  const current = player.formatTime(player.state.currentTime);
+  return totalLabel.value ? `${current} / ${totalLabel.value}` : current;
+});
 
 function togglePlay() {
   player.toggle(mediaUrl.value);
@@ -55,7 +57,7 @@ function togglePlay() {
           />
         </div>
         <h3 class="card-title">{{ item.title }}</h3>
-        <p class="card-excerpt sm">{{ item.excerpt }}</p>
+        <p v-if="excerpt" class="card-excerpt sm">{{ excerpt }}</p>
       </div>
     </div>
     <div class="pod-player">
@@ -74,7 +76,7 @@ function togglePlay() {
       >
         <i :style="{ width: progressPct + '%' }"></i>
       </div>
-      <span class="pod-dur">{{ durationLabel }}</span>
+      <span class="pod-dur">{{ playbackLabel }}</span>
     </div>
   </article>
 </template>

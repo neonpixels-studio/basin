@@ -12,7 +12,7 @@ exports[`PodcastCard > matches snapshot 1`] = `
         <card-actions-stub item="[object Object]"></card-actions-stub>
       </div>
       <h3 class="card-title">Test Episode Title</h3>
-      <p class="card-excerpt sm">Episode excerpt.</p>
+      <p class="card-excerpt sm">Show note one. Show note two.</p>
     </div>
   </div>
   <div class="pod-player"><button class="pod-play" title="Play episode">

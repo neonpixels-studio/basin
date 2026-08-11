@@ -1,6 +1,12 @@
 <script setup>
-defineProps({ item: { type: Object, required: true } });
+import { computed } from "vue";
+import { contentText } from "~/utils/itemContent";
+
+const props = defineProps({ item: { type: Object, required: true } });
 defineEmits(["save", "open"]);
+
+const excerpt = computed(() => contentText(props.item.content));
+const hasTags = computed(() => Boolean(props.item.tags?.length));
 </script>
 
 <template>
@@ -14,9 +20,8 @@ defineEmits(["save", "open"]);
       <CardActions :item="item" @save="$emit('save')" @open="$emit('open')" />
     </div>
     <h3 class="card-title">{{ item.title }}</h3>
-    <p class="card-excerpt">{{ item.excerpt }}</p>
-    <div class="card-foot">
-      <span class="card-meta">{{ item.meta }}</span>
+    <p v-if="excerpt" class="card-excerpt">{{ excerpt }}</p>
+    <div v-if="hasTags" class="card-foot">
       <div class="chips">
         <span v-for="t in item.tags" :key="t" class="chip">#{{ t }}</span>
       </div>
