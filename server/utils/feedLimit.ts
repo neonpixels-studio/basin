@@ -62,8 +62,10 @@ export function isFeedLimitDbError(error: unknown): boolean {
 // Counts every source the user owns, including paused ones: a paused source
 // (over-cap after a downgrade — see feedPause.ts) still occupies a slot toward
 // the "up to 10 sources" cap, so a Free user must delete or upgrade before
-// adding more. @todo Reconcile paused rows when a source is deleted so an
-// account that drops back under the cap can un-pause a source without upgrading.
+// adding more. Because paused rows count here, deleting an active source is
+// reconciled in feedPause.ts (reactivateOldestPausedFeedsUnderCap): the freed
+// slots promote the oldest paused sources so they become usable rather than
+// remaining dead rows that only block adds.
 async function countUserFeeds(userId: number): Promise<number> {
   const [row] = await useDb()
     .select({ value: count() })
