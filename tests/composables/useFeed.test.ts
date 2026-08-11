@@ -4,7 +4,9 @@ import {
   useFeedStore,
   FEED_SYNC_TIMEOUT_MS,
   FEED_ITEMS_TIMEOUT_MS,
+  MARK_ALL_READ_TIMEOUT_MS,
 } from "~/stores/feed";
+import { VALID_MARK_ALL_READ_FILTERS } from "../../server/utils/markAllRead";
 import { makeFeed, makeConnection } from "../fixtures";
 
 const item = (overrides: Record<string, unknown> = {}) => ({
@@ -726,7 +728,12 @@ describe("useFeedStore", () => {
     });
 
     describe("markAllRead", () => {
-      it("enqueues a markRead action only for items that were unread", async () => {
+      beforeEach(() => {
+        vi.mocked(globalThis.$fetch).mockReset();
+        vi.mocked(globalThis.$fetch).mockResolvedValue({ ok: true });
+      });
+
+      it("fires ONE account-scoped bulk request, never one per loaded item", async () => {
         state.items = [
           item({ feedId: 1, guid: "g1", unread: true }),
           item({ feedId: 2, guid: "g2", unread: false }),
@@ -735,31 +742,133 @@ describe("useFeedStore", () => {
 
         await feed.markAllRead();
 
-        expect(queueAction).toHaveBeenCalledTimes(2);
-
-        const calls = queueAction.mock.calls;
-        expect(calls[0][0]).toBe("markRead");
-        expect(calls[0][1].feedId).toBe(1);
-        expect(calls[0][1].guid).toBe("g1");
-        expect(typeof calls[0][1].readAt).toBe("string");
-
-        expect(calls[1][1].feedId).toBe(3);
-        expect(calls[1][1].guid).toBe("g3");
+        // A single bulk call is the whole point of the fix — the account can
+        // hold unread items beyond the loaded page, so per-item iteration
+        // (queueAction) can never reach them. This must fail if the store
+        // reverts to iterating loaded items.
+        expect(queueAction).not.toHaveBeenCalled();
+        const markAllCalls = vi
+          .mocked(globalThis.$fetch)
+          .mock.calls.filter((call) => call[0] === "/api/mark-all-read");
+        expect(markAllCalls).toHaveLength(1);
+        expect(markAllCalls[0][1]).toMatchObject({ method: "POST" });
       });
 
-      it("does not enqueue any markRead actions when all items are already read", async () => {
+      it("sends the active filter so the server can scope the update", async () => {
+        state.filter = "podcast";
+        state.items = [item({ feedId: 1, guid: "g1", unread: true })];
+
+        await feed.markAllRead();
+
+        const markAllCall = vi
+          .mocked(globalThis.$fetch)
+          .mock.calls.find((call) => call[0] === "/api/mark-all-read");
+        expect(markAllCall?.[1]).toMatchObject({
+          body: { filter: "podcast" },
+        });
+      });
+
+      it("optimistically clears unread on loaded items", async () => {
+        state.filter = "all";
         state.items = [
-          item({ feedId: 1, guid: "g1", unread: false }),
-          item({ feedId: 2, guid: "g2", unread: false }),
+          item({ feedId: 1, guid: "g1", unread: true }),
+          item({ feedId: 2, guid: "g2", unread: true }),
         ];
 
         await feed.markAllRead();
 
-        expect(queueAction).not.toHaveBeenCalled();
+        expect(state.items.every((i) => !i.unread)).toBe(true);
       });
 
-      it("rolls back items to unread and shows a toast when queueAction rejects", async () => {
-        queueAction.mockRejectedValue(new Error("DB unavailable"));
+      it("leaves items outside the active type filter untouched", async () => {
+        state.filter = "podcast";
+        const article = item({ type: "article", unread: true });
+        const podcast = item({ type: "podcast", unread: true });
+        state.items = [article, podcast];
+
+        await feed.markAllRead();
+
+        // Only the filtered-in podcast is optimistically cleared.
+        expect(podcast.unread).toBe(false);
+        expect(article.unread).toBe(true);
+      });
+
+      it("under the saved filter, leaves unsaved unread items untouched", async () => {
+        state.filter = "saved";
+        const savedItem = item({ unread: true, saved: true });
+        const unsavedItem = item({ unread: true, saved: false });
+        state.items = [savedItem, unsavedItem];
+
+        await feed.markAllRead();
+
+        expect(savedItem.unread).toBe(false);
+        expect(unsavedItem.unread).toBe(true);
+      });
+
+      it("every dashboard filter id is accepted by the server endpoint", () => {
+        // Guards against drift: adding a filter chip whose id the server does
+        // not recognize would make "Mark all read" 400 under that filter.
+        const unknown = feed.filterDefs.filter(
+          (def) => !VALID_MARK_ALL_READ_FILTERS.has(def.id),
+        );
+        expect(unknown).toEqual([]);
+      });
+
+      it("ignores a second call while the first is still in flight", async () => {
+        state.items = [item({ feedId: 1, guid: "g1", unread: true })];
+
+        // The guard flips synchronously at the top of markAllRead, so a second
+        // call issued before the first resolves is a no-op — only one request.
+        const first = feed.markAllRead();
+        const second = feed.markAllRead();
+        await Promise.all([first, second]);
+
+        const markAllCalls = vi
+          .mocked(globalThis.$fetch)
+          .mock.calls.filter((call) => call[0] === "/api/mark-all-read");
+        expect(markAllCalls).toHaveLength(1);
+      });
+
+      it("resyncs from the server (not a blind rollback) when the request times out", async () => {
+        // On timeout the bulk update may have committed after we stopped
+        // waiting, so a blind rollback would desync the UI. Instead re-read the
+        // list from the server. The mark-all-read call never settles (forcing
+        // the timeout); the follow-up feed-items read resolves.
+        vi.mocked(globalThis.$fetch).mockImplementation((url: string) => {
+          if (url === "/api/mark-all-read") {
+            return new Promise(() => {});
+          }
+          return Promise.resolve({ items: [], total: 0, nextOffset: null });
+        });
+        state.items = [item({ feedId: 1, guid: "g1", unread: true })];
+
+        const pending = feed.markAllRead();
+        await vi.advanceTimersByTimeAsync(MARK_ALL_READ_TIMEOUT_MS);
+        await pending;
+
+        const reloadCalls = vi
+          .mocked(globalThis.$fetch)
+          .mock.calls.filter((call) => call[0] === "/api/feed-items");
+        expect(reloadCalls).toHaveLength(1);
+        expect(showToast).toHaveBeenCalledWith(
+          "Still marking as read — refreshing to confirm",
+        );
+      });
+
+      it("gives feedback (no silent drop) when a second call is suppressed", async () => {
+        state.items = [item({ feedId: 1, guid: "g1", unread: true })];
+
+        const first = feed.markAllRead();
+        const second = feed.markAllRead();
+        await Promise.all([first, second]);
+
+        expect(showToast).toHaveBeenCalledWith("Still marking as read…");
+      });
+
+      it("rolls back optimistic changes and shows a toast when the request fails", async () => {
+        vi.mocked(globalThis.$fetch).mockRejectedValue(
+          new Error("network down"),
+        );
         state.items = [
           item({ feedId: 1, guid: "g1", unread: true }),
           item({ feedId: 2, guid: "g2", unread: true }),
@@ -767,9 +876,9 @@ describe("useFeedStore", () => {
 
         await expect(feed.markAllRead()).resolves.toBeUndefined();
         expect(showToast).toHaveBeenCalledWith(
-          "Could not queue change for sync",
+          "Could not mark all as read — please try again",
         );
-        // Items are rolled back to unread since queueing failed
+        // Loaded items revert to unread since the bulk request failed.
         expect(state.items.every((i) => i.unread)).toBe(true);
       });
     });

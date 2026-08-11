@@ -5,7 +5,7 @@ import {
   connections as seedConnections,
 } from "~/data/mock";
 import { SOURCES } from "~/lib/icons";
-import { $fetchWithTimeout } from "~/utils/fetchWithTimeout";
+import { $fetchWithTimeout, FetchTimeoutError } from "~/utils/fetchWithTimeout";
 
 const clone = (x: unknown) => JSON.parse(JSON.stringify(x));
 
@@ -20,6 +20,11 @@ export const FEED_SYNC_TIMEOUT_MS = 15000;
 // can hold refresh()'s loading state for the sum of the two. Exported so tests
 // advance their fake timers by the exact same value.
 export const FEED_ITEMS_TIMEOUT_MS = 15000;
+
+// Bounds the account-scoped /api/mark-all-read request so a never-settling
+// response can't wedge the caller. Exported so tests advance their fake timers
+// by the exact same value.
+export const MARK_ALL_READ_TIMEOUT_MS = 15000;
 
 export const useFeedStore = defineStore("feed", () => {
   const { getToken } = useAuth();
@@ -57,6 +62,7 @@ export const useFeedStore = defineStore("feed", () => {
   };
   let initialized = false;
   let refreshing = false;
+  let markingAllRead = false;
 
   const filterDefs = [
     { id: "all", label: "All", c: "var(--accent)" },
@@ -69,21 +75,33 @@ export const useFeedStore = defineStore("feed", () => {
 
   const skeletonKinds = ["article", "video", "tweet", "podcast", "article"];
 
+  // Single predicate for "does this item belong to dashboard filter <id>",
+  // shared by visibleItems, countFor, and the mark-all-read optimistic update.
+  function itemMatchesFilter(
+    item: Record<string, unknown>,
+    filter: string,
+  ): boolean {
+    if (filter === "all") {
+      return true;
+    }
+    if (filter === "saved") {
+      return item.saved === true;
+    }
+    return item.type === filter;
+  }
+
   const unreadCount = computed(
     () => state.items.filter((i: Record<string, unknown>) => i.unread).length,
   );
 
   const visibleItems = computed(() => {
     let list = state.items;
-    if (state.unreadOnly)
+    if (state.unreadOnly) {
       list = list.filter((i: Record<string, unknown>) => i.unread);
-    if (state.filter === "saved")
-      return list.filter((i: Record<string, unknown>) => i.saved);
-    if (state.filter !== "all")
-      return list.filter(
-        (i: Record<string, unknown>) => i.type === state.filter,
-      );
-    return list;
+    }
+    return list.filter((i: Record<string, unknown>) =>
+      itemMatchesFilter(i, state.filter),
+    );
   });
 
   const decks = computed(() => {
@@ -336,14 +354,19 @@ export const useFeedStore = defineStore("feed", () => {
   }
 
   function countFor(id: string) {
-    if (id === "all") return state.items.length;
-    if (id === "saved")
-      return state.items.filter((i: Record<string, unknown>) => i.saved).length;
-    return state.items.filter((i: Record<string, unknown>) => i.type === id)
-      .length;
+    return state.items.filter((i: Record<string, unknown>) =>
+      itemMatchesFilter(i, id),
+    ).length;
   }
 
   const SYNC_ERROR_MESSAGE = "Could not queue change for sync";
+  const MARK_ALL_READ_ERROR_MESSAGE =
+    "Could not mark all as read — please try again";
+  // A timeout means we stopped waiting, not that the server did nothing — the
+  // bulk update may have committed after we aborted. Resync rather than guess.
+  const MARK_ALL_READ_UNCONFIRMED_MESSAGE =
+    "Still marking as read — refreshing to confirm";
+  const MARK_ALL_READ_IN_FLIGHT_MESSAGE = "Still marking as read…";
 
   async function toggleSave(item: Record<string, unknown>) {
     const { showToast } = useToast();
@@ -382,29 +405,78 @@ export const useFeedStore = defineStore("feed", () => {
     }
   }
 
+  // Deliberately a direct request, not a useSyncQueue().queueAction like the
+  // per-item mutations: the queue models one row (feedId + guid) per action,
+  // whereas this is a single account-scoped bulk update whose whole purpose is
+  // to reach items the client never loaded. It mirrors refresh()/triggerFeedSync,
+  // the store's other account-wide server call. Trade-off: no offline replay —
+  // an offline click rolls back and toasts, rather than being queued.
+  // @todo add an account-scoped markAllRead action to the sync outbox so an
+  // offline click replays on reconnect instead of failing.
+  async function requestMarkAllRead(filter: string): Promise<void> {
+    const headers = await buildAuthHeaders();
+    await $fetchWithTimeout("/api/mark-all-read", MARK_ALL_READ_TIMEOUT_MS, {
+      method: "POST",
+      headers,
+      body: { filter },
+    });
+  }
+
+  // Marks every unread item in the account (scoped to the active filter) read
+  // via a single account-scoped request, not one per loaded row — so items
+  // beyond the currently-paginated page are marked too and the toast is honest.
+  // A timeout can't distinguish "server did nothing" from "server committed
+  // after we stopped waiting", so the only honest recovery is to re-read the
+  // list from the server rather than roll the optimistic change back.
+  async function resyncAfterMarkAllReadTimeout(
+    showToast: (_m: string) => void,
+  ) {
+    showToast(MARK_ALL_READ_UNCONFIRMED_MESSAGE);
+    await loadItems();
+  }
+
+  function rollbackMarkAllRead(
+    affected: Record<string, unknown>[],
+    showToast: (_m: string) => void,
+  ) {
+    affected.forEach((i: Record<string, unknown>) => {
+      i.unread = true;
+    });
+    showToast(MARK_ALL_READ_ERROR_MESSAGE);
+  }
+
   async function markAllRead() {
     const { showToast } = useToast();
-    const unreadItems = state.items.filter(
-      (i: Record<string, unknown>) => i.unread === true,
+    // Guard against overlapping account-wide requests (e.g. a double-click, or a
+    // second click after switching filter): a second optimistic pass whose
+    // rollback could resurrect items an earlier request already marked read
+    // server-side. Give feedback so the suppressed click isn't silent. Mirrors
+    // refresh().
+    if (markingAllRead) {
+      showToast(MARK_ALL_READ_IN_FLIGHT_MESSAGE);
+      return;
+    }
+    markingAllRead = true;
+    const filter = state.filter;
+    const affected = state.items.filter(
+      (i: Record<string, unknown>) =>
+        i.unread === true && itemMatchesFilter(i, filter),
     );
-    unreadItems.forEach((i: Record<string, unknown>) => {
+    affected.forEach((i: Record<string, unknown>) => {
       i.unread = false;
     });
     showToast("Marked all as read");
 
-    const { queueAction } = useSyncQueue();
-    const now = new Date().toISOString();
-    for (const feedItem of unreadItems) {
-      try {
-        await queueAction("markRead", {
-          feedId: feedItem.feedId,
-          guid: feedItem.guid,
-          readAt: now,
-        });
-      } catch {
-        feedItem.unread = true;
-        showToast(SYNC_ERROR_MESSAGE);
+    try {
+      await requestMarkAllRead(filter);
+    } catch (error) {
+      if (error instanceof FetchTimeoutError) {
+        await resyncAfterMarkAllReadTimeout(showToast);
+        return;
       }
+      rollbackMarkAllRead(affected, showToast);
+    } finally {
+      markingAllRead = false;
     }
   }
 
