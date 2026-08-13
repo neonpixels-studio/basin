@@ -3,53 +3,184 @@ import DOMPurify from "dompurify";
 // Feed content (RSS content:encoded, podcast itunes:summary) can carry HTML.
 // This module is the single place that turns that untrusted markup into a safe
 // HTML string, so the detail view can render real formatting instead of escaped
-// tags. It is isolated here — behind sanitizeFeedHtml — so the allowlist and the
-// DOMPurify integration are configured once and can be unit-tested on their own.
+// tags. Isolated behind sanitizeFeedHtml so the allowlist and DOMPurify
+// integration are configured once and can be unit-tested on their own.
 
-// Formatting tags feeds legitimately use. Everything outside this set (script,
-// iframe, style, img, form, etc.) is stripped by DOMPurify.
+// Formatting and structural tags feeds legitimately use. Everything outside this
+// set (script, iframe, style, img, form, object, …) is stripped by DOMPurify.
 const ALLOWED_TAGS = [
   "p",
   "br",
+  "hr",
+  "div",
+  "span",
+  "section",
+  "article",
+  "aside",
+  "header",
+  "footer",
+  "figure",
+  "figcaption",
+  "blockquote",
+  "pre",
+  "code",
+  "kbd",
+  "samp",
   "strong",
   "b",
   "em",
   "i",
   "u",
   "s",
+  "del",
+  "ins",
+  "mark",
+  "small",
+  "sub",
+  "sup",
+  "abbr",
+  "cite",
+  "q",
   "a",
   "ul",
   "ol",
   "li",
-  "blockquote",
-  "code",
-  "pre",
+  "dl",
+  "dt",
+  "dd",
+  "table",
+  "caption",
+  "thead",
+  "tbody",
+  "tfoot",
+  "tr",
+  "th",
+  "td",
   "h1",
   "h2",
   "h3",
   "h4",
   "h5",
   "h6",
-  "hr",
-  "span",
 ];
+
+// Block-level members of the allowlist. Consumers use this to tell whether a
+// chunk already carries its own paragraph structure (so it should render as-is)
+// or is inline/text that needs wrapping in a <p>.
+export const BLOCK_LEVEL_TAGS = [
+  "p",
+  "div",
+  "section",
+  "article",
+  "aside",
+  "header",
+  "footer",
+  "figure",
+  "figcaption",
+  "blockquote",
+  "pre",
+  "ul",
+  "ol",
+  "li",
+  "dl",
+  "dt",
+  "dd",
+  "table",
+  "thead",
+  "tbody",
+  "tfoot",
+  "tr",
+  "hr",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+];
+
+// Full set of standard HTML element names used only to decide whether a string
+// is markup at all. Broader than the allowlist on purpose: a `<table>` or
+// `<script>` string is still "markup" (sanitize then keeps or drops it), whereas
+// a bare `<env>` or `3 < 5` in prose is not, so plain text is never mistaken for
+// markup and mangled by the sanitizer.
+const HTML_ELEMENT_NAMES = [
+  ...ALLOWED_TAGS,
+  "main",
+  "nav",
+  "col",
+  "colgroup",
+  "img",
+  "picture",
+  "source",
+  "audio",
+  "video",
+  "track",
+  "iframe",
+  "embed",
+  "object",
+  "param",
+  "form",
+  "input",
+  "button",
+  "select",
+  "option",
+  "textarea",
+  "label",
+  "fieldset",
+  "legend",
+  "details",
+  "summary",
+  "dialog",
+  "script",
+  "style",
+  "link",
+  "meta",
+  "svg",
+  "canvas",
+  "center",
+  "font",
+  "big",
+  "noscript",
+  "wbr",
+  "time",
+  "var",
+];
+
+// Matches an opening or closing tag (`<p>`, `</p>`, `<br/>`, `<a href="…">`) for
+// any of the given names, requiring a real tag boundary after the name.
+function tagNameRegExp(names: string[]): RegExp {
+  return new RegExp(`<\\/?(?:${names.join("|")})(?=[\\s/>])`, "i");
+}
+
+const BLOCK_LEVEL_MARKUP = tagNameRegExp(BLOCK_LEVEL_TAGS);
+const HTML_MARKUP = tagNameRegExp(HTML_ELEMENT_NAMES);
+
+// True when the content contains at least one recognized HTML tag, so it should
+// take the sanitize-and-render path rather than the plain-text one.
+export function looksLikeHtml(content: string): boolean {
+  return HTML_MARKUP.test(content);
+}
+
+// True when the (already-sanitized) markup carries its own block structure.
+export function hasBlockLevelMarkup(html: string): boolean {
+  return BLOCK_LEVEL_MARKUP.test(html);
+}
 
 // Only the attributes needed to render links and titles survive; every style,
 // event-handler (onclick, onerror, …) and script attribute is dropped.
 const ALLOWED_ATTR = ["href", "title"];
 
-// href/src may only point at these protocols. A crafted javascript:, data: or
-// vbscript: URL is rejected, so it can't execute script when clicked.
+// href may only point at these protocols; a crafted javascript:/data:/vbscript:
+// URL is rejected so it can't execute when clicked.
 const SAFE_URI_REGEXP = /^(?:https?|mailto):/i;
 
 const ANCHOR_TAG_NAME = "A";
 const HREF_ATTR = "href";
 
-// Links in feed content open the origin site; force them into a new tab and
-// strip the opener reference so the target page can't reach back into the app.
-// Only anchors that kept a (safe, allowlisted) href are hardened — an anchor
-// whose href was rejected (relative or unsafe protocol) is left as plain text,
-// not stamped with a misleading target on a dead link.
+// Open feed links in a new tab and drop the opener reference. Only anchors that
+// kept a safe href are hardened, so a rejected (relative/unsafe) link isn't left
+// as a dead anchor stamped with a misleading target.
 function hardenAnchor(node: Element): void {
   if (node.tagName !== ANCHOR_TAG_NAME || !node.hasAttribute(HREF_ATTR)) {
     return;
@@ -58,13 +189,10 @@ function hardenAnchor(node: Element): void {
   node.setAttribute("rel", "noopener noreferrer");
 }
 
-// The hook is registered on the shared DOMPurify singleton, so it affects every
-// sanitize call in the app. sanitizeFeedHtml is the only caller, and hardening
-// an allowlisted anchor is safe for any HTML, so a single global registration
-// is fine here — revisit (dedicated instance / removeHook) if another sink
-// starts using DOMPurify with different anchor expectations.
 let hooksInstalled = false;
 
+// The hook lives on the shared DOMPurify singleton; sanitizeFeedHtml is its only
+// caller and hardening an allowlisted anchor is safe for any HTML.
 function installHooksOnce(): void {
   if (hooksInstalled) {
     return;
@@ -73,12 +201,11 @@ function installHooksOnce(): void {
   hooksInstalled = true;
 }
 
-// Returns a sanitized, allowlisted HTML string safe to render, or "" for
-// non-string/blank input or when no DOM is available — never the raw,
-// unsanitized markup. The "" on no-DOM guards SSR: this app only renders feed
-// content client-side (the reader detail is behind `v-if` on a client-set
-// active item), so the server never produces markup to mismatch against on
-// hydration.
+// Returns sanitized, allowlisted HTML safe to render, or "" for non-string/blank
+// input or when no DOM is available — never raw markup. The no-DOM "" guards
+// SSR: feed content is only rendered client-side (the reader detail is behind a
+// `v-if` on a client-set active item), so the server never emits markup that
+// could mismatch on hydration.
 export function sanitizeFeedHtml(html: unknown): string {
   if (typeof html !== "string" || html.trim() === "") {
     return "";
@@ -91,8 +218,8 @@ export function sanitizeFeedHtml(html: unknown): string {
     ALLOWED_TAGS,
     ALLOWED_ATTR,
     ALLOWED_URI_REGEXP: SAFE_URI_REGEXP,
-    // ALLOWED_ATTR does not by itself drop data-*/aria-*; disable them
-    // explicitly so only href/title survive, as the allowlist intends.
+    // ALLOWED_ATTR does not by itself drop data-*/aria-*; disable them so only
+    // href/title survive, as the allowlist intends.
     ALLOW_DATA_ATTR: false,
     ALLOW_ARIA_ATTR: false,
   });

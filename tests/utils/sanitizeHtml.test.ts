@@ -34,6 +34,16 @@ describe("sanitizeFeedHtml", () => {
     expect(output).toContain("<blockquote>Quote</blockquote>");
   });
 
+  it("preserves structural containers and tables", () => {
+    expect(sanitizeFeedHtml("<div>Body</div>")).toBe("<div>Body</div>");
+    const table = sanitizeFeedHtml(
+      "<table><tr><td>A</td><td>B</td></tr></table>",
+    );
+    expect(table).toContain("<table>");
+    expect(table).toContain("<td>A</td>");
+    expect(table).toContain("<td>B</td>");
+  });
+
   it("strips <script> tags and their content", () => {
     const output = sanitizeFeedHtml("<p>Safe</p><script>alert('xss')</script>");
     expect(output).not.toContain("<script");

@@ -487,6 +487,18 @@ function openOriginal() {
   border: 0;
   border-top: 1px solid var(--border);
 }
+.detail-prose table {
+  margin: 0 0 17px;
+  border-collapse: collapse;
+  font-size: 14px;
+  color: var(--ink-2);
+}
+.detail-prose th,
+.detail-prose td {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  text-align: left;
+}
 .detail-title {
   font-size: 27px;
   font-weight: 700;

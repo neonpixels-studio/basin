@@ -58,4 +58,51 @@ describe("feed store contentHtml (jsdom)", () => {
     expect(html).toContain("<br>");
     expect(html).toContain("Topics we covered");
   });
+
+  it("keeps div-separated blocks readable rather than mashing the text together", () => {
+    const html = feed.contentHtml({
+      content: "<div>Para one</div><div>Para two</div>",
+    });
+    expect(html).not.toContain("onePara");
+    expect(html).toContain("Para one");
+    expect(html).toContain("Para two");
+  });
+
+  it("preserves table structure from newsletter-style content", () => {
+    const html = feed.contentHtml({
+      content: "<table><tr><td>Mon</td><td>Standup</td></tr></table>",
+    });
+    expect(html).toContain("<table>");
+    expect(html).toContain("Mon");
+    expect(html).toContain("Standup");
+    expect(html).not.toContain("MonStandup");
+  });
+
+  it("wraps only the text blocks when block and plain-text paragraphs are mixed", () => {
+    const html = feed.contentHtml({
+      content:
+        "<h3>Links</h3>\n\nThanks for listening.\n\nSubscribe at example.com",
+    });
+    expect(html).toContain("<h3>Links</h3>");
+    expect(html).toContain("<p>Thanks for listening.</p>");
+    expect(html).toContain("<p>Subscribe at example.com</p>");
+  });
+
+  it("drops blocks that sanitize to nothing instead of leaving empty paragraphs", () => {
+    const html = feed.contentHtml({
+      content: "Intro\n\n<script>alert(1)</script>\n\nOutro",
+    });
+    expect(html).toBe("<p>Intro</p><p>Outro</p>");
+  });
+
+  it("renders less common but real HTML tags instead of showing them as source", () => {
+    const html = feed.contentHtml({
+      content: "<article>The full post text.</article>",
+    });
+    expect(html).not.toContain("&lt;article&gt;");
+    expect(html).toContain("The full post text.");
+    expect(feed.contentParagraphs({ content: "<article>x</article>" })).toEqual(
+      [],
+    );
+  });
 });

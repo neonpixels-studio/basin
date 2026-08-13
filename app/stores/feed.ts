@@ -6,7 +6,11 @@ import {
 } from "~/data/mock";
 import { SOURCES } from "~/lib/icons";
 import { $fetchWithTimeout, FetchTimeoutError } from "~/utils/fetchWithTimeout";
-import { sanitizeFeedHtml } from "~/utils/sanitizeHtml";
+import {
+  sanitizeFeedHtml,
+  looksLikeHtml,
+  hasBlockLevelMarkup,
+} from "~/utils/sanitizeHtml";
 
 const clone = (x: unknown) => JSON.parse(JSON.stringify(x));
 
@@ -573,29 +577,13 @@ export const useFeedStore = defineStore("feed", () => {
 
   const PARAGRAPH_BREAK = /\n\s*\n/;
   const SOFT_WRAP = /\s*\n\s*/g;
-  // A tag from a known HTML element name marks the content as markup, so it takes
-  // the sanitize-and-render path instead of the plain-text paragraph split. Only
-  // real element names count (not any `<identifier>`), so technical prose like
-  // `Run deploy <env> to ship` or `3 < 5` is treated as plain text, not markup
-  // whose "tags" would then be stripped and silently delete the author's words.
-  const HTML_TAG_NAME =
-    "p|br|div|span|a|strong|b|em|i|u|s|ul|ol|li|dl|dt|dd|blockquote|code|pre|h[1-6]|hr|img|figure|figcaption|table|thead|tbody|tr|td|th|iframe|script|style";
-  const HTML_MARKUP = new RegExp(`<\\/?(?:${HTML_TAG_NAME})(?=[\\s/>])`, "i");
-  // Sanitized markup already carrying its own paragraph structure. When absent,
-  // the markup is inline-only (e.g. plain text with a link) and any author
-  // paragraph breaks live in raw newlines that HTML would collapse — so those get
-  // wrapped into <p> blocks below instead. `br` is intentionally excluded: it is
-  // a line break, not a paragraph, so content using `br` inline still needs its
-  // blank-line paragraph breaks preserved.
-  const BLOCK_LEVEL_MARKUP =
-    /<(?:p|ul|ol|li|blockquote|h[1-6]|pre|hr)(?=[\s/>])/i;
 
   function itemContent(item: Record<string, unknown>): string {
     return typeof item.content === "string" ? item.content.trim() : "";
   }
 
   // Blank lines separate paragraphs; single (soft-wrap) newlines collapse to
-  // spaces. Shared by the plain-text and inline-markup paragraph builders.
+  // spaces. Shared by the plain-text and markup paragraph builders.
   function splitTextBlocks(text: string): string[] {
     return text
       .split(PARAGRAPH_BREAK)
@@ -610,7 +598,7 @@ export const useFeedStore = defineStore("feed", () => {
   // empty state instead of inventing filler.
   const contentParagraphs = (item: Record<string, unknown>) => {
     const content = itemContent(item);
-    if (!content || HTML_MARKUP.test(content)) {
+    if (!content || looksLikeHtml(content)) {
       return [];
     }
     return splitTextBlocks(content);
@@ -628,14 +616,17 @@ export const useFeedStore = defineStore("feed", () => {
     return splitTextBlocks(content);
   };
 
-  // Wrap inline-only markup's newline-separated blocks in <p> so the author's
-  // paragraph breaks survive. Operates on the raw content (not serialized output)
-  // and is re-sanitized by the caller, so a break landing mid-tag can't produce
-  // unsanitized markup.
-  function wrapInlineParagraphs(content: string): string {
-    return splitTextBlocks(content)
-      .map((block) => `<p>${block}</p>`)
-      .join("");
+  // Sanitize one blank-line-separated block, then wrap it in a <p> only if it is
+  // inline/text — blocks that already carry block structure (their own <p>,
+  // <div>, <ul>, heading, table, …) render as-is. Sanitizing per block keeps the
+  // author's paragraph breaks (HTML collapses the raw newlines) and drops blocks
+  // that sanitize to nothing, avoiding phantom empty paragraphs.
+  function toRenderableBlock(block: string): string {
+    const sanitized = sanitizeFeedHtml(block);
+    if (!sanitized) {
+      return "";
+    }
+    return hasBlockLevelMarkup(sanitized) ? sanitized : `<p>${sanitized}</p>`;
   }
 
   // Sanitized, allowlisted HTML for feed content that carries markup (RSS
@@ -644,17 +635,13 @@ export const useFeedStore = defineStore("feed", () => {
   // nothing, so the view only renders markup when there genuinely is some.
   const contentHtml = (item: Record<string, unknown>): string => {
     const content = itemContent(item);
-    if (!content || !HTML_MARKUP.test(content)) {
+    if (!content || !looksLikeHtml(content)) {
       return "";
     }
-    const sanitized = sanitizeFeedHtml(content);
-    if (!sanitized || BLOCK_LEVEL_MARKUP.test(sanitized)) {
-      return sanitized;
-    }
-    // Re-sanitize after wrapping so nothing edited post-sanitization reaches the
-    // v-html sink; DOMPurify reparses the wrapped markup and fixes any break that
-    // fell inside a tag.
-    return sanitizeFeedHtml(wrapInlineParagraphs(content));
+    return splitTextBlocks(content)
+      .map(toRenderableBlock)
+      .filter(Boolean)
+      .join("");
   };
 
   const sourceMeta = (type: string) => SOURCES[type as keyof typeof SOURCES];
