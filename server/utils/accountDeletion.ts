@@ -21,9 +21,16 @@ import { deleteBillingRecords } from "./subscriptions";
 //      this point the account data is already gone, so failing the request
 //      would tell the user "nothing happened" while everything is irreversibly
 //      deleted. We log the provider id for manual reconciliation instead and
-//      let the caller report success so the client signs out. A lingering
-//      Clerk identity only means a later sign-in creates a fresh, empty
-//      account — not a recovery of the deleted data.
+//      let the caller report success so the client signs out.
+//
+// Known limitation: because the auth middleware runs getOrCreateUser on every
+// authenticated request, a request that lands on a still-valid session (Clerk
+// verifies JWTs networklessly, so a token minted just before deletion stays
+// valid until it expires) can re-insert an *empty* users row for this
+// provider_id. The user's data is still gone (that's the privacy promise); the
+// resurrected row carries no personal data and, once the Clerk identity is
+// removed, is unreachable. A provider-id tombstone honoured by getOrCreateUser
+// would close this hygiene gap durably — tracked as a follow-up.
 export async function deleteUserAccount(
   event: H3Event,
   user: DbUser,

@@ -28,11 +28,25 @@ describe("useAccount", () => {
   });
 
   it("returns false and sets an error when the request fails", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     mockFetch.mockRejectedValue(new Error("boom"));
     const { deleteAccount, error } = useAccount();
     const result = await deleteAccount();
     expect(result).toBe(false);
     expect(error.value).toMatch(/Failed to delete/);
+    expect(errorSpy).toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+
+  it("shows a rate-limit message on a 429", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    mockFetch.mockRejectedValue(
+      Object.assign(new Error("rate"), { statusCode: 429 }),
+    );
+    const { deleteAccount, error } = useAccount();
+    const result = await deleteAccount();
+    expect(result).toBe(false);
+    expect(error.value).toMatch(/wait a minute/i);
   });
 
   it("omits the Authorization header when no token is available", async () => {

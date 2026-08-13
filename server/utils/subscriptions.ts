@@ -332,13 +332,16 @@ export async function upsertSubscriptionFromStripe(
     return;
   }
 
-  // Account deletion cancels the Stripe subscription, which fires this event
+  // Account deletion deletes the Stripe customer, which fires this event
   // moments after the users row (and its cascade-deleted subscriptions row) is
   // gone. Without existingByCustomer the metadata fallback still resolves the
   // deleted user's id, and inserting a subscriptions row for it would violate
   // the user_id FK and 500 the webhook into Stripe's multi-day retry loop.
   // Drop the event when the user no longer exists — the same "can't attribute
-  // to a known user" outcome as the branch above.
+  // to a known user" outcome as the branch above. This narrows but does not
+  // fully close the window (check-then-insert is not atomic): a delete that
+  // lands between this check and the write below still 500s once, which
+  // self-heals on Stripe's retry (by then the check sees the user is gone).
   if (!(await userExists(db, userId))) {
     return;
   }

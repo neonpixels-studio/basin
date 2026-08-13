@@ -22,17 +22,24 @@ const canConfirm = computed(
 
 function start() {
   confirming.value = true;
+  error.value = null;
 }
 
 function cancel() {
   confirming.value = false;
   typedEmail.value = "";
+  error.value = null;
 }
 
 async function signOutAndRedirect() {
   // Belt-and-suspenders: await Clerk's sign-out, but always land on /login even
   // if the Clerk instance isn't ready or the sign-out rejects — the account is
   // already gone, so the user must not be stranded on a dead settings page.
+  if (!clerk.value) {
+    console.error(
+      "Clerk not loaded at sign-out; redirecting to /login anyway.",
+    );
+  }
   try {
     await clerk.value?.signOut({ redirectUrl: "/login" });
   } catch (signOutError) {
