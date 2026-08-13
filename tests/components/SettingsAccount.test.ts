@@ -23,6 +23,11 @@ describe("SettingsAccount", () => {
   beforeEach(() => {
     stubFeed();
     stubBilling();
+    vi.stubGlobal("useAccountExport", () => ({
+      exporting: ref(false),
+      error: ref(null),
+      exportData: vi.fn(),
+    }));
   });
 
   it("displays the user's full name", () => {
@@ -103,6 +108,35 @@ describe("SettingsAccount", () => {
       const wrapper = shallowMount(SettingsAccount);
       await flushPromises();
       expect(wrapper.find(".billing-desc").text()).toContain("trial ends");
+    });
+  });
+
+  describe("data export", () => {
+    it("calls exportData when the export button is clicked", async () => {
+      const exportData = vi.fn();
+      vi.stubGlobal("useAccountExport", () => ({
+        exporting: ref(false),
+        error: ref(null),
+        exportData,
+      }));
+      const wrapper = shallowMount(SettingsAccount);
+      const exportButton = wrapper
+        .findAll("button.btn")
+        .find((button) => button.text().includes("Export my data"));
+      await exportButton?.trigger("click");
+      expect(exportData).toHaveBeenCalledOnce();
+    });
+
+    it("shows an error message when the export fails", () => {
+      vi.stubGlobal("useAccountExport", () => ({
+        exporting: ref(false),
+        error: ref("Failed to export your data — try again"),
+        exportData: vi.fn(),
+      }));
+      const wrapper = shallowMount(SettingsAccount);
+      expect(wrapper.find(".export-error").text()).toContain(
+        "Failed to export your data",
+      );
     });
   });
 

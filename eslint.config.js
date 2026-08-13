@@ -37,6 +37,8 @@ const nuxtGlobals = {
   useClientDb: "readonly",
   useSyncQueue: "readonly",
   useFeeds: "readonly",
+  useAccountExport: "readonly",
+  useAuthHeaders: "readonly",
   useConnections: "readonly",
   useUserSettings: "readonly",
   useBilling: "readonly",

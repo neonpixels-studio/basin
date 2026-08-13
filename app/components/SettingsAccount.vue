@@ -5,6 +5,7 @@ const feedStore = useFeedStore();
 const { user } = useUser();
 const clerk = useClerk();
 const { loadPlan } = useBilling();
+const { exporting, error: exportError, exportData } = useAccountExport();
 
 const plan = ref({ ...FREE_ACCOUNT_PLAN });
 onMounted(async () => {
@@ -62,6 +63,19 @@ function handleSignOut() {
     <NuxtLink v-if="plan.plan !== 'pro'" to="/pricing" class="btn btn-primary">
       Upgrade to Pro
     </NuxtLink>
+  </section>
+
+  <section class="set-section">
+    <h2>Your data</h2>
+    <p class="desc">
+      Download everything you've stored in Reader — your sources and saved
+      items, plus your reading settings and connected accounts — as a JSON file.
+    </p>
+    <button class="btn" :disabled="exporting" @click="exportData">
+      <RIcon name="download" :size="16" />
+      {{ exporting ? "Preparing…" : "Export my data" }}
+    </button>
+    <p v-if="exportError" class="desc export-error">{{ exportError }}</p>
   </section>
 
   <section class="set-section">

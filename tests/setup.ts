@@ -10,6 +10,7 @@ import { FREE_ACCOUNT_PLAN } from "../app/composables/useBilling.ts";
 import { useAppearanceStore } from "../app/stores/appearance.ts";
 import { useFeedStore } from "../app/stores/feed.ts";
 import { useInputValidation } from "../app/composables/useInputValidation.ts";
+import { useAuthHeaders } from "../app/composables/useAuthHeaders.ts";
 import { usePodcastPlayer } from "../app/composables/usePodcastPlayer.ts";
 
 globalThis.useToast = useToast;
@@ -17,6 +18,9 @@ globalThis.useSearch = useSearch;
 globalThis.useAppearanceStore = useAppearanceStore;
 globalThis.useFeedStore = useFeedStore;
 globalThis.useInputValidation = useInputValidation;
+// Real composable as a global — mirrors Nuxt auto-import. It reads whatever
+// useAuth a test stubs (called at invocation time, not definition time).
+globalThis.useAuthHeaders = useAuthHeaders;
 globalThis.usePodcastPlayer = usePodcastPlayer;
 
 // Default stub for useUserSettings — returns defaults, no-ops on save.
@@ -96,6 +100,12 @@ globalThis.useFeeds = vi.fn(() => ({
   load: vi.fn(),
   add: vi.fn(),
   remove: vi.fn(),
+}));
+
+globalThis.useAccountExport = vi.fn(() => ({
+  exporting: ref(false),
+  error: ref(null),
+  exportData: vi.fn(),
 }));
 
 globalThis.useConnections = vi.fn(() => ({
