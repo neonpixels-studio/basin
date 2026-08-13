@@ -17,7 +17,16 @@ const EMPTY_POST_TEXT = "This post has no text.";
 const paragraphs = computed(() =>
   item.value ? feedStore.contentParagraphs(item.value) : [],
 );
-const postText = computed(() => paragraphs.value.join("\n\n"));
+// Sanitized HTML for markup-bearing feed content; "" falls back to the plain
+// text paragraphs above.
+const contentHtml = computed(() =>
+  item.value ? feedStore.contentHtml(item.value) : "",
+);
+// The post/tweet body is shown verbatim as text, so it uses the ungated
+// plain-text paragraphs rather than the markup-aware contentParagraphs.
+const postText = computed(() =>
+  item.value ? feedStore.postParagraphs(item.value).join("\n\n") : "",
+);
 
 const podcastMediaUrl = computed(() => item.value?.mediaUrl || null);
 const podcastCanPlay = computed(() => player.canPlay(podcastMediaUrl.value));
@@ -169,6 +178,7 @@ function openOriginal() {
             </div>
             <DetailProse
               :paragraphs="paragraphs"
+              :sanitized-html="contentHtml"
               :empty-text="EMPTY_ARTICLE_TEXT"
             />
             <a
@@ -226,6 +236,7 @@ function openOriginal() {
               </div>
               <DetailProse
                 :paragraphs="paragraphs"
+                :sanitized-html="contentHtml"
                 :empty-text="EMPTY_VIDEO_TEXT"
               />
               <a
@@ -311,6 +322,7 @@ function openOriginal() {
             </div>
             <DetailProse
               :paragraphs="paragraphs"
+              :sanitized-html="contentHtml"
               :empty-text="EMPTY_PODCAST_TEXT"
             />
           </div>
@@ -387,15 +399,106 @@ function openOriginal() {
 .detail-body {
   overflow-y: auto;
 }
-.detail-prose p {
+.detail-prose p,
+.detail-prose div {
   margin: 0 0 17px;
   font-size: 16px;
   line-height: 1.7;
   color: var(--ink-2);
   text-wrap: pretty;
 }
-.detail-prose p:last-child {
+.detail-prose > :last-child {
   margin-bottom: 0;
+}
+/* Sanitized feed markup (links, lists, emphasis) rendered via contentHtml. */
+.detail-prose a {
+  color: var(--accent);
+  text-decoration: underline;
+}
+.detail-prose ul,
+.detail-prose ol {
+  margin: 0 0 17px;
+  padding-left: 1.4em;
+  font-size: 16px;
+  line-height: 1.7;
+  color: var(--ink-2);
+}
+.detail-prose ul {
+  list-style: disc;
+}
+.detail-prose ol {
+  list-style: decimal;
+}
+.detail-prose li {
+  margin-bottom: 6px;
+}
+.detail-prose blockquote {
+  margin: 0 0 17px;
+  padding-left: 14px;
+  border-left: 3px solid var(--border-strong);
+  color: var(--ink-2);
+}
+/* Preflight resets heading sizing, so give sanitized feed headings visible
+   hierarchy rather than letting them read as body text. */
+.detail-prose h1,
+.detail-prose h2,
+.detail-prose h3,
+.detail-prose h4,
+.detail-prose h5,
+.detail-prose h6 {
+  margin: 0 0 12px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--ink);
+}
+.detail-prose h1 {
+  font-size: 22px;
+}
+.detail-prose h2 {
+  font-size: 20px;
+}
+.detail-prose h3 {
+  font-size: 18px;
+}
+.detail-prose h4,
+.detail-prose h5,
+.detail-prose h6 {
+  font-size: 16px;
+}
+.detail-prose code {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.9em;
+  background: var(--surface-2);
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+}
+.detail-prose pre {
+  margin: 0 0 17px;
+  padding: 12px 14px;
+  background: var(--surface-2);
+  border-radius: 6px;
+  overflow-x: auto;
+}
+.detail-prose pre code {
+  background: none;
+  padding: 0;
+}
+.detail-prose hr {
+  margin: 20px 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+.detail-prose table {
+  margin: 0 0 17px;
+  border-collapse: collapse;
+  font-size: 14px;
+  color: var(--ink-2);
+}
+.detail-prose th,
+.detail-prose td {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  text-align: left;
 }
 .detail-title {
   font-size: 27px;

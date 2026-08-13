@@ -6,6 +6,11 @@ import {
 } from "~/data/mock";
 import { SOURCES } from "~/lib/icons";
 import { $fetchWithTimeout, FetchTimeoutError } from "~/utils/fetchWithTimeout";
+import {
+  sanitizeFeedHtml,
+  looksLikeHtml,
+  hasBlockLevelMarkup,
+} from "~/utils/sanitizeHtml";
 
 const clone = (x: unknown) => JSON.parse(JSON.stringify(x));
 
@@ -578,21 +583,74 @@ export const useFeedStore = defineStore("feed", () => {
   const PARAGRAPH_BREAK = /\n\s*\n/;
   const SOFT_WRAP = /\s*\n\s*/g;
 
-  // Split a synced item's real `content` into display paragraphs: blank lines
-  // separate paragraphs, single (soft-wrap) newlines collapse to spaces.
-  // Returns an empty array when the feed carried no content, so the view can
-  // show an honest empty state instead of inventing filler.
-  // @todo `content` may carry raw HTML (e.g. podcast `itunes:summary`); it is
-  // rendered as escaped text for now. Sanitize + render markup in a follow-up.
+  function itemContent(item: Record<string, unknown>): string {
+    return typeof item.content === "string" ? item.content.trim() : "";
+  }
+
+  // Blank lines separate paragraphs; single (soft-wrap) newlines collapse to
+  // spaces. Shared by the plain-text and markup paragraph builders.
+  function splitTextBlocks(text: string): string[] {
+    return text
+      .split(PARAGRAPH_BREAK)
+      .map((block) => block.replace(SOFT_WRAP, " ").trim())
+      .filter(Boolean);
+  }
+
+  // Split a synced item's real plain-text `content` into display paragraphs.
+  // Markup content is handled by contentHtml instead, so return an empty array
+  // for it here — never fall back to rendering the raw tags as escaped text. Also
+  // returns [] when the feed carried no content, so the view can show an honest
+  // empty state instead of inventing filler.
   const contentParagraphs = (item: Record<string, unknown>) => {
-    const content = typeof item.content === "string" ? item.content.trim() : "";
+    const content = itemContent(item);
+    if (!content || looksLikeHtml(content)) {
+      return [];
+    }
+    return splitTextBlocks(content);
+  };
+
+  // Verbatim-text paragraphs for the post/tweet detail, which shows content as
+  // typed and never renders HTML. Unlike contentParagraphs it does not gate on
+  // markup: a Bluesky post is plain text, so any angle brackets a user typed are
+  // shown as-is rather than collapsing the post to an empty state.
+  const postParagraphs = (item: Record<string, unknown>) => {
+    const content = itemContent(item);
     if (!content) {
       return [];
     }
-    return content
-      .split(PARAGRAPH_BREAK)
-      .map((paragraph) => paragraph.replace(SOFT_WRAP, " ").trim())
-      .filter(Boolean);
+    return splitTextBlocks(content);
+  };
+
+  // Sanitize one blank-line-separated block of inline content and wrap it in a
+  // <p>. Dropping blocks that sanitize to nothing avoids phantom empty paragraphs
+  // (e.g. a stripped <script> between two text blocks).
+  function sanitizeInlineBlock(block: string): string {
+    const sanitized = sanitizeFeedHtml(block);
+    return sanitized ? `<p>${sanitized}</p>` : "";
+  }
+
+  // Sanitized, allowlisted HTML for feed content that carries markup (RSS
+  // content:encoded, podcast itunes:summary). Returns "" for plain-text content
+  // (which the view renders as paragraphs) or when content is absent/stripped to
+  // nothing, so the view only renders markup when there genuinely is some.
+  //
+  // Content that already has block structure (its own <p>, <ul>, <table>, …) is
+  // sanitized whole: splitting it on blank lines would tear a multi-line element
+  // (a <ul> or <table> spanning blank lines) apart and collapse <pre> whitespace.
+  // Inline-only content (plain text with a link, say) has no such structure, so
+  // its blank lines are the only paragraph breaks and get wrapped into <p>.
+  const contentHtml = (item: Record<string, unknown>): string => {
+    const content = itemContent(item);
+    if (!content || !looksLikeHtml(content)) {
+      return "";
+    }
+    if (hasBlockLevelMarkup(content)) {
+      return sanitizeFeedHtml(content);
+    }
+    return splitTextBlocks(content)
+      .map(sanitizeInlineBlock)
+      .filter(Boolean)
+      .join("");
   };
 
   const sourceMeta = (type: string) => SOURCES[type as keyof typeof SOURCES];
@@ -622,6 +680,8 @@ export const useFeedStore = defineStore("feed", () => {
     toggleConn,
     cardComponentName,
     contentParagraphs,
+    postParagraphs,
+    contentHtml,
     sourceMeta,
   };
 });
