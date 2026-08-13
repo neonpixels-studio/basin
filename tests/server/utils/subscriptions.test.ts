@@ -10,15 +10,19 @@ import {
   subscriptions,
 } from "../../../server/db/schema";
 
-const { mockCreateStripeCustomer, mockDeleteStripeCustomer } = vi.hoisted(
-  () => ({
-    mockCreateStripeCustomer: vi.fn(),
-    mockDeleteStripeCustomer: vi.fn(),
-  }),
-);
+const {
+  mockCreateStripeCustomer,
+  mockDeleteStripeCustomer,
+  mockCancelStripeSubscription,
+} = vi.hoisted(() => ({
+  mockCreateStripeCustomer: vi.fn(),
+  mockDeleteStripeCustomer: vi.fn(),
+  mockCancelStripeSubscription: vi.fn(),
+}));
 vi.mock("../../../server/utils/stripe", () => ({
   createStripeCustomer: mockCreateStripeCustomer,
   deleteStripeCustomer: mockDeleteStripeCustomer,
+  cancelStripeSubscription: mockCancelStripeSubscription,
 }));
 
 const { mockPauseFeedsOverFreeLimit, mockReactivateAllFeeds } = vi.hoisted(
@@ -64,6 +68,7 @@ import {
   FREE_PLAN,
   getOrCreateStripeCustomerId,
   upsertSubscriptionFromStripe,
+  cancelActiveSubscription,
 } from "../../../server/utils/subscriptions";
 
 describe("planForStatus", () => {
@@ -86,6 +91,49 @@ describe("planForStatus", () => {
   ])("returns 'free' for %s", (status) => {
     expect(planForStatus(status)).toBe("free");
   });
+});
+
+describe("cancelActiveSubscription", () => {
+  beforeEach(() => vi.resetAllMocks());
+
+  it("does nothing when no subscription row exists", async () => {
+    mockFindFirst.mockResolvedValue(undefined);
+    await cancelActiveSubscription(1);
+    expect(mockCancelStripeSubscription).not.toHaveBeenCalled();
+  });
+
+  it("does nothing when the row has no Stripe subscription id", async () => {
+    mockFindFirst.mockResolvedValue({
+      stripeSubscriptionId: null,
+      status: "active",
+    });
+    await cancelActiveSubscription(1);
+    expect(mockCancelStripeSubscription).not.toHaveBeenCalled();
+  });
+
+  it.each(["canceled", "incomplete_expired", "none", "unpaid"])(
+    "does nothing for terminal status %s",
+    async (status) => {
+      mockFindFirst.mockResolvedValue({
+        stripeSubscriptionId: "sub_123",
+        status,
+      });
+      await cancelActiveSubscription(1);
+      expect(mockCancelStripeSubscription).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["trialing", "active", "past_due"])(
+    "cancels the subscription for cancelable status %s",
+    async (status) => {
+      mockFindFirst.mockResolvedValue({
+        stripeSubscriptionId: "sub_123",
+        status,
+      });
+      await cancelActiveSubscription(1);
+      expect(mockCancelStripeSubscription).toHaveBeenCalledWith("sub_123");
+    },
+  );
 });
 
 describe("getAccountPlan", () => {

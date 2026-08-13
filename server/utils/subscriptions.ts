@@ -5,13 +5,26 @@ import { and, eq, isNull, lte, ne, or } from "drizzle-orm";
 import type Stripe from "stripe";
 import { processedStripeEvents, subscriptions } from "../db/schema";
 import { pauseFeedsOverFreeLimit, reactivateAllFeeds } from "./feedPause";
-import { createStripeCustomer, deleteStripeCustomer } from "./stripe";
+import {
+  cancelStripeSubscription,
+  createStripeCustomer,
+  deleteStripeCustomer,
+} from "./stripe";
 
 export type PlanName = "free" | "pro";
 
 // Statuses that grant Pro access. Everything else (past_due, canceled,
 // unpaid, incomplete, incomplete_expired, paused) falls back to "free".
 const ACTIVE_SUBSCRIPTION_STATUSES = new Set(["trialing", "active"]);
+
+// Statuses where a live Stripe subscription still exists and must be cancelled
+// before we drop the account. Terminal states (canceled, incomplete_expired,
+// none, etc.) have nothing left to cancel — cancelling them would error.
+const CANCELABLE_SUBSCRIPTION_STATUSES = new Set([
+  "trialing",
+  "active",
+  "past_due",
+]);
 
 export function planForStatus(status: string): PlanName {
   return ACTIVE_SUBSCRIPTION_STATUSES.has(status) ? "pro" : "free";
@@ -86,6 +99,23 @@ export async function getAccountPlan(userId: number): Promise<AccountPlan> {
     currentPeriodEnd: subscription.currentPeriodEnd,
     cancelAtPeriodEnd: subscription.cancelAtPeriodEnd,
   };
+}
+
+// Cancels the user's Stripe subscription ahead of account deletion so a deleted
+// account can never keep billing. A no-op when there is no subscription row, no
+// Stripe subscription id, or the subscription is already in a terminal state.
+export async function cancelActiveSubscription(userId: number): Promise<void> {
+  const db = useDb();
+  const subscription = await db.query.subscriptions.findFirst({
+    where: eq(subscriptions.userId, userId),
+  });
+  if (!subscription?.stripeSubscriptionId) {
+    return;
+  }
+  if (!CANCELABLE_SUBSCRIPTION_STATUSES.has(subscription.status)) {
+    return;
+  }
+  await cancelStripeSubscription(subscription.stripeSubscriptionId);
 }
 
 export async function getOrCreateStripeCustomerId(

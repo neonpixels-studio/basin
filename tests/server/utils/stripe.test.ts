@@ -4,12 +4,14 @@ const {
   mockSessionsCreate,
   mockCustomersCreate,
   mockCustomersDel,
+  mockSubscriptionsCancel,
   mockConstructEvent,
   MockStripe,
 } = vi.hoisted(() => {
   const mockSessionsCreate = vi.fn();
   const mockCustomersCreate = vi.fn();
   const mockCustomersDel = vi.fn();
+  const mockSubscriptionsCancel = vi.fn();
   const mockConstructEvent = vi.fn();
   // A regular function (not an arrow function) so `new Stripe(...)` in the
   // source can construct it; returning an object overrides the `this` binding.
@@ -17,6 +19,7 @@ const {
     return {
       checkout: { sessions: { create: mockSessionsCreate } },
       customers: { create: mockCustomersCreate, del: mockCustomersDel },
+      subscriptions: { cancel: mockSubscriptionsCancel },
       webhooks: { constructEvent: mockConstructEvent },
     };
   });
@@ -24,6 +27,7 @@ const {
     mockSessionsCreate,
     mockCustomersCreate,
     mockCustomersDel,
+    mockSubscriptionsCancel,
     mockConstructEvent,
     MockStripe,
   };
@@ -60,6 +64,7 @@ import {
   createCheckoutSession,
   createStripeCustomer,
   deleteStripeCustomer,
+  cancelStripeSubscription,
   verifyWebhookSignature,
 } from "../../../server/utils/stripe";
 
@@ -192,6 +197,22 @@ describe("deleteStripeCustomer", () => {
   it("deletes the given customer", async () => {
     await deleteStripeCustomer("cus_x");
     expect(mockCustomersDel).toHaveBeenCalledWith("cus_x");
+  });
+});
+
+describe("cancelStripeSubscription", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    runtimeConfigValue.value = null;
+    mockSubscriptionsCancel.mockResolvedValue({
+      id: "sub_x",
+      status: "canceled",
+    });
+  });
+
+  it("cancels the given subscription", async () => {
+    await cancelStripeSubscription("sub_x");
+    expect(mockSubscriptionsCancel).toHaveBeenCalledWith("sub_x");
   });
 });
 
