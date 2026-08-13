@@ -69,4 +69,6 @@ function handleSignOut() {
     <p class="desc">Update your name and profile photo.</p>
     <UserProfile />
   </section>
+
+  <SettingsDeleteAccount />
 </template>

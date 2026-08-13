@@ -3,7 +3,7 @@
 // Stripe SDK calls (server/utils/stripe.ts) separate from persistence.
 import { and, eq, isNull, lte, ne, or } from "drizzle-orm";
 import type Stripe from "stripe";
-import { processedStripeEvents, subscriptions } from "../db/schema";
+import { processedStripeEvents, subscriptions, users } from "../db/schema";
 import { pauseFeedsOverFreeLimit, reactivateAllFeeds } from "./feedPause";
 import { createStripeCustomer, deleteStripeCustomer } from "./stripe";
 
@@ -86,6 +86,41 @@ export async function getAccountPlan(userId: number): Promise<AccountPlan> {
     currentPeriodEnd: subscription.currentPeriodEnd,
     cancelAtPeriodEnd: subscription.cancelAtPeriodEnd,
   };
+}
+
+function isStripeResourceMissing(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as { code?: string }).code === "resource_missing"
+  );
+}
+
+// Purges the user's Stripe billing ahead of account deletion. Deleting the
+// customer both cancels any active subscription (honouring "cancel before
+// deletion") and removes the stored billing PII the privacy page promises to
+// erase — more complete than cancelling the subscription alone. A no-op when
+// there is no subscription row. Tolerant of `resource_missing` so a retry
+// after the customer was already deleted (e.g. Clerk deletion failed on the
+// first attempt) doesn't wedge the whole deletion.
+export async function deleteBillingRecords(userId: number): Promise<void> {
+  const db = useDb();
+  const subscription = await db.query.subscriptions.findFirst({
+    where: eq(subscriptions.userId, userId),
+  });
+  if (!subscription?.stripeCustomerId) {
+    return;
+  }
+  try {
+    await deleteStripeCustomer(subscription.stripeCustomerId);
+  } catch (caughtError) {
+    if (!isStripeResourceMissing(caughtError)) {
+      throw caughtError;
+    }
+    console.warn(
+      `Stripe customer ${subscription.stripeCustomerId} was already gone (resource_missing) when purging billing for user ${userId}; treating as done.`,
+    );
+  }
 }
 
 export async function getOrCreateStripeCustomerId(
@@ -243,6 +278,16 @@ async function wasEventAlreadyProcessed(
   return Boolean(processedEvent);
 }
 
+async function userExists(
+  db: ReturnType<typeof useDb>,
+  userId: number,
+): Promise<boolean> {
+  const user = await db.query.users.findFirst({
+    where: eq(users.id, userId),
+  });
+  return Boolean(user);
+}
+
 // Records that an event was applied, so a redelivery of the same event id is
 // a no-op instead of being reapplied. Always called *after* the subscription
 // write below has succeeded, never before, so a crash between the two can
@@ -287,6 +332,26 @@ export async function upsertSubscriptionFromStripe(
   const userId =
     existingByCustomer?.userId ?? resolveUserIdFromMetadata(subscription);
   if (!userId) {
+    return;
+  }
+
+  // Account deletion deletes the Stripe customer, which fires this event
+  // moments after the users row (and its cascade-deleted subscriptions row) is
+  // gone. Without existingByCustomer the metadata fallback still resolves the
+  // deleted user's id, and inserting a subscriptions row for it would violate
+  // the user_id FK and 500 the webhook into Stripe's multi-day retry loop.
+  // Drop the event when the user no longer exists — the same "can't attribute
+  // to a known user" outcome as the branch above. This narrows but does not
+  // fully close the window (check-then-insert is not atomic): a delete that
+  // lands between this check and the write below still 500s once, which
+  // self-heals on Stripe's retry (by then the check sees the user is gone).
+  // Only reachable via the metadata fallback — when existingByCustomer resolved
+  // the userId, the FK already guarantees the user exists, so we skip the query
+  // on that hot path.
+  if (!existingByCustomer && !(await userExists(db, userId))) {
+    console.warn(
+      `Dropping Stripe event ${event.id}: user ${userId} no longer exists (likely account deletion).`,
+    );
     return;
   }
 
