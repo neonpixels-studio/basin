@@ -174,7 +174,7 @@ function openOriginal() {
             </div>
             <DetailProse
               :paragraphs="paragraphs"
-              :html="contentHtml"
+              :sanitized-html="contentHtml"
               :empty-text="EMPTY_ARTICLE_TEXT"
             />
             <a
@@ -232,7 +232,7 @@ function openOriginal() {
               </div>
               <DetailProse
                 :paragraphs="paragraphs"
-                :html="contentHtml"
+                :sanitized-html="contentHtml"
                 :empty-text="EMPTY_VIDEO_TEXT"
               />
               <a
@@ -318,7 +318,7 @@ function openOriginal() {
             </div>
             <DetailProse
               :paragraphs="paragraphs"
-              :html="contentHtml"
+              :sanitized-html="contentHtml"
               :empty-text="EMPTY_PODCAST_TEXT"
             />
           </div>
@@ -432,6 +432,56 @@ function openOriginal() {
   padding-left: 14px;
   border-left: 3px solid var(--border-strong);
   color: var(--ink-2);
+}
+/* Preflight resets heading sizing, so give sanitized feed headings visible
+   hierarchy rather than letting them read as body text. */
+.detail-prose h1,
+.detail-prose h2,
+.detail-prose h3,
+.detail-prose h4,
+.detail-prose h5,
+.detail-prose h6 {
+  margin: 0 0 12px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--ink);
+}
+.detail-prose h1 {
+  font-size: 22px;
+}
+.detail-prose h2 {
+  font-size: 20px;
+}
+.detail-prose h3 {
+  font-size: 18px;
+}
+.detail-prose h4,
+.detail-prose h5,
+.detail-prose h6 {
+  font-size: 16px;
+}
+.detail-prose code {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.9em;
+  background: var(--surface-2);
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+}
+.detail-prose pre {
+  margin: 0 0 17px;
+  padding: 12px 14px;
+  background: var(--surface-2);
+  border-radius: 6px;
+  overflow-x: auto;
+}
+.detail-prose pre code {
+  background: none;
+  padding: 0;
+}
+.detail-prose hr {
+  margin: 20px 0;
+  border: 0;
+  border-top: 1px solid var(--border);
 }
 .detail-title {
   font-size: 27px;

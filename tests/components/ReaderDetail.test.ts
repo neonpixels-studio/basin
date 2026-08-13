@@ -314,11 +314,11 @@ describe("ReaderDetail", () => {
       await wrapper.vm.$nextTick();
 
       const prose = wrapper.findComponent(DetailProse);
-      const html = prose.props("html");
-      expect(html).toContain("<strong>bold</strong>");
+      const sanitizedHtml = prose.props("sanitizedHtml");
+      expect(sanitizedHtml).toContain("<strong>bold</strong>");
     });
 
-    it("passes empty html for plain-text content so it renders as paragraphs", async () => {
+    it("passes empty sanitizedHtml for plain-text content so it renders as paragraphs", async () => {
       state.activeItem = makeArticle({
         content: "Real one.\n\nReal two.",
       }) as never;
@@ -326,7 +326,7 @@ describe("ReaderDetail", () => {
       await wrapper.vm.$nextTick();
 
       const prose = wrapper.findComponent(DetailProse);
-      expect(prose.props("html")).toBe("");
+      expect(prose.props("sanitizedHtml")).toBe("");
       expect(prose.props("paragraphs")).toEqual(["Real one.", "Real two."]);
     });
 

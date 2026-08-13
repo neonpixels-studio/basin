@@ -318,6 +318,15 @@ describe("useFeedStore", () => {
       expect(feed.contentHtml({ content: "3 < 5 and 5 > 3 is true" })).toBe("");
     });
 
+    it("wraps inline-only markup's newline-separated blocks in paragraphs", () => {
+      const html = feed.contentHtml({
+        content: 'First with <a href="https://x.com">link</a>\n\nSecond block',
+      });
+      expect(html).toContain("<p>");
+      expect(html.match(/<p>/g)?.length).toBe(2);
+      expect(html).toContain("Second block");
+    });
+
     it("returns an empty string when content is missing or non-string", () => {
       expect(feed.contentHtml({})).toBe("");
       expect(feed.contentHtml({ content: null })).toBe("");

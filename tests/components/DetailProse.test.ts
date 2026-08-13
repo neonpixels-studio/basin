@@ -30,12 +30,12 @@ describe("DetailProse", () => {
     expect(paragraphs[0].classes()).toContain("text-muted");
   });
 
-  it("renders sanitized html markup when the html prop is set", () => {
+  it("renders sanitized html markup when the sanitizedHtml prop is set", () => {
     const wrapper = mount(DetailProse, {
       props: {
         paragraphs: [],
         emptyText: "Nothing here.",
-        html: "<p>Rendered <strong>markup</strong>.</p>",
+        sanitizedHtml: "<p>Rendered <strong>markup</strong>.</p>",
       },
     });
 
@@ -44,12 +44,12 @@ describe("DetailProse", () => {
     expect(wrapper.text()).not.toContain("Nothing here.");
   });
 
-  it("prefers the html prop over paragraphs and the empty state", () => {
+  it("prefers the sanitizedHtml prop over paragraphs and the empty state", () => {
     const wrapper = mount(DetailProse, {
       props: {
         paragraphs: ["Plain fallback."],
         emptyText: "Nothing here.",
-        html: "<p>HTML wins.</p>",
+        sanitizedHtml: "<p>HTML wins.</p>",
       },
     });
 
@@ -57,12 +57,12 @@ describe("DetailProse", () => {
     expect(wrapper.text()).not.toContain("Plain fallback.");
   });
 
-  it("falls back to paragraphs when the html prop is empty", () => {
+  it("falls back to paragraphs when the sanitizedHtml prop is empty", () => {
     const wrapper = mount(DetailProse, {
       props: {
         paragraphs: ["Real one."],
         emptyText: "Nothing here.",
-        html: "",
+        sanitizedHtml: "",
       },
     });
 

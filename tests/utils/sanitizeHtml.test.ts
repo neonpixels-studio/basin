@@ -102,6 +102,14 @@ describe("sanitizeFeedHtml", () => {
     expect(output).toContain('href="mailto:hi@example.com"');
   });
 
+  it("drops relative hrefs and does not stamp target/rel on the dead link", () => {
+    const output = sanitizeFeedHtml('<a href="/posts/2">read</a>');
+    expect(output).not.toContain("href");
+    expect(output).not.toContain("target");
+    expect(output).not.toContain("rel=");
+    expect(output).toContain("read");
+  });
+
   it("strips data-* and aria-* attributes", () => {
     const output = sanitizeFeedHtml(
       '<p data-track="x" aria-hidden="true">hi</p>',

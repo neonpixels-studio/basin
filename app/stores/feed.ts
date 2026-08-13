@@ -579,6 +579,12 @@ export const useFeedStore = defineStore("feed", () => {
   // then optional attributes then `>`), not `<[\s\S]*>`, so a stray `<` in prose
   // (`3 < 5`) doesn't get mistaken for markup.
   const HTML_MARKUP = /<\/?[a-z][a-z0-9]*(?:\s[^<>]*)?\/?>/i;
+  // Sanitized markup already carrying its own block structure. When absent, the
+  // markup is inline-only (e.g. plain text with a link) and any author paragraph
+  // breaks live in raw newlines that HTML would collapse — so those get wrapped
+  // into <p> blocks below instead.
+  const BLOCK_LEVEL_MARKUP =
+    /<(?:p|div|ul|ol|li|blockquote|h[1-6]|pre|hr|br)(?=[\s/>])/i;
 
   function itemContent(item: Record<string, unknown>): string {
     return typeof item.content === "string" ? item.content.trim() : "";
@@ -601,16 +607,31 @@ export const useFeedStore = defineStore("feed", () => {
       .filter(Boolean);
   };
 
+  // Wrap inline-only markup's newline-separated blocks in <p> so the author's
+  // paragraph breaks survive (HTML collapses the raw newlines otherwise).
+  function wrapInlineParagraphs(html: string): string {
+    return html
+      .split(PARAGRAPH_BREAK)
+      .map((block) => block.replace(SOFT_WRAP, " ").trim())
+      .filter(Boolean)
+      .map((block) => `<p>${block}</p>`)
+      .join("");
+  }
+
   // Sanitized, allowlisted HTML for feed content that carries markup (RSS
   // content:encoded, podcast itunes:summary). Returns "" for plain-text content
-  // (which the view renders as paragraphs) or when content is absent, so the
-  // view only renders markup when there genuinely is some.
+  // (which the view renders as paragraphs) or when content is absent/stripped to
+  // nothing, so the view only renders markup when there genuinely is some.
   const contentHtml = (item: Record<string, unknown>): string => {
     const content = itemContent(item);
     if (!content || !HTML_MARKUP.test(content)) {
       return "";
     }
-    return sanitizeFeedHtml(content);
+    const sanitized = sanitizeFeedHtml(content);
+    if (!sanitized || BLOCK_LEVEL_MARKUP.test(sanitized)) {
+      return sanitized;
+    }
+    return wrapInlineParagraphs(sanitized);
   };
 
   const sourceMeta = (type: string) => SOURCES[type as keyof typeof SOURCES];
