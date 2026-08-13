@@ -12,6 +12,7 @@ import {
   buildYouTubeAuthUrl,
   exchangeCodeForTokens,
   getYouTubeChannelHandle,
+  revokeGoogleToken,
 } from "../../../server/utils/google";
 
 describe("buildYouTubeAuthUrl", () => {
@@ -118,6 +119,50 @@ describe("getYouTubeChannelHandle", () => {
       expect.objectContaining({
         headers: { Authorization: "Bearer my-token" },
       }),
+    );
+  });
+});
+
+describe("revokeGoogleToken", () => {
+  beforeEach(() => vi.resetAllMocks());
+
+  it("posts the token to the Google revoke endpoint as form data", async () => {
+    mockFetch.mockResolvedValue({ ok: true });
+
+    await revokeGoogleToken("refresh-789");
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      "https://oauth2.googleapis.com/revoke",
+      expect.objectContaining({
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      }),
+    );
+    const body = mockFetch.mock.calls[0][1].body.toString();
+    expect(body).toContain("token=refresh-789");
+  });
+
+  it("passes a live (not pre-aborted) timeout signal", async () => {
+    // Asserting the exact timeout boundary isn't feasible: AbortSignal.timeout
+    // ignores vitest fake timers and the mocked fetch never observes the abort.
+    // This still fails if the signal is dropped (undefined) or replaced with an
+    // already-aborted signal — the regressions worth catching here.
+    mockFetch.mockResolvedValue({ ok: true });
+    await revokeGoogleToken("token");
+    const { signal } = mockFetch.mock.calls[0][1];
+    expect(signal).toBeInstanceOf(AbortSignal);
+    expect(signal.aborted).toBe(false);
+  });
+
+  it("resolves without throwing on a 2xx response", async () => {
+    mockFetch.mockResolvedValue({ ok: true });
+    await expect(revokeGoogleToken("token")).resolves.toBeUndefined();
+  });
+
+  it("throws when the revoke endpoint returns a non-ok response", async () => {
+    mockFetch.mockResolvedValue({ ok: false, status: 400 });
+    await expect(revokeGoogleToken("bad-token")).rejects.toThrow(
+      "Google token revocation failed: 400",
     );
   });
 });
