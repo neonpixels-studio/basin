@@ -306,6 +306,30 @@ describe("ReaderDetail", () => {
       expect(prose.props("paragraphs")).toEqual(["Real one.", "Real two."]);
     });
 
+    it("passes non-empty sanitized html to DetailProse for markup-bearing content", async () => {
+      state.activeItem = makeArticle({
+        content: "<p>Body with <strong>bold</strong>.</p>",
+      }) as never;
+      const wrapper = mountDetail();
+      await wrapper.vm.$nextTick();
+
+      const prose = wrapper.findComponent(DetailProse);
+      const html = prose.props("html");
+      expect(html).toContain("<strong>bold</strong>");
+    });
+
+    it("passes empty html for plain-text content so it renders as paragraphs", async () => {
+      state.activeItem = makeArticle({
+        content: "Real one.\n\nReal two.",
+      }) as never;
+      const wrapper = mountDetail();
+      await wrapper.vm.$nextTick();
+
+      const prose = wrapper.findComponent(DetailProse);
+      expect(prose.props("html")).toBe("");
+      expect(prose.props("paragraphs")).toEqual(["Real one.", "Real two."]);
+    });
+
     it("passes an empty paragraph list and honest article empty text when content is absent", async () => {
       state.activeItem = makeArticle({ content: null }) as never;
       const wrapper = mountDetail();

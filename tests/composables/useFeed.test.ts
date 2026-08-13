@@ -281,6 +281,31 @@ describe("useFeedStore", () => {
     });
   });
 
+  // Routing only: contentHtml decides plain-text-vs-markup and delegates the
+  // actual sanitization to sanitizeFeedHtml. The security guarantees (dangerous
+  // markup stripped) are asserted in tests/utils/sanitizeHtml.test.ts, which
+  // runs under jsdom where DOMPurify behaves as it does in the browser.
+  describe("contentHtml", () => {
+    it("returns non-empty sanitized markup for HTML-bearing content", () => {
+      const html = feed.contentHtml({
+        content: "<p>Show notes with <strong>bold</strong>.</p>",
+      });
+      expect(html).toContain("Show notes with");
+      expect(html).toContain("<strong>bold</strong>");
+    });
+
+    it("returns an empty string for plain-text content", () => {
+      expect(feed.contentHtml({ content: "Just plain text." })).toBe("");
+      expect(feed.contentHtml({ content: "First.\n\nSecond." })).toBe("");
+    });
+
+    it("returns an empty string when content is missing or non-string", () => {
+      expect(feed.contentHtml({})).toBe("");
+      expect(feed.contentHtml({ content: null })).toBe("");
+      expect(feed.contentHtml({ content: 42 })).toBe("");
+    });
+  });
+
   it("no longer exposes the fabricating content helpers", () => {
     const store = feed as unknown as Record<string, unknown>;
     expect(store.articleBody).toBeUndefined();

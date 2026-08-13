@@ -17,6 +17,11 @@ const EMPTY_POST_TEXT = "This post has no text.";
 const paragraphs = computed(() =>
   item.value ? feedStore.contentParagraphs(item.value) : [],
 );
+// Sanitized HTML for markup-bearing feed content; "" falls back to the plain
+// text paragraphs above.
+const contentHtml = computed(() =>
+  item.value ? feedStore.contentHtml(item.value) : "",
+);
 const postText = computed(() => paragraphs.value.join("\n\n"));
 
 const podcastMediaUrl = computed(() => item.value?.mediaUrl || null);
@@ -169,6 +174,7 @@ function openOriginal() {
             </div>
             <DetailProse
               :paragraphs="paragraphs"
+              :html="contentHtml"
               :empty-text="EMPTY_ARTICLE_TEXT"
             />
             <a
@@ -226,6 +232,7 @@ function openOriginal() {
               </div>
               <DetailProse
                 :paragraphs="paragraphs"
+                :html="contentHtml"
                 :empty-text="EMPTY_VIDEO_TEXT"
               />
               <a
@@ -311,6 +318,7 @@ function openOriginal() {
             </div>
             <DetailProse
               :paragraphs="paragraphs"
+              :html="contentHtml"
               :empty-text="EMPTY_PODCAST_TEXT"
             />
           </div>
@@ -396,6 +404,34 @@ function openOriginal() {
 }
 .detail-prose p:last-child {
   margin-bottom: 0;
+}
+/* Sanitized feed markup (links, lists, emphasis) rendered via contentHtml. */
+.detail-prose a {
+  color: var(--accent);
+  text-decoration: underline;
+}
+.detail-prose ul,
+.detail-prose ol {
+  margin: 0 0 17px;
+  padding-left: 1.4em;
+  font-size: 16px;
+  line-height: 1.7;
+  color: var(--ink-2);
+}
+.detail-prose ul {
+  list-style: disc;
+}
+.detail-prose ol {
+  list-style: decimal;
+}
+.detail-prose li {
+  margin-bottom: 6px;
+}
+.detail-prose blockquote {
+  margin: 0 0 17px;
+  padding-left: 14px;
+  border-left: 3px solid var(--border-strong);
+  color: var(--ink-2);
 }
 .detail-title {
   font-size: 27px;

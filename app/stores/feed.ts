@@ -6,6 +6,7 @@ import {
 } from "~/data/mock";
 import { SOURCES } from "~/lib/icons";
 import { $fetchWithTimeout, FetchTimeoutError } from "~/utils/fetchWithTimeout";
+import { sanitizeFeedHtml } from "~/utils/sanitizeHtml";
 
 const clone = (x: unknown) => JSON.parse(JSON.stringify(x));
 
@@ -572,15 +573,21 @@ export const useFeedStore = defineStore("feed", () => {
 
   const PARAGRAPH_BREAK = /\n\s*\n/;
   const SOFT_WRAP = /\s*\n\s*/g;
+  // Any run that looks like an HTML tag (`<p>`, `<a href=…>`, `<br/>`) marks the
+  // content as markup so it takes the sanitize-and-render path instead of the
+  // plain-text paragraph split, which would show the tags escaped.
+  const HTML_MARKUP = /<[a-z][\s\S]*>/i;
 
-  // Split a synced item's real `content` into display paragraphs: blank lines
-  // separate paragraphs, single (soft-wrap) newlines collapse to spaces.
-  // Returns an empty array when the feed carried no content, so the view can
-  // show an honest empty state instead of inventing filler.
-  // @todo `content` may carry raw HTML (e.g. podcast `itunes:summary`); it is
-  // rendered as escaped text for now. Sanitize + render markup in a follow-up.
+  function itemContent(item: Record<string, unknown>): string {
+    return typeof item.content === "string" ? item.content.trim() : "";
+  }
+
+  // Split a synced item's real plain-text `content` into display paragraphs:
+  // blank lines separate paragraphs, single (soft-wrap) newlines collapse to
+  // spaces. Returns an empty array when the feed carried no content, so the view
+  // can show an honest empty state instead of inventing filler.
   const contentParagraphs = (item: Record<string, unknown>) => {
-    const content = typeof item.content === "string" ? item.content.trim() : "";
+    const content = itemContent(item);
     if (!content) {
       return [];
     }
@@ -588,6 +595,18 @@ export const useFeedStore = defineStore("feed", () => {
       .split(PARAGRAPH_BREAK)
       .map((paragraph) => paragraph.replace(SOFT_WRAP, " ").trim())
       .filter(Boolean);
+  };
+
+  // Sanitized, allowlisted HTML for feed content that carries markup (RSS
+  // content:encoded, podcast itunes:summary). Returns "" for plain-text content
+  // (which the view renders as paragraphs) or when content is absent, so the
+  // view only renders markup when there genuinely is some.
+  const contentHtml = (item: Record<string, unknown>): string => {
+    const content = itemContent(item);
+    if (!content || !HTML_MARKUP.test(content)) {
+      return "";
+    }
+    return sanitizeFeedHtml(content);
   };
 
   const sourceMeta = (type: string) => SOURCES[type as keyof typeof SOURCES];
@@ -617,6 +636,7 @@ export const useFeedStore = defineStore("feed", () => {
     toggleConn,
     cardComponentName,
     contentParagraphs,
+    contentHtml,
     sourceMeta,
   };
 });
