@@ -16,7 +16,9 @@ import { deleteBillingRecords } from "./subscriptions";
 //   2. Delete the `users` row. Every user-owned table (feeds, feed_items via
 //      feeds, integrations with their OAuth tokens, user_settings,
 //      subscriptions) declares ON DELETE CASCADE on user_id, so this one
-//      delete removes all associated data.
+//      delete removes all associated data. If it throws, step 1 has already
+//      irreversibly purged billing, so we log the half-deleted state loudly for
+//      reconciliation before rethrowing — this is not a "nothing happened".
 //   3. Delete the Clerk identity last, and treat its failure as non-fatal: by
 //      this point the account data is already gone, so failing the request
 //      would tell the user "nothing happened" while everything is irreversibly
@@ -36,7 +38,15 @@ export async function deleteUserAccount(
   user: DbUser,
 ): Promise<void> {
   await deleteBillingRecords(user.id);
-  await useDb().delete(users).where(eq(users.id, user.id));
+  try {
+    await useDb().delete(users).where(eq(users.id, user.id));
+  } catch (caughtError) {
+    console.error(
+      `Stripe billing was purged for user ${user.id} but deleting the users row failed; the account is half-deleted and must be reconciled:`,
+      caughtError,
+    );
+    throw caughtError;
+  }
   try {
     await deleteClerkUser(event, user.providerId);
   } catch (caughtError) {

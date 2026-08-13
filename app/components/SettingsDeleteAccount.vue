@@ -5,6 +5,13 @@ const { deleting, error, deleteAccount } = useAccount();
 
 const confirming = ref(false);
 const typedEmail = ref("");
+// `deleting` only covers the DELETE request; it clears before the subsequent
+// sign-out + redirect settle. `finishing` holds the busy state across that tail
+// so the confirm button can't be double-submitted into a second (rate-limited,
+// already-deleted) request while we navigate away.
+const finishing = ref(false);
+
+const busy = computed(() => deleting.value || finishing.value);
 
 const accountEmail = computed(
   () => user.value?.primaryEmailAddress?.emailAddress ?? "",
@@ -14,7 +21,7 @@ const accountEmail = computed(
 // enabled, so an unattended session can't be wiped with two stray clicks.
 const canConfirm = computed(
   () =>
-    !deleting.value &&
+    !busy.value &&
     typedEmail.value.trim().toLowerCase() ===
       accountEmail.value.toLowerCase() &&
     accountEmail.value.length > 0,
@@ -45,6 +52,13 @@ async function signOutAndRedirect() {
   } catch (signOutError) {
     console.error("Sign-out after account deletion failed:", signOutError);
   } finally {
+    // Clear any local session so the redirect can't carry a still-valid token
+    // that would re-run getOrCreateUser and resurrect an empty users row.
+    try {
+      await clerk.value?.session?.remove();
+    } catch (removeError) {
+      console.error("Could not clear the local Clerk session:", removeError);
+    }
     window.location.href = "/login";
   }
 }
@@ -54,6 +68,7 @@ async function confirm() {
   if (!deleted) {
     return;
   }
+  finishing.value = true;
   await signOutAndRedirect();
 }
 </script>
@@ -78,14 +93,14 @@ async function confirm() {
       <InputText
         v-model="typedEmail"
         placeholder="Enter your email to confirm"
-        :disabled="deleting"
+        :disabled="busy"
       />
       <p v-if="error" class="delete-error">{{ error }}</p>
       <div class="delete-actions">
         <button class="btn btn-danger" :disabled="!canConfirm" @click="confirm">
-          {{ deleting ? "Deleting…" : "Yes, delete everything" }}
+          {{ busy ? "Deleting…" : "Yes, delete everything" }}
         </button>
-        <button class="btn" :disabled="deleting" @click="cancel">Cancel</button>
+        <button class="btn" :disabled="busy" @click="cancel">Cancel</button>
       </div>
     </div>
   </section>

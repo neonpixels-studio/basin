@@ -28,10 +28,11 @@ const dialect = new PgDialect();
 // Compare two drizzle SQL conditions by their rendered SQL + params, so the
 // test fails if the delete ever targets the wrong column or user id.
 function sameCondition(actual: unknown, expected: unknown): boolean {
-  const a = dialect.sqlToQuery(actual as never);
-  const b = dialect.sqlToQuery(expected as never);
+  const actualQuery = dialect.sqlToQuery(actual as never);
+  const expectedQuery = dialect.sqlToQuery(expected as never);
   return (
-    a.sql === b.sql && JSON.stringify(a.params) === JSON.stringify(b.params)
+    actualQuery.sql === expectedQuery.sql &&
+    JSON.stringify(actualQuery.params) === JSON.stringify(expectedQuery.params)
   );
 }
 
@@ -75,6 +76,21 @@ describe("deleteUserAccount", () => {
     ).rejects.toThrow("stripe down");
     expect(mockDelete).not.toHaveBeenCalled();
     expect(mockDeleteClerkUser).not.toHaveBeenCalled();
+  });
+
+  it("logs the half-deleted state and rethrows when the db delete fails after billing was purged", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    mockWhere.mockRejectedValue(new Error("db down"));
+    await expect(
+      deleteUserAccount({ context: { user } } as never, user),
+    ).rejects.toThrow("db down");
+    expect(mockDeleteBillingRecords).toHaveBeenCalledWith(7);
+    expect(mockDeleteClerkUser).not.toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("half-deleted"),
+      expect.any(Error),
+    );
+    errorSpy.mockRestore();
   });
 
   it("still resolves (data already gone) when the clerk deletion fails, logging for reconciliation", async () => {

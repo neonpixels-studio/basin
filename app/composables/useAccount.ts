@@ -2,14 +2,9 @@
 // or call $fetch directly. Mirrors useBilling's shape (loading/error refs plus
 // an action) for consistency.
 export function useAccount() {
-  const { getToken } = useAuth();
+  const authHeaders = useAuthHeaders();
   const deleting = ref(false);
   const error = ref<string | null>(null);
-
-  async function authHeaders(): Promise<Record<string, string>> {
-    const token = await getToken.value();
-    return token ? { Authorization: `Bearer ${token}` } : {};
-  }
 
   // Resolves true when the account was deleted, false when the request failed
   // (with `error` set). Returning a boolean lets the caller decide whether to

@@ -117,6 +117,9 @@ export async function deleteBillingRecords(userId: number): Promise<void> {
     if (!isStripeResourceMissing(caughtError)) {
       throw caughtError;
     }
+    console.warn(
+      `Stripe customer ${subscription.stripeCustomerId} was already gone (resource_missing) when purging billing for user ${userId}; treating as done.`,
+    );
   }
 }
 
@@ -342,7 +345,13 @@ export async function upsertSubscriptionFromStripe(
   // fully close the window (check-then-insert is not atomic): a delete that
   // lands between this check and the write below still 500s once, which
   // self-heals on Stripe's retry (by then the check sees the user is gone).
-  if (!(await userExists(db, userId))) {
+  // Only reachable via the metadata fallback — when existingByCustomer resolved
+  // the userId, the FK already guarantees the user exists, so we skip the query
+  // on that hot path.
+  if (!existingByCustomer && !(await userExists(db, userId))) {
+    console.warn(
+      `Dropping Stripe event ${event.id}: user ${userId} no longer exists (likely account deletion).`,
+    );
     return;
   }
 

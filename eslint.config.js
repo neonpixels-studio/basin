@@ -41,6 +41,7 @@ const nuxtGlobals = {
   useUserSettings: "readonly",
   useBilling: "readonly",
   useAccount: "readonly",
+  useAuthHeaders: "readonly",
   useUserProfile: "readonly",
   useInputValidation: "readonly",
   useInfiniteScroll: "readonly",
