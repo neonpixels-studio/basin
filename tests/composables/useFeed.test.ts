@@ -284,6 +284,12 @@ describe("useFeedStore", () => {
       ).toEqual(["3 < 5 and 5 > 3 is true"]);
     });
 
+    it("treats angle-bracketed non-HTML identifiers as plain text", () => {
+      expect(
+        feed.contentParagraphs({ content: "Run deploy <env> to ship it" }),
+      ).toEqual(["Run deploy <env> to ship it"]);
+    });
+
     it("does not fabricate filler from excerpt/title when content is absent", () => {
       const result = feed.contentParagraphs({
         excerpt: "An excerpt",
@@ -298,17 +304,11 @@ describe("useFeedStore", () => {
 
   // Routing only: contentHtml decides plain-text-vs-markup and delegates the
   // actual sanitization to sanitizeFeedHtml. The security guarantees (dangerous
-  // markup stripped) are asserted in tests/utils/sanitizeHtml.test.ts, which
-  // runs under jsdom where DOMPurify behaves as it does in the browser.
-  describe("contentHtml", () => {
-    it("returns non-empty sanitized markup for HTML-bearing content", () => {
-      const html = feed.contentHtml({
-        content: "<p>Show notes with <strong>bold</strong>.</p>",
-      });
-      expect(html).toContain("Show notes with");
-      expect(html).toContain("<strong>bold</strong>");
-    });
-
+  // markup stripped) and the sanitized structure (paragraph wrapping) are
+  // asserted in tests/stores/feedContent.test.ts and
+  // tests/utils/sanitizeHtml.test.ts, which run under jsdom where DOMPurify
+  // behaves as it does in the browser.
+  describe("contentHtml (routing)", () => {
     it("returns an empty string for plain-text content", () => {
       expect(feed.contentHtml({ content: "Just plain text." })).toBe("");
       expect(feed.contentHtml({ content: "First.\n\nSecond." })).toBe("");
@@ -318,19 +318,36 @@ describe("useFeedStore", () => {
       expect(feed.contentHtml({ content: "3 < 5 and 5 > 3 is true" })).toBe("");
     });
 
-    it("wraps inline-only markup's newline-separated blocks in paragraphs", () => {
-      const html = feed.contentHtml({
-        content: 'First with <a href="https://x.com">link</a>\n\nSecond block',
-      });
-      expect(html).toContain("<p>");
-      expect(html.match(/<p>/g)?.length).toBe(2);
-      expect(html).toContain("Second block");
+    it("returns an empty string for angle-bracketed non-HTML identifiers", () => {
+      expect(feed.contentHtml({ content: "Run deploy <env> to ship it" })).toBe(
+        "",
+      );
     });
 
     it("returns an empty string when content is missing or non-string", () => {
       expect(feed.contentHtml({})).toBe("");
       expect(feed.contentHtml({ content: null })).toBe("");
       expect(feed.contentHtml({ content: 42 })).toBe("");
+    });
+  });
+
+  describe("postParagraphs", () => {
+    it("splits plain-text post content into paragraphs", () => {
+      expect(feed.postParagraphs({ content: "One.\n\nTwo." })).toEqual([
+        "One.",
+        "Two.",
+      ]);
+    });
+
+    it("shows literal angle-bracket text verbatim instead of an empty state", () => {
+      expect(feed.postParagraphs({ content: "<b>hi</b> there" })).toEqual([
+        "<b>hi</b> there",
+      ]);
+    });
+
+    it("returns an empty array when content is absent", () => {
+      expect(feed.postParagraphs({})).toEqual([]);
+      expect(feed.postParagraphs({ content: null })).toEqual([]);
     });
   });
 

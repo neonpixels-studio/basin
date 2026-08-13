@@ -22,7 +22,11 @@ const paragraphs = computed(() =>
 const contentHtml = computed(() =>
   item.value ? feedStore.contentHtml(item.value) : "",
 );
-const postText = computed(() => paragraphs.value.join("\n\n"));
+// The post/tweet body is shown verbatim as text, so it uses the ungated
+// plain-text paragraphs rather than the markup-aware contentParagraphs.
+const postText = computed(() =>
+  item.value ? feedStore.postParagraphs(item.value).join("\n\n") : "",
+);
 
 const podcastMediaUrl = computed(() => item.value?.mediaUrl || null);
 const podcastCanPlay = computed(() => player.canPlay(podcastMediaUrl.value));

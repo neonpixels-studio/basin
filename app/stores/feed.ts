@@ -573,47 +573,67 @@ export const useFeedStore = defineStore("feed", () => {
 
   const PARAGRAPH_BREAK = /\n\s*\n/;
   const SOFT_WRAP = /\s*\n\s*/g;
-  // A single well-formed tag (`<p>`, `</p>`, `<br/>`, `<a href="…">`) marks the
-  // content as markup so it takes the sanitize-and-render path instead of the
-  // plain-text paragraph split. Deliberately anchored to a real tag shape (name
-  // then optional attributes then `>`), not `<[\s\S]*>`, so a stray `<` in prose
-  // (`3 < 5`) doesn't get mistaken for markup.
-  const HTML_MARKUP = /<\/?[a-z][a-z0-9]*(?:\s[^<>]*)?\/?>/i;
-  // Sanitized markup already carrying its own block structure. When absent, the
-  // markup is inline-only (e.g. plain text with a link) and any author paragraph
-  // breaks live in raw newlines that HTML would collapse — so those get wrapped
-  // into <p> blocks below instead.
+  // A tag from a known HTML element name marks the content as markup, so it takes
+  // the sanitize-and-render path instead of the plain-text paragraph split. Only
+  // real element names count (not any `<identifier>`), so technical prose like
+  // `Run deploy <env> to ship` or `3 < 5` is treated as plain text, not markup
+  // whose "tags" would then be stripped and silently delete the author's words.
+  const HTML_TAG_NAME =
+    "p|br|div|span|a|strong|b|em|i|u|s|ul|ol|li|dl|dt|dd|blockquote|code|pre|h[1-6]|hr|img|figure|figcaption|table|thead|tbody|tr|td|th|iframe|script|style";
+  const HTML_MARKUP = new RegExp(`<\\/?(?:${HTML_TAG_NAME})(?=[\\s/>])`, "i");
+  // Sanitized markup already carrying its own paragraph structure. When absent,
+  // the markup is inline-only (e.g. plain text with a link) and any author
+  // paragraph breaks live in raw newlines that HTML would collapse — so those get
+  // wrapped into <p> blocks below instead. `br` is intentionally excluded: it is
+  // a line break, not a paragraph, so content using `br` inline still needs its
+  // blank-line paragraph breaks preserved.
   const BLOCK_LEVEL_MARKUP =
-    /<(?:p|div|ul|ol|li|blockquote|h[1-6]|pre|hr|br)(?=[\s/>])/i;
+    /<(?:p|ul|ol|li|blockquote|h[1-6]|pre|hr)(?=[\s/>])/i;
 
   function itemContent(item: Record<string, unknown>): string {
     return typeof item.content === "string" ? item.content.trim() : "";
   }
 
-  // Split a synced item's real plain-text `content` into display paragraphs:
-  // blank lines separate paragraphs, single (soft-wrap) newlines collapse to
-  // spaces. Markup content is handled by contentHtml instead, so return an empty
-  // array for it here — never fall back to rendering the raw tags as escaped
-  // text. Also returns [] when the feed carried no content, so the view can show
-  // an honest empty state instead of inventing filler.
+  // Blank lines separate paragraphs; single (soft-wrap) newlines collapse to
+  // spaces. Shared by the plain-text and inline-markup paragraph builders.
+  function splitTextBlocks(text: string): string[] {
+    return text
+      .split(PARAGRAPH_BREAK)
+      .map((block) => block.replace(SOFT_WRAP, " ").trim())
+      .filter(Boolean);
+  }
+
+  // Split a synced item's real plain-text `content` into display paragraphs.
+  // Markup content is handled by contentHtml instead, so return an empty array
+  // for it here — never fall back to rendering the raw tags as escaped text. Also
+  // returns [] when the feed carried no content, so the view can show an honest
+  // empty state instead of inventing filler.
   const contentParagraphs = (item: Record<string, unknown>) => {
     const content = itemContent(item);
     if (!content || HTML_MARKUP.test(content)) {
       return [];
     }
-    return content
-      .split(PARAGRAPH_BREAK)
-      .map((paragraph) => paragraph.replace(SOFT_WRAP, " ").trim())
-      .filter(Boolean);
+    return splitTextBlocks(content);
+  };
+
+  // Verbatim-text paragraphs for the post/tweet detail, which shows content as
+  // typed and never renders HTML. Unlike contentParagraphs it does not gate on
+  // markup: a Bluesky post is plain text, so any angle brackets a user typed are
+  // shown as-is rather than collapsing the post to an empty state.
+  const postParagraphs = (item: Record<string, unknown>) => {
+    const content = itemContent(item);
+    if (!content) {
+      return [];
+    }
+    return splitTextBlocks(content);
   };
 
   // Wrap inline-only markup's newline-separated blocks in <p> so the author's
-  // paragraph breaks survive (HTML collapses the raw newlines otherwise).
-  function wrapInlineParagraphs(html: string): string {
-    return html
-      .split(PARAGRAPH_BREAK)
-      .map((block) => block.replace(SOFT_WRAP, " ").trim())
-      .filter(Boolean)
+  // paragraph breaks survive. Operates on the raw content (not serialized output)
+  // and is re-sanitized by the caller, so a break landing mid-tag can't produce
+  // unsanitized markup.
+  function wrapInlineParagraphs(content: string): string {
+    return splitTextBlocks(content)
       .map((block) => `<p>${block}</p>`)
       .join("");
   }
@@ -631,7 +651,10 @@ export const useFeedStore = defineStore("feed", () => {
     if (!sanitized || BLOCK_LEVEL_MARKUP.test(sanitized)) {
       return sanitized;
     }
-    return wrapInlineParagraphs(sanitized);
+    // Re-sanitize after wrapping so nothing edited post-sanitization reaches the
+    // v-html sink; DOMPurify reparses the wrapped markup and fixes any break that
+    // fell inside a tag.
+    return sanitizeFeedHtml(wrapInlineParagraphs(content));
   };
 
   const sourceMeta = (type: string) => SOURCES[type as keyof typeof SOURCES];
@@ -661,6 +684,7 @@ export const useFeedStore = defineStore("feed", () => {
     toggleConn,
     cardComponentName,
     contentParagraphs,
+    postParagraphs,
     contentHtml,
     sourceMeta,
   };

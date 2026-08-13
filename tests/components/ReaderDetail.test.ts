@@ -445,6 +445,16 @@ describe("ReaderDetail", () => {
       );
     });
 
+    it("renders a post whose text contains literal markup verbatim, not the empty state", async () => {
+      state.activeItem = makeTweet({ content: "<b>hello</b> world" }) as never;
+      const wrapper = mountDetail();
+      await wrapper.vm.$nextTick();
+
+      const body = wrapper.find(".detail-tweet");
+      expect(body.text()).toBe("<b>hello</b> world");
+      expect(wrapper.text()).not.toContain("This post has no text.");
+    });
+
     it("shows an honest empty state for a tweet with no text", async () => {
       state.activeItem = makeTweet({ content: null }) as never;
       const wrapper = mountDetail();
