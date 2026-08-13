@@ -66,6 +66,12 @@ describe("useFeedStore", () => {
     it("counts saved items", () => {
       expect(feed.countFor("saved")).toBe(1);
     });
+
+    it("counts starred items", () => {
+      state.items[0].starred = true;
+      state.items[2].starred = true;
+      expect(feed.countFor("starred")).toBe(2);
+    });
   });
 
   describe("unreadCount", () => {
@@ -96,6 +102,14 @@ describe("useFeedStore", () => {
       state.filter = "saved";
       expect(feed.visibleItems).toHaveLength(1);
       expect(feed.visibleItems.every((i) => i.saved)).toBe(true);
+    });
+
+    it("filters starred items", () => {
+      state.items[1].starred = true;
+      state.items[3].starred = true;
+      state.filter = "starred";
+      expect(feed.visibleItems).toHaveLength(2);
+      expect(feed.visibleItems.every((i) => i.starred)).toBe(true);
     });
 
     it("applies unreadOnly across filter", () => {
@@ -710,6 +724,17 @@ describe("useFeedStore", () => {
         const [action, payload] = queueAction.mock.calls[0];
         expect(action).toBe("star");
         expect(payload.starred).toBe(false);
+      });
+
+      it("shows a confirmation toast reflecting the new starred state", async () => {
+        const feedItem = state.items[0];
+        feedItem.starred = false;
+
+        await feed.toggleStar(feedItem);
+        expect(showToast).toHaveBeenCalledWith("Starred");
+
+        await feed.toggleStar(feedItem);
+        expect(showToast).toHaveBeenCalledWith("Removed from starred");
       });
 
       it("rolls back the local state and shows a toast when queueAction rejects", async () => {

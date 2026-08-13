@@ -27,6 +27,15 @@ describe("FeedItem", () => {
     expect(wrapper.emitted("save")).toBeTruthy();
   });
 
+  it("passes star emit upward", async () => {
+    const wrapper = shallowMount(FeedItem, {
+      props: { item: makeArticle() },
+    });
+    wrapper.findComponent({ name: "ArticleCard" }).vm.$emit("star");
+    await wrapper.vm.$nextTick();
+    expect(wrapper.emitted("star")).toBeTruthy();
+  });
+
   it("matches snapshot for article", () => {
     const wrapper = shallowMount(FeedItem, {
       props: { item: makeArticle() },

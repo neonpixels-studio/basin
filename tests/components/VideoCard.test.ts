@@ -222,4 +222,11 @@ describe("VideoCard", () => {
       expect(wrapper.emitted("open")).toBeFalsy();
     });
   });
+
+  it("re-emits star from the card actions", async () => {
+    const wrapper = shallowMount(VideoCard, { props: { item: makeVideo() } });
+    wrapper.findComponent({ name: "CardActions" }).vm.$emit("star");
+    await wrapper.vm.$nextTick();
+    expect(wrapper.emitted("star")).toHaveLength(1);
+  });
 });

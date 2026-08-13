@@ -1,6 +1,6 @@
 <script setup>
 defineProps({ item: { type: Object, required: true } });
-defineEmits(["save", "open"]);
+defineEmits(["save", "star", "open"]);
 </script>
 
 <template>
@@ -12,6 +12,14 @@ defineEmits(["save", "open"]);
       @click.stop="$emit('save')"
     >
       <RIcon :name="item.saved ? 'bookmarkFill' : 'bookmark'" :size="16" />
+    </button>
+    <button
+      class="icon-btn"
+      :class="{ on: item.starred }"
+      :title="item.starred ? 'Starred' : 'Star'"
+      @click.stop="$emit('star')"
+    >
+      <RIcon :name="item.starred ? 'starFill' : 'star'" :size="16" />
     </button>
     <button class="icon-btn" title="Open" @click.stop="$emit('open')">
       <RIcon name="bookOpen" :size="16" />
