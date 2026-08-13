@@ -43,17 +43,26 @@ const ALLOWED_ATTR = ["href", "title"];
 const SAFE_URI_REGEXP = /^(?:https?|mailto):/i;
 
 const ANCHOR_TAG_NAME = "A";
+const HREF_ATTR = "href";
 
 // Links in feed content open the origin site; force them into a new tab and
 // strip the opener reference so the target page can't reach back into the app.
+// Only anchors that kept a (safe, allowlisted) href are hardened — an anchor
+// whose href was rejected (relative or unsafe protocol) is left as plain text,
+// not stamped with a misleading target on a dead link.
 function hardenAnchor(node: Element): void {
-  if (node.tagName !== ANCHOR_TAG_NAME) {
+  if (node.tagName !== ANCHOR_TAG_NAME || !node.hasAttribute(HREF_ATTR)) {
     return;
   }
   node.setAttribute("target", "_blank");
   node.setAttribute("rel", "noopener noreferrer");
 }
 
+// The hook is registered on the shared DOMPurify singleton, so it affects every
+// sanitize call in the app. sanitizeFeedHtml is the only caller, and hardening
+// an allowlisted anchor is safe for any HTML, so a single global registration
+// is fine here — revisit (dedicated instance / removeHook) if another sink
+// starts using DOMPurify with different anchor expectations.
 let hooksInstalled = false;
 
 function installHooksOnce(): void {
@@ -65,8 +74,11 @@ function installHooksOnce(): void {
 }
 
 // Returns a sanitized, allowlisted HTML string safe to render, or "" for
-// non-string/blank input or when no DOM is available (SSR) — never the raw,
-// unsanitized markup.
+// non-string/blank input or when no DOM is available — never the raw,
+// unsanitized markup. The "" on no-DOM guards SSR: this app only renders feed
+// content client-side (the reader detail is behind `v-if` on a client-set
+// active item), so the server never produces markup to mismatch against on
+// hydration.
 export function sanitizeFeedHtml(html: unknown): string {
   if (typeof html !== "string" || html.trim() === "") {
     return "";
@@ -79,5 +91,9 @@ export function sanitizeFeedHtml(html: unknown): string {
     ALLOWED_TAGS,
     ALLOWED_ATTR,
     ALLOWED_URI_REGEXP: SAFE_URI_REGEXP,
+    // ALLOWED_ATTR does not by itself drop data-*/aria-*; disable them
+    // explicitly so only href/title survive, as the allowlist intends.
+    ALLOW_DATA_ATTR: false,
+    ALLOW_ARIA_ATTR: false,
   });
 }

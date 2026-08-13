@@ -269,6 +269,21 @@ describe("useFeedStore", () => {
       expect(feed.contentParagraphs({ content: "   \n  " })).toEqual([]);
     });
 
+    it("returns an empty array for markup content so raw tags are never rendered as text", () => {
+      expect(
+        feed.contentParagraphs({ content: "<iframe src=x></iframe>" }),
+      ).toEqual([]);
+      expect(
+        feed.contentParagraphs({ content: "<p>Handled by contentHtml</p>" }),
+      ).toEqual([]);
+    });
+
+    it("treats prose with a stray angle bracket as plain text, not markup", () => {
+      expect(
+        feed.contentParagraphs({ content: "3 < 5 and 5 > 3 is true" }),
+      ).toEqual(["3 < 5 and 5 > 3 is true"]);
+    });
+
     it("does not fabricate filler from excerpt/title when content is absent", () => {
       const result = feed.contentParagraphs({
         excerpt: "An excerpt",
@@ -297,6 +312,10 @@ describe("useFeedStore", () => {
     it("returns an empty string for plain-text content", () => {
       expect(feed.contentHtml({ content: "Just plain text." })).toBe("");
       expect(feed.contentHtml({ content: "First.\n\nSecond." })).toBe("");
+    });
+
+    it("returns an empty string for prose with a stray angle bracket", () => {
+      expect(feed.contentHtml({ content: "3 < 5 and 5 > 3 is true" })).toBe("");
     });
 
     it("returns an empty string when content is missing or non-string", () => {

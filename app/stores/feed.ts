@@ -573,10 +573,12 @@ export const useFeedStore = defineStore("feed", () => {
 
   const PARAGRAPH_BREAK = /\n\s*\n/;
   const SOFT_WRAP = /\s*\n\s*/g;
-  // Any run that looks like an HTML tag (`<p>`, `<a href=…>`, `<br/>`) marks the
+  // A single well-formed tag (`<p>`, `</p>`, `<br/>`, `<a href="…">`) marks the
   // content as markup so it takes the sanitize-and-render path instead of the
-  // plain-text paragraph split, which would show the tags escaped.
-  const HTML_MARKUP = /<[a-z][\s\S]*>/i;
+  // plain-text paragraph split. Deliberately anchored to a real tag shape (name
+  // then optional attributes then `>`), not `<[\s\S]*>`, so a stray `<` in prose
+  // (`3 < 5`) doesn't get mistaken for markup.
+  const HTML_MARKUP = /<\/?[a-z][a-z0-9]*(?:\s[^<>]*)?\/?>/i;
 
   function itemContent(item: Record<string, unknown>): string {
     return typeof item.content === "string" ? item.content.trim() : "";
@@ -584,11 +586,13 @@ export const useFeedStore = defineStore("feed", () => {
 
   // Split a synced item's real plain-text `content` into display paragraphs:
   // blank lines separate paragraphs, single (soft-wrap) newlines collapse to
-  // spaces. Returns an empty array when the feed carried no content, so the view
-  // can show an honest empty state instead of inventing filler.
+  // spaces. Markup content is handled by contentHtml instead, so return an empty
+  // array for it here — never fall back to rendering the raw tags as escaped
+  // text. Also returns [] when the feed carried no content, so the view can show
+  // an honest empty state instead of inventing filler.
   const contentParagraphs = (item: Record<string, unknown>) => {
     const content = itemContent(item);
-    if (!content) {
+    if (!content || HTML_MARKUP.test(content)) {
       return [];
     }
     return content

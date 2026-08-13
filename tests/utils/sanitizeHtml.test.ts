@@ -101,4 +101,20 @@ describe("sanitizeFeedHtml", () => {
     const output = sanitizeFeedHtml('<a href="mailto:hi@example.com">mail</a>');
     expect(output).toContain('href="mailto:hi@example.com"');
   });
+
+  it("strips data-* and aria-* attributes", () => {
+    const output = sanitizeFeedHtml(
+      '<p data-track="x" aria-hidden="true">hi</p>',
+    );
+    expect(output).not.toContain("data-track");
+    expect(output).not.toContain("aria-hidden");
+    expect(output).toBe("<p>hi</p>");
+  });
+
+  it("returns an empty string when every element is disallowed", () => {
+    expect(sanitizeFeedHtml("<script>alert(1)</script>")).toBe("");
+    expect(
+      sanitizeFeedHtml('<iframe src="https://evil.example"></iframe>'),
+    ).toBe("");
+  });
 });
