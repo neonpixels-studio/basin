@@ -3,6 +3,18 @@
 exports[`CardActions > matches snapshot (saved) 1`] = `
 "<div class="card-actions"><button class="icon-btn on" title="Saved">
     <r-icon-stub name="bookmarkFill" size="16"></r-icon-stub>
+  </button><button class="icon-btn" title="Star">
+    <r-icon-stub name="star" size="16"></r-icon-stub>
+  </button><button class="icon-btn" title="Open">
+    <r-icon-stub name="bookOpen" size="16"></r-icon-stub>
+  </button></div>"
+`;
+
+exports[`CardActions > matches snapshot (starred) 1`] = `
+"<div class="card-actions"><button class="icon-btn" title="Save for later">
+    <r-icon-stub name="bookmark" size="16"></r-icon-stub>
+  </button><button class="icon-btn on" title="Starred">
+    <r-icon-stub name="starFill" size="16"></r-icon-stub>
   </button><button class="icon-btn" title="Open">
     <r-icon-stub name="bookOpen" size="16"></r-icon-stub>
   </button></div>"
@@ -11,6 +23,8 @@ exports[`CardActions > matches snapshot (saved) 1`] = `
 exports[`CardActions > matches snapshot (unsaved) 1`] = `
 "<div class="card-actions"><button class="icon-btn" title="Save for later">
     <r-icon-stub name="bookmark" size="16"></r-icon-stub>
+  </button><button class="icon-btn" title="Star">
+    <r-icon-stub name="star" size="16"></r-icon-stub>
   </button><button class="icon-btn" title="Open">
     <r-icon-stub name="bookOpen" size="16"></r-icon-stub>
   </button></div>"

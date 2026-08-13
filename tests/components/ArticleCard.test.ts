@@ -66,6 +66,13 @@ describe("ArticleCard", () => {
     expect(wrapper.emitted("open")).toHaveLength(1);
   });
 
+  it("re-emits star from the card actions", async () => {
+    const wrapper = shallowMount(ArticleCard, { props: { item } });
+    wrapper.findComponent({ name: "CardActions" }).vm.$emit("star");
+    await wrapper.vm.$nextTick();
+    expect(wrapper.emitted("star")).toHaveLength(1);
+  });
+
   it("matches snapshot", () => {
     const wrapper = shallowMount(ArticleCard, { props: { item } });
     expect(wrapper.html()).toMatchSnapshot();

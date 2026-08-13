@@ -71,6 +71,7 @@ export const useFeedStore = defineStore("feed", () => {
     { id: "video", label: "YouTube", c: "var(--src-video)" },
     { id: "tweet", label: "Bluesky", c: "var(--src-tweet)" },
     { id: "saved", label: "Saved", c: "var(--accent)" },
+    { id: "starred", label: "Starred", c: "var(--accent)" },
   ];
 
   const skeletonKinds = ["article", "video", "tweet", "podcast", "article"];
@@ -86,6 +87,9 @@ export const useFeedStore = defineStore("feed", () => {
     }
     if (filter === "saved") {
       return item.saved === true;
+    }
+    if (filter === "starred") {
+      return item.starred === true;
     }
     return item.type === filter;
   }
@@ -391,6 +395,7 @@ export const useFeedStore = defineStore("feed", () => {
     const { showToast } = useToast();
     const previousStarred = item.starred;
     item.starred = !item.starred;
+    showToast(item.starred ? "Starred" : "Removed from starred");
 
     const { queueAction } = useSyncQueue();
     try {

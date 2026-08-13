@@ -4,16 +4,19 @@ import { feedItems, feeds } from "../db/schema";
 import { FEED_SOURCE_TO_ITEM_TYPE } from "../../app/utils/feedSources";
 
 // Dashboard filter ids that are not backed by a feed source: "all" applies no
-// source restriction, "saved" restricts on savedAt rather than on the source.
+// source restriction; "saved" restricts on savedAt and "starred" on the starred
+// column, rather than on the source.
 export const ALL_FILTER = "all";
 export const SAVED_FILTER = "saved";
+export const STARRED_FILTER = "starred";
 
-// Every filter id the endpoint accepts: the two non-source views plus each
-// item type produced by a known feed source. Anything else is rejected up front
-// (fail loud) rather than silently marking nothing read.
+// Every filter id the endpoint accepts: the non-source views plus each item type
+// produced by a known feed source. Anything else is rejected up front (fail
+// loud) rather than silently marking nothing read.
 export const VALID_MARK_ALL_READ_FILTERS = new Set<string>([
   ALL_FILTER,
   SAVED_FILTER,
+  STARRED_FILTER,
   ...Object.values(FEED_SOURCE_TO_ITEM_TYPE),
 ]);
 
@@ -34,10 +37,16 @@ function feedSourcesForItemType(itemType: string): string[] {
     .map(([source]) => source);
 }
 
-// null means "no source restriction" (the "all" and "saved" views span every
-// source); "saved" is narrowed later by savedAt, not by source.
+// null means "no source restriction" (the "all", "saved" and "starred" views
+// span every source); "saved"/"starred" are narrowed later by their own column,
+// not by source.
 function feedSourcesForFilter(filter: string | undefined): string[] | null {
-  if (!filter || filter === ALL_FILTER || filter === SAVED_FILTER) {
+  if (
+    !filter ||
+    filter === ALL_FILTER ||
+    filter === SAVED_FILTER ||
+    filter === STARRED_FILTER
+  ) {
     return null;
   }
   return feedSourcesForItemType(filter);
@@ -62,12 +71,16 @@ async function selectUserFeedIds(
   return rows.map((row) => row.id);
 }
 
-// Only the "saved" view narrows the update beyond feed ownership + unread.
-function savedOnlyCondition(filter: string | undefined) {
-  if (filter !== SAVED_FILTER) {
-    return undefined;
+// The "saved" and "starred" views narrow the update beyond feed ownership +
+// unread: "saved" to items with a savedAt, "starred" to starred items.
+function viewOnlyCondition(filter: string | undefined) {
+  if (filter === SAVED_FILTER) {
+    return isNotNull(feedItems.savedAt);
   }
-  return isNotNull(feedItems.savedAt);
+  if (filter === STARRED_FILTER) {
+    return eq(feedItems.starred, true);
+  }
+  return undefined;
 }
 
 // Account-scoped bulk mark-as-read: marks every unread feed item the user owns
@@ -93,7 +106,7 @@ export async function markAllItemsRead(
       and(
         inArray(feedItems.feedId, feedIds),
         isNull(feedItems.readAt),
-        savedOnlyCondition(options.filter),
+        viewOnlyCondition(options.filter),
       ),
     );
 }

@@ -3,7 +3,7 @@ import { computed } from "vue";
 import { contentText } from "~/utils/itemContent";
 
 const props = defineProps({ item: { type: Object, required: true } });
-defineEmits(["save", "open"]);
+defineEmits(["save", "star", "open"]);
 
 const initials = computed(() =>
   props.item.source
@@ -30,9 +30,18 @@ const postText = computed(() => contentText(props.item.content));
       <button
         class="icon-btn ml-auto"
         :class="{ on: item.saved }"
+        :title="item.saved ? 'Saved' : 'Save for later'"
         @click.stop="$emit('save')"
       >
         <RIcon :name="item.saved ? 'bookmarkFill' : 'bookmark'" :size="15" />
+      </button>
+      <button
+        class="icon-btn"
+        :class="{ on: item.starred }"
+        :title="item.starred ? 'Starred' : 'Star'"
+        @click.stop="$emit('star')"
+      >
+        <RIcon :name="item.starred ? 'starFill' : 'star'" :size="15" />
       </button>
     </div>
   </article>
@@ -90,7 +99,7 @@ const postText = computed(() => contentText(props.item.content));
 .tw-actions {
   display: flex;
   align-items: center;
-  gap: 20px;
+  gap: 2px;
   margin-top: 14px;
   color: var(--muted);
   font-size: 12px;
