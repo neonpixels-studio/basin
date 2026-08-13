@@ -290,6 +290,15 @@ describe("useFeedStore", () => {
       ).toEqual(["Run deploy <env> to ship it"]);
     });
 
+    it("treats prose inequalities using real tag letters as plain text", () => {
+      expect(
+        feed.contentParagraphs({ content: "if a<b and b>c then stop" }),
+      ).toEqual(["if a<b and b>c then stop"]);
+      expect(
+        feed.contentParagraphs({ content: "check x<i and y>0 first" }),
+      ).toEqual(["check x<i and y>0 first"]);
+    });
+
     it("does not fabricate filler from excerpt/title when content is absent", () => {
       const result = feed.contentParagraphs({
         excerpt: "An excerpt",

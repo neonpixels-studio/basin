@@ -147,10 +147,14 @@ const HTML_ELEMENT_NAMES = [
   "var",
 ];
 
-// Matches an opening or closing tag (`<p>`, `</p>`, `<br/>`, `<a href="…">`) for
-// any of the given names, requiring a real tag boundary after the name.
+// Matches a well-formed opening/closing tag for any of the given names: either a
+// bare tag (`<p>`, `</p>`, `<br/>`) or a tag with a real attribute
+// (`<a href="…">`). Requiring that shape — not just a boundary char — keeps a
+// prose inequality like `if a<b and b>c` from looking like a `<b>` tag, which
+// the sanitizer would then parse and silently delete the words inside.
 function tagNameRegExp(names: string[]): RegExp {
-  return new RegExp(`<\\/?(?:${names.join("|")})(?=[\\s/>])`, "i");
+  const name = `(?:${names.join("|")})`;
+  return new RegExp(`<\\/?${name}\\s*\\/?>|<${name}\\s+[a-z-]+\\s*=`, "i");
 }
 
 const BLOCK_LEVEL_MARKUP = tagNameRegExp(BLOCK_LEVEL_TAGS);
@@ -189,16 +193,22 @@ function hardenAnchor(node: Element): void {
   node.setAttribute("rel", "noopener noreferrer");
 }
 
-let hooksInstalled = false;
+// A DOMPurify instance dedicated to this module so the anchor hook doesn't leak
+// onto the shared singleton other code (or a future dependency) might use. Built
+// lazily against the real window; null on the server, where there is no DOM.
+let purifier: ReturnType<typeof DOMPurify> | null = null;
 
-// The hook lives on the shared DOMPurify singleton; sanitizeFeedHtml is its only
-// caller and hardening an allowlisted anchor is safe for any HTML.
-function installHooksOnce(): void {
-  if (hooksInstalled) {
-    return;
+function getPurifier(): ReturnType<typeof DOMPurify> | null {
+  if (purifier) {
+    return purifier;
   }
-  DOMPurify.addHook("afterSanitizeAttributes", hardenAnchor);
-  hooksInstalled = true;
+  if (typeof window === "undefined") {
+    return null;
+  }
+  const instance = DOMPurify(window);
+  instance.addHook("afterSanitizeAttributes", hardenAnchor);
+  purifier = instance;
+  return purifier;
 }
 
 // Returns sanitized, allowlisted HTML safe to render, or "" for non-string/blank
@@ -210,11 +220,11 @@ export function sanitizeFeedHtml(html: unknown): string {
   if (typeof html !== "string" || html.trim() === "") {
     return "";
   }
-  if (!DOMPurify.isSupported) {
+  const purify = getPurifier();
+  if (!purify || !purify.isSupported) {
     return "";
   }
-  installHooksOnce();
-  return DOMPurify.sanitize(html, {
+  return purify.sanitize(html, {
     ALLOWED_TAGS,
     ALLOWED_ATTR,
     ALLOWED_URI_REGEXP: SAFE_URI_REGEXP,

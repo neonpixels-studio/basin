@@ -399,14 +399,15 @@ function openOriginal() {
 .detail-body {
   overflow-y: auto;
 }
-.detail-prose p {
+.detail-prose p,
+.detail-prose div {
   margin: 0 0 17px;
   font-size: 16px;
   line-height: 1.7;
   color: var(--ink-2);
   text-wrap: pretty;
 }
-.detail-prose p:last-child {
+.detail-prose > :last-child {
   margin-bottom: 0;
 }
 /* Sanitized feed markup (links, lists, emphasis) rendered via contentHtml. */

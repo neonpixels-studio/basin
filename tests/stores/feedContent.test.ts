@@ -59,33 +59,49 @@ describe("feed store contentHtml (jsdom)", () => {
     expect(html).toContain("Topics we covered");
   });
 
-  it("keeps div-separated blocks readable rather than mashing the text together", () => {
+  it("keeps div-separated blocks as separate sibling elements", () => {
     const html = feed.contentHtml({
       content: "<div>Para one</div><div>Para two</div>",
     });
-    expect(html).not.toContain("onePara");
-    expect(html).toContain("Para one");
-    expect(html).toContain("Para two");
+    const fragment = document.createElement("div");
+    fragment.innerHTML = html;
+    const blocks = [...fragment.children].filter(
+      (child) => child.tagName === "DIV",
+    );
+    expect(blocks).toHaveLength(2);
+    expect(blocks[0].textContent).toBe("Para one");
+    expect(blocks[1].textContent).toBe("Para two");
+  });
+
+  it("preserves a multi-line list split by blank lines instead of tearing it apart", () => {
+    const html = feed.contentHtml({
+      content: "<ul>\n<li>One</li>\n\n<li>Two</li>\n</ul>",
+    });
+    const fragment = document.createElement("div");
+    fragment.innerHTML = html;
+    const listItems = fragment.querySelectorAll("ul > li");
+    expect(listItems).toHaveLength(2);
+    expect(listItems[0].textContent).toBe("One");
+    expect(listItems[1].textContent).toBe("Two");
   });
 
   it("preserves table structure from newsletter-style content", () => {
     const html = feed.contentHtml({
       content: "<table><tr><td>Mon</td><td>Standup</td></tr></table>",
     });
-    expect(html).toContain("<table>");
-    expect(html).toContain("Mon");
-    expect(html).toContain("Standup");
-    expect(html).not.toContain("MonStandup");
+    const fragment = document.createElement("div");
+    fragment.innerHTML = html;
+    const cells = fragment.querySelectorAll("table td");
+    expect(cells).toHaveLength(2);
+    expect(cells[0].textContent).toBe("Mon");
+    expect(cells[1].textContent).toBe("Standup");
   });
 
-  it("wraps only the text blocks when block and plain-text paragraphs are mixed", () => {
+  it("preserves whitespace and newlines inside a <pre> block", () => {
     const html = feed.contentHtml({
-      content:
-        "<h3>Links</h3>\n\nThanks for listening.\n\nSubscribe at example.com",
+      content: "<pre>line one\nline two</pre>",
     });
-    expect(html).toContain("<h3>Links</h3>");
-    expect(html).toContain("<p>Thanks for listening.</p>");
-    expect(html).toContain("<p>Subscribe at example.com</p>");
+    expect(html).toContain("line one\nline two");
   });
 
   it("drops blocks that sanitize to nothing instead of leaving empty paragraphs", () => {

@@ -616,30 +616,34 @@ export const useFeedStore = defineStore("feed", () => {
     return splitTextBlocks(content);
   };
 
-  // Sanitize one blank-line-separated block, then wrap it in a <p> only if it is
-  // inline/text — blocks that already carry block structure (their own <p>,
-  // <div>, <ul>, heading, table, …) render as-is. Sanitizing per block keeps the
-  // author's paragraph breaks (HTML collapses the raw newlines) and drops blocks
-  // that sanitize to nothing, avoiding phantom empty paragraphs.
-  function toRenderableBlock(block: string): string {
+  // Sanitize one blank-line-separated block of inline content and wrap it in a
+  // <p>. Dropping blocks that sanitize to nothing avoids phantom empty paragraphs
+  // (e.g. a stripped <script> between two text blocks).
+  function sanitizeInlineBlock(block: string): string {
     const sanitized = sanitizeFeedHtml(block);
-    if (!sanitized) {
-      return "";
-    }
-    return hasBlockLevelMarkup(sanitized) ? sanitized : `<p>${sanitized}</p>`;
+    return sanitized ? `<p>${sanitized}</p>` : "";
   }
 
   // Sanitized, allowlisted HTML for feed content that carries markup (RSS
   // content:encoded, podcast itunes:summary). Returns "" for plain-text content
   // (which the view renders as paragraphs) or when content is absent/stripped to
   // nothing, so the view only renders markup when there genuinely is some.
+  //
+  // Content that already has block structure (its own <p>, <ul>, <table>, …) is
+  // sanitized whole: splitting it on blank lines would tear a multi-line element
+  // (a <ul> or <table> spanning blank lines) apart and collapse <pre> whitespace.
+  // Inline-only content (plain text with a link, say) has no such structure, so
+  // its blank lines are the only paragraph breaks and get wrapped into <p>.
   const contentHtml = (item: Record<string, unknown>): string => {
     const content = itemContent(item);
     if (!content || !looksLikeHtml(content)) {
       return "";
     }
+    if (hasBlockLevelMarkup(content)) {
+      return sanitizeFeedHtml(content);
+    }
     return splitTextBlocks(content)
-      .map(toRenderableBlock)
+      .map(sanitizeInlineBlock)
       .filter(Boolean)
       .join("");
   };
