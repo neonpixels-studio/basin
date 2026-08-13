@@ -10,19 +10,15 @@ import {
   subscriptions,
 } from "../../../server/db/schema";
 
-const {
-  mockCreateStripeCustomer,
-  mockDeleteStripeCustomer,
-  mockCancelStripeSubscription,
-} = vi.hoisted(() => ({
-  mockCreateStripeCustomer: vi.fn(),
-  mockDeleteStripeCustomer: vi.fn(),
-  mockCancelStripeSubscription: vi.fn(),
-}));
+const { mockCreateStripeCustomer, mockDeleteStripeCustomer } = vi.hoisted(
+  () => ({
+    mockCreateStripeCustomer: vi.fn(),
+    mockDeleteStripeCustomer: vi.fn(),
+  }),
+);
 vi.mock("../../../server/utils/stripe", () => ({
   createStripeCustomer: mockCreateStripeCustomer,
   deleteStripeCustomer: mockDeleteStripeCustomer,
-  cancelStripeSubscription: mockCancelStripeSubscription,
 }));
 
 const { mockPauseFeedsOverFreeLimit, mockReactivateAllFeeds } = vi.hoisted(
@@ -44,6 +40,7 @@ vi.mock("../../../server/utils/feedPause", () => ({
 const UNCONNECTED_DB_URL = "postgres://user:pass" + "@fake.neon.tech/db";
 
 const mockFindFirst = vi.fn();
+const mockFindFirstUser = vi.fn();
 const mockFindFirstProcessedEvent = vi.fn();
 const mockReturning = vi.fn();
 const mockOnConflictDoUpdate = vi.fn(() => ({ returning: mockReturning }));
@@ -57,6 +54,7 @@ const mockInsert = vi.fn(() => ({ values: mockValues }));
 vi.stubGlobal("useDb", () => ({
   query: {
     subscriptions: { findFirst: mockFindFirst },
+    users: { findFirst: mockFindFirstUser },
     processedStripeEvents: { findFirst: mockFindFirstProcessedEvent },
   },
   insert: mockInsert,
@@ -68,7 +66,7 @@ import {
   FREE_PLAN,
   getOrCreateStripeCustomerId,
   upsertSubscriptionFromStripe,
-  cancelActiveSubscription,
+  deleteBillingRecords,
 } from "../../../server/utils/subscriptions";
 
 describe("planForStatus", () => {
@@ -93,47 +91,40 @@ describe("planForStatus", () => {
   });
 });
 
-describe("cancelActiveSubscription", () => {
+describe("deleteBillingRecords", () => {
   beforeEach(() => vi.resetAllMocks());
 
   it("does nothing when no subscription row exists", async () => {
     mockFindFirst.mockResolvedValue(undefined);
-    await cancelActiveSubscription(1);
-    expect(mockCancelStripeSubscription).not.toHaveBeenCalled();
+    await deleteBillingRecords(1);
+    expect(mockDeleteStripeCustomer).not.toHaveBeenCalled();
   });
 
-  it("does nothing when the row has no Stripe subscription id", async () => {
-    mockFindFirst.mockResolvedValue({
-      stripeSubscriptionId: null,
-      status: "active",
+  it("does nothing when the row has no Stripe customer id", async () => {
+    mockFindFirst.mockResolvedValue({ stripeCustomerId: null });
+    await deleteBillingRecords(1);
+    expect(mockDeleteStripeCustomer).not.toHaveBeenCalled();
+  });
+
+  it("deletes the Stripe customer (cancelling any subscription and erasing PII)", async () => {
+    mockFindFirst.mockResolvedValue({ stripeCustomerId: "cus_123" });
+    await deleteBillingRecords(1);
+    expect(mockDeleteStripeCustomer).toHaveBeenCalledWith("cus_123");
+  });
+
+  it("swallows a resource_missing error so a retry after the customer is gone still completes", async () => {
+    mockFindFirst.mockResolvedValue({ stripeCustomerId: "cus_123" });
+    mockDeleteStripeCustomer.mockRejectedValue({ code: "resource_missing" });
+    await expect(deleteBillingRecords(1)).resolves.toBeUndefined();
+  });
+
+  it("rethrows any other Stripe error", async () => {
+    mockFindFirst.mockResolvedValue({ stripeCustomerId: "cus_123" });
+    mockDeleteStripeCustomer.mockRejectedValue({ code: "api_error" });
+    await expect(deleteBillingRecords(1)).rejects.toMatchObject({
+      code: "api_error",
     });
-    await cancelActiveSubscription(1);
-    expect(mockCancelStripeSubscription).not.toHaveBeenCalled();
   });
-
-  it.each(["canceled", "incomplete_expired", "none", "unpaid"])(
-    "does nothing for terminal status %s",
-    async (status) => {
-      mockFindFirst.mockResolvedValue({
-        stripeSubscriptionId: "sub_123",
-        status,
-      });
-      await cancelActiveSubscription(1);
-      expect(mockCancelStripeSubscription).not.toHaveBeenCalled();
-    },
-  );
-
-  it.each(["trialing", "active", "past_due"])(
-    "cancels the subscription for cancelable status %s",
-    async (status) => {
-      mockFindFirst.mockResolvedValue({
-        stripeSubscriptionId: "sub_123",
-        status,
-      });
-      await cancelActiveSubscription(1);
-      expect(mockCancelStripeSubscription).toHaveBeenCalledWith("sub_123");
-    },
-  );
 });
 
 describe("getAccountPlan", () => {
@@ -242,6 +233,9 @@ describe("upsertSubscriptionFromStripe", () => {
     // handler can destructure them.
     mockPauseFeedsOverFreeLimit.mockResolvedValue({ pausedCount: 0 });
     mockReactivateAllFeeds.mockResolvedValue({ reactivatedCount: 0 });
+    // Default: the resolved user still exists. The deleted-user drop path
+    // overrides this to undefined.
+    mockFindFirstUser.mockResolvedValue({ id: 9 });
   });
 
   // Only a minimal fake shape is needed for these tests; cast once here so
@@ -283,6 +277,18 @@ describe("upsertSubscriptionFromStripe", () => {
   it("does nothing when the customer isn't known and metadata has no userId", async () => {
     mockFindFirst.mockResolvedValue(undefined);
     await upsertSubscriptionFromStripe(buildEvent());
+    expect(mockInsert).not.toHaveBeenCalled();
+  });
+
+  it("drops the event when the resolved user has been deleted (FK-safe)", async () => {
+    // No subscription row (cascade-deleted with the user), but the metadata
+    // still carries the deleted user's id — inserting for it would violate the
+    // user_id FK. userExists returns false, so the event is dropped instead.
+    mockFindFirst.mockResolvedValue(undefined);
+    mockFindFirstUser.mockResolvedValue(undefined);
+    await upsertSubscriptionFromStripe(
+      buildEvent({ metadata: { userId: "9" } }),
+    );
     expect(mockInsert).not.toHaveBeenCalled();
   });
 

@@ -24,5 +24,5 @@ exports[`SettingsAccount > matches snapshot 1`] = `
   <p class="desc">Update your name and profile photo.</p>
   <user-profile-stub></user-profile-stub>
 </section>
-<settingsdeleteaccount></settingsdeleteaccount>"
+<settings-delete-account-stub></settings-delete-account-stub>"
 `;

@@ -93,15 +93,6 @@ export async function deleteStripeCustomer(customerId: string): Promise<void> {
   await stripe.customers.del(customerId);
 }
 
-// Immediately cancels a subscription (no proration handling — account deletion
-// ends the relationship outright rather than winding down to period end).
-export async function cancelStripeSubscription(
-  subscriptionId: string,
-): Promise<void> {
-  const stripe = getStripeClient();
-  await stripe.subscriptions.cancel(subscriptionId);
-}
-
 export function verifyWebhookSignature(
   rawBody: string | Buffer,
   signature: string,
