@@ -306,6 +306,30 @@ describe("ReaderDetail", () => {
       expect(prose.props("paragraphs")).toEqual(["Real one.", "Real two."]);
     });
 
+    it("passes non-empty sanitized html to DetailProse for markup-bearing content", async () => {
+      state.activeItem = makeArticle({
+        content: "<p>Body with <strong>bold</strong>.</p>",
+      }) as never;
+      const wrapper = mountDetail();
+      await wrapper.vm.$nextTick();
+
+      const prose = wrapper.findComponent(DetailProse);
+      const sanitizedHtml = prose.props("sanitizedHtml");
+      expect(sanitizedHtml).toContain("<strong>bold</strong>");
+    });
+
+    it("passes empty sanitizedHtml for plain-text content so it renders as paragraphs", async () => {
+      state.activeItem = makeArticle({
+        content: "Real one.\n\nReal two.",
+      }) as never;
+      const wrapper = mountDetail();
+      await wrapper.vm.$nextTick();
+
+      const prose = wrapper.findComponent(DetailProse);
+      expect(prose.props("sanitizedHtml")).toBe("");
+      expect(prose.props("paragraphs")).toEqual(["Real one.", "Real two."]);
+    });
+
     it("passes an empty paragraph list and honest article empty text when content is absent", async () => {
       state.activeItem = makeArticle({ content: null }) as never;
       const wrapper = mountDetail();
@@ -419,6 +443,16 @@ describe("ReaderDetail", () => {
       expect(wrapper.find(".detail-tweet").text()).toBe(
         "The actual synced post text.",
       );
+    });
+
+    it("renders a post whose text contains literal markup verbatim, not the empty state", async () => {
+      state.activeItem = makeTweet({ content: "<b>hello</b> world" }) as never;
+      const wrapper = mountDetail();
+      await wrapper.vm.$nextTick();
+
+      const body = wrapper.find(".detail-tweet");
+      expect(body.text()).toBe("<b>hello</b> world");
+      expect(wrapper.text()).not.toContain("This post has no text.");
     });
 
     it("shows an honest empty state for a tweet with no text", async () => {

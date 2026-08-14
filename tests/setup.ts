@@ -127,6 +127,23 @@ globalThis.useBilling = vi.fn(() => ({
   startCheckout: vi.fn(),
 }));
 
+// useAccount stub — reports a successful deletion by default. Tests that need to
+// assert on the failure path override with vi.stubGlobal.
+globalThis.useAccount = vi.fn(() => ({
+  deleting: ref(false),
+  error: ref(null),
+  deleteAccount: vi.fn().mockResolvedValue(true),
+}));
+
+// useAuthHeaders stub — derives the header from the (stubbed) useAuth token so
+// composables that build authed requests keep working in unit tests.
+globalThis.useAuthHeaders = () => ({
+  buildAuthHeaders: async () => {
+    const token = await globalThis.useAuth().getToken.value();
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  },
+});
+
 // Clerk composable stubs
 const mockClerkUser = ref({
   firstName: "Demo",
@@ -214,6 +231,7 @@ config.global.stubs = {
   SettingsConnections: true,
   SettingsReading: true,
   SettingsAccount: true,
+  SettingsDeleteAccount: true,
   // Clerk components
   SignIn: true,
   SignUp: true,

@@ -3,7 +3,7 @@ import { computed } from "vue";
 import { contentText } from "~/utils/itemContent";
 
 const props = defineProps({ item: { type: Object, required: true } });
-defineEmits(["save", "open"]);
+defineEmits(["save", "star", "open"]);
 
 const excerpt = computed(() => contentText(props.item.content));
 const hasTags = computed(() => Boolean(props.item.tags?.length));
@@ -17,7 +17,12 @@ const hasTags = computed(() => Boolean(props.item.tags?.length));
   >
     <div class="card-head">
       <SourceTag :item="item" />
-      <CardActions :item="item" @save="$emit('save')" @open="$emit('open')" />
+      <CardActions
+        :item="item"
+        @save="$emit('save')"
+        @star="$emit('star')"
+        @open="$emit('open')"
+      />
     </div>
     <h3 class="card-title">{{ item.title }}</h3>
     <p v-if="excerpt" class="card-excerpt">{{ excerpt }}</p>

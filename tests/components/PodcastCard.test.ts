@@ -44,6 +44,15 @@ describe("PodcastCard", () => {
     expect(wrapper.html()).toBeTruthy();
   });
 
+  it("re-emits star from the card actions", async () => {
+    const wrapper = shallowMount(PodcastCard, {
+      props: { item: makePodcast() },
+    });
+    wrapper.findComponent({ name: "CardActions" }).vm.$emit("star");
+    await wrapper.vm.$nextTick();
+    expect(wrapper.emitted("star")).toHaveLength(1);
+  });
+
   it("matches snapshot", () => {
     const wrapper = shallowMount(PodcastCard, {
       props: { item: makePodcast() },

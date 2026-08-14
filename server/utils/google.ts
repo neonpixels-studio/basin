@@ -5,6 +5,12 @@ const GOOGLE_TOKEN_URL =
 const YOUTUBE_CHANNELS_URL =
   process.env.YOUTUBE_CHANNELS_URL ??
   "https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true";
+const GOOGLE_REVOKE_URL =
+  process.env.GOOGLE_REVOKE_URL ?? "https://oauth2.googleapis.com/revoke";
+// Revocation runs on the disconnect request path, so keep it short: the local
+// row is already gone by the time this fires, and a hung provider must not
+// stall the response.
+const REVOCATION_TIMEOUT_MS = 5_000;
 
 const YOUTUBE_SCOPES = [
   "https://www.googleapis.com/auth/youtube.readonly",
@@ -53,6 +59,25 @@ export async function exchangeCodeForTokens(
     }),
   });
   return res.json() as Promise<GoogleTokenResponse>;
+}
+
+// Revokes a Google OAuth grant at the provider so app access ends immediately
+// on disconnect instead of lingering until the token expires. Revoking a
+// refresh token also invalidates every access token minted from it, so callers
+// should pass the refresh token when one is stored. Throws on a non-2xx
+// response; the caller decides whether a revocation failure should block the
+// local disconnect (it shouldn't).
+export async function revokeGoogleToken(token: string): Promise<void> {
+  const res = await fetch(GOOGLE_REVOKE_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ token }),
+    signal: AbortSignal.timeout(REVOCATION_TIMEOUT_MS),
+  });
+
+  if (!res.ok) {
+    throw new Error(`Google token revocation failed: ${res.status}`);
+  }
 }
 
 export async function getYouTubeChannelHandle(

@@ -6,8 +6,10 @@ exports[`TweetCard > matches snapshot 1`] = `
     <div class="tw-id"><b>Test User</b><span class="tw-handle">@testuser · 3h</span></div><span class="tw-glyph src-tweet"><r-icon-stub name="chat" size="15"></r-icon-stub></span>
   </div>
   <p class="tw-text">This is a test tweet body text.</p>
-  <div class="tw-actions"><button class="icon-btn ml-auto">
+  <div class="tw-actions"><button class="icon-btn ml-auto" title="Save for later">
       <r-icon-stub name="bookmark" size="15"></r-icon-stub>
+    </button><button class="icon-btn" title="Star">
+      <r-icon-stub name="star" size="15"></r-icon-stub>
     </button></div>
 </article>"
 `;

@@ -103,6 +103,19 @@ describe("markAllItemsRead", () => {
     expect(renderUpdateWhere().sql).toContain('"saved_at" is not null');
   });
 
+  it("narrows to starred items (starred = true) for the starred filter", async () => {
+    await markAllItemsRead(1, { filter: "starred" });
+
+    // "starred" is not a source, so the feed lookup stays unscoped by source...
+    expect(renderSelectWhere().sql).not.toContain('"source"');
+    // ...but the item update is narrowed to starred rows. Pin the bound value so
+    // an eq(starred, true) → eq(starred, false) swap fails (the value is a param,
+    // not part of the SQL string).
+    const { sql, params } = renderUpdateWhere();
+    expect(sql).toContain('"starred" =');
+    expect(params).toContain(true);
+  });
+
   it("does not restrict sources for the all filter", async () => {
     await markAllItemsRead(1, { filter: "all" });
     expect(renderSelectWhere().sql).not.toContain('"source"');

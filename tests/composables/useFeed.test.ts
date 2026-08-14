@@ -66,6 +66,12 @@ describe("useFeedStore", () => {
     it("counts saved items", () => {
       expect(feed.countFor("saved")).toBe(1);
     });
+
+    it("counts starred items", () => {
+      state.items[0].starred = true;
+      state.items[2].starred = true;
+      expect(feed.countFor("starred")).toBe(2);
+    });
   });
 
   describe("unreadCount", () => {
@@ -96,6 +102,14 @@ describe("useFeedStore", () => {
       state.filter = "saved";
       expect(feed.visibleItems).toHaveLength(1);
       expect(feed.visibleItems.every((i) => i.saved)).toBe(true);
+    });
+
+    it("filters starred items", () => {
+      state.items[1].starred = true;
+      state.items[3].starred = true;
+      state.filter = "starred";
+      expect(feed.visibleItems).toHaveLength(2);
+      expect(feed.visibleItems.every((i) => i.starred)).toBe(true);
     });
 
     it("applies unreadOnly across filter", () => {
@@ -269,6 +283,36 @@ describe("useFeedStore", () => {
       expect(feed.contentParagraphs({ content: "   \n  " })).toEqual([]);
     });
 
+    it("returns an empty array for markup content so raw tags are never rendered as text", () => {
+      expect(
+        feed.contentParagraphs({ content: "<iframe src=x></iframe>" }),
+      ).toEqual([]);
+      expect(
+        feed.contentParagraphs({ content: "<p>Handled by contentHtml</p>" }),
+      ).toEqual([]);
+    });
+
+    it("treats prose with a stray angle bracket as plain text, not markup", () => {
+      expect(
+        feed.contentParagraphs({ content: "3 < 5 and 5 > 3 is true" }),
+      ).toEqual(["3 < 5 and 5 > 3 is true"]);
+    });
+
+    it("treats angle-bracketed non-HTML identifiers as plain text", () => {
+      expect(
+        feed.contentParagraphs({ content: "Run deploy <env> to ship it" }),
+      ).toEqual(["Run deploy <env> to ship it"]);
+    });
+
+    it("treats prose inequalities using real tag letters as plain text", () => {
+      expect(
+        feed.contentParagraphs({ content: "if a<b and b>c then stop" }),
+      ).toEqual(["if a<b and b>c then stop"]);
+      expect(
+        feed.contentParagraphs({ content: "check x<i and y>0 first" }),
+      ).toEqual(["check x<i and y>0 first"]);
+    });
+
     it("does not fabricate filler from excerpt/title when content is absent", () => {
       const result = feed.contentParagraphs({
         excerpt: "An excerpt",
@@ -278,6 +322,55 @@ describe("useFeedStore", () => {
         desc: "Old fake desc",
       });
       expect(result).toEqual([]);
+    });
+  });
+
+  // Routing only: contentHtml decides plain-text-vs-markup and delegates the
+  // actual sanitization to sanitizeFeedHtml. The security guarantees (dangerous
+  // markup stripped) and the sanitized structure (paragraph wrapping) are
+  // asserted in tests/stores/feedContent.test.ts and
+  // tests/utils/sanitizeHtml.test.ts, which run under jsdom where DOMPurify
+  // behaves as it does in the browser.
+  describe("contentHtml (routing)", () => {
+    it("returns an empty string for plain-text content", () => {
+      expect(feed.contentHtml({ content: "Just plain text." })).toBe("");
+      expect(feed.contentHtml({ content: "First.\n\nSecond." })).toBe("");
+    });
+
+    it("returns an empty string for prose with a stray angle bracket", () => {
+      expect(feed.contentHtml({ content: "3 < 5 and 5 > 3 is true" })).toBe("");
+    });
+
+    it("returns an empty string for angle-bracketed non-HTML identifiers", () => {
+      expect(feed.contentHtml({ content: "Run deploy <env> to ship it" })).toBe(
+        "",
+      );
+    });
+
+    it("returns an empty string when content is missing or non-string", () => {
+      expect(feed.contentHtml({})).toBe("");
+      expect(feed.contentHtml({ content: null })).toBe("");
+      expect(feed.contentHtml({ content: 42 })).toBe("");
+    });
+  });
+
+  describe("postParagraphs", () => {
+    it("splits plain-text post content into paragraphs", () => {
+      expect(feed.postParagraphs({ content: "One.\n\nTwo." })).toEqual([
+        "One.",
+        "Two.",
+      ]);
+    });
+
+    it("shows literal angle-bracket text verbatim instead of an empty state", () => {
+      expect(feed.postParagraphs({ content: "<b>hi</b> there" })).toEqual([
+        "<b>hi</b> there",
+      ]);
+    });
+
+    it("returns an empty array when content is absent", () => {
+      expect(feed.postParagraphs({})).toEqual([]);
+      expect(feed.postParagraphs({ content: null })).toEqual([]);
     });
   });
 
@@ -710,6 +803,17 @@ describe("useFeedStore", () => {
         const [action, payload] = queueAction.mock.calls[0];
         expect(action).toBe("star");
         expect(payload.starred).toBe(false);
+      });
+
+      it("shows a confirmation toast reflecting the new starred state", async () => {
+        const feedItem = state.items[0];
+        feedItem.starred = false;
+
+        await feed.toggleStar(feedItem);
+        expect(showToast).toHaveBeenCalledWith("Starred");
+
+        await feed.toggleStar(feedItem);
+        expect(showToast).toHaveBeenCalledWith("Removed from starred");
       });
 
       it("rolls back the local state and shows a toast when queueAction rejects", async () => {

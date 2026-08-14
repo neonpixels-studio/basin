@@ -30,11 +30,22 @@ describe("TweetCard", () => {
 
   it("renders no engagement counts (the mock-only likes/reposts are gone)", () => {
     // The synced API returns no engagement data; the like/repost spans that
-    // read item.meta must be absent — only the save button remains in actions.
+    // read item.meta must be absent — only the save/star buttons remain.
     const wrapper = shallowMount(TweetCard, {
       props: { item: makeTweet({ content: "Body." }) },
     });
     expect(wrapper.find(".tw-actions").findAll("span")).toHaveLength(0);
-    expect(wrapper.find(".tw-actions").findAll("button")).toHaveLength(1);
+    expect(wrapper.find(".tw-actions").findAll("button")).toHaveLength(2);
+  });
+
+  it("emits save then star from the two action buttons", async () => {
+    const wrapper = shallowMount(TweetCard, {
+      props: { item: makeTweet() },
+    });
+    const buttons = wrapper.find(".tw-actions").findAll("button");
+    await buttons[0].trigger("click");
+    await buttons[1].trigger("click");
+    expect(wrapper.emitted("save")).toHaveLength(1);
+    expect(wrapper.emitted("star")).toHaveLength(1);
   });
 });

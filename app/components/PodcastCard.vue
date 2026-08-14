@@ -4,7 +4,7 @@ import { durationLabel } from "~/utils/duration";
 import { contentText } from "~/utils/itemContent";
 
 const props = defineProps({ item: { type: Object, required: true } });
-defineEmits(["save", "open"]);
+defineEmits(["save", "star", "open"]);
 
 const player = usePodcastPlayer();
 
@@ -53,6 +53,7 @@ function togglePlay() {
           <CardActions
             :item="item"
             @save="$emit('save')"
+            @star="$emit('star')"
             @open="$emit('open')"
           />
         </div>

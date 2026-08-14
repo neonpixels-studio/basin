@@ -42,6 +42,7 @@ const nuxtGlobals = {
   useConnections: "readonly",
   useUserSettings: "readonly",
   useBilling: "readonly",
+  useAccount: "readonly",
   useUserProfile: "readonly",
   useInputValidation: "readonly",
   useInfiniteScroll: "readonly",
@@ -72,7 +73,11 @@ const nitroGlobals = {
   exchangeCodeForTokens: "readonly",
   getYouTubeChannelHandle: "readonly",
   createBlueskySession: "readonly",
+  deleteBlueskySession: "readonly",
   encryptToken: "readonly",
+  decryptTokenTolerant: "readonly",
+  decryptNullableTokenTolerant: "readonly",
+  revokeGoogleToken: "readonly",
 };
 
 export default [

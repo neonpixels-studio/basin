@@ -90,6 +90,10 @@ export default defineConfig({
       // never hit the real Google APIs.
       GOOGLE_TOKEN_URL: `${MOCK_BASE_URL}/token`,
       YOUTUBE_CHANNELS_URL: `${MOCK_BASE_URL}/youtube/v3/channels?part=snippet&mine=true`,
+      // Route disconnect-time grant revocation to the mock server so e2e tests
+      // never hit the real Google / Bluesky revocation endpoints.
+      GOOGLE_REVOKE_URL: `${MOCK_BASE_URL}/revoke`,
+      BLUESKY_DELETE_SESSION_URL: `${MOCK_BASE_URL}/xrpc/com.atproto.server.deleteSession`,
       // Allow the mock server's loopback address through SSRF validation so
       // feed-discovery e2e tests can use the mock RSS endpoint.
       NUXT_FEED_DISCOVERY_ALLOWED_HOSTS: `127.0.0.1:${MOCK_PORT}`,
