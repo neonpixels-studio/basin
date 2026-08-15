@@ -17,14 +17,9 @@ export const FREE_ACCOUNT_PLAN: AccountPlan = {
 };
 
 export function useBilling() {
-  const { getToken } = useAuth();
+  const { buildAuthHeaders } = useAuthHeaders();
   const loading = ref(false);
   const error = ref<string | null>(null);
-
-  async function buildAuthHeaders(): Promise<Record<string, string>> {
-    const token = await getToken.value();
-    return token ? { Authorization: `Bearer ${token}` } : {};
-  }
 
   async function loadPlan(): Promise<AccountPlan> {
     loading.value = true;

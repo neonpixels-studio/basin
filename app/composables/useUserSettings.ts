@@ -28,14 +28,9 @@ export const USER_SETTINGS_DEFAULTS: UserSettings = {
 };
 
 export function useUserSettings() {
-  const { getToken } = useAuth();
+  const { buildAuthHeaders } = useAuthHeaders();
   const loading = ref(false);
   const error = ref<string | null>(null);
-
-  async function buildAuthHeaders(): Promise<Record<string, string>> {
-    const token = await getToken.value();
-    return token ? { Authorization: `Bearer ${token}` } : {};
-  }
 
   async function load(): Promise<UserSettings> {
     loading.value = true;

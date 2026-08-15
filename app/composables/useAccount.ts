@@ -2,7 +2,7 @@
 // or call $fetch directly. Mirrors useBilling's shape (loading/error refs plus
 // an action) for consistency.
 export function useAccount() {
-  const authHeaders = useAuthHeaders();
+  const { buildAuthHeaders } = useAuthHeaders();
   const deleting = ref(false);
   const error = ref<string | null>(null);
 
@@ -15,7 +15,7 @@ export function useAccount() {
     try {
       await $fetch("/api/account", {
         method: "DELETE",
-        headers: await authHeaders(),
+        headers: await buildAuthHeaders(),
       });
       return true;
     } catch (caughtError) {

@@ -1,10 +1,15 @@
-// Shared builder for the Clerk bearer-token header that authed composables send
-// with their $fetch calls. Extracted so a new authed composable doesn't add yet
-// another copy of the same three lines.
+/* useAuthHeaders — builds the Clerk bearer-token Authorization header shared by
+   the composables that call authenticated API routes (billing, settings,
+   account export). Extracted so the identical header-construction logic lives
+   in one place rather than being copied per composable. */
+
 export function useAuthHeaders() {
   const { getToken } = useAuth();
-  return async function authHeaders(): Promise<Record<string, string>> {
+
+  async function buildAuthHeaders(): Promise<Record<string, string>> {
     const token = await getToken.value();
     return token ? { Authorization: `Bearer ${token}` } : {};
-  };
+  }
+
+  return { buildAuthHeaders };
 }
