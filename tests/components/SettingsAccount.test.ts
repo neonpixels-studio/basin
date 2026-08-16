@@ -147,6 +147,19 @@ describe("SettingsAccount", () => {
       expect(openPortal).toHaveBeenCalledOnce();
     });
 
+    it("disables the Manage subscription button while a billing request is in flight", async () => {
+      vi.stubGlobal("useBilling", () => ({
+        loading: ref(true),
+        error: ref(null),
+        loadPlan: vi.fn().mockResolvedValue({ ...PRO_PLAN }),
+        startCheckout: vi.fn(),
+        openPortal: vi.fn(),
+      }));
+      const wrapper = shallowMount(SettingsAccount);
+      await flushPromises();
+      expect(findManageButton(wrapper)?.attributes("disabled")).toBeDefined();
+    });
+
     it("shows a billing error message when the portal fails to open", async () => {
       vi.stubGlobal("useBilling", () => ({
         loading: ref(false),
