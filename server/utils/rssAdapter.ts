@@ -29,7 +29,7 @@ type MediaRssItem = RssParser.Item & MediaItemFields;
 // built-in parser only populates categories for RSS, so without this Atom/YouTube
 // feeds would never expose their categories to tag extraction. keepArray keeps
 // every category (the parser default takes only the first element).
-const MEDIA_ITEM_FIELDS: Array<
+const CUSTOM_ITEM_FIELDS: Array<
   [string, string] | [string, string, { keepArray: boolean }]
 > = [
   ["media:group", "mediaGroup"],
@@ -39,7 +39,7 @@ const MEDIA_ITEM_FIELDS: Array<
 const parser = new RssParser<Record<string, unknown>, MediaItemFields>({
   timeout: 10_000,
   customFields: {
-    item: MEDIA_ITEM_FIELDS,
+    item: CUSTOM_ITEM_FIELDS,
   },
 });
 

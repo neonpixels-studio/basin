@@ -43,12 +43,14 @@ function coerceToTagText(value: unknown): string | null {
 function cleanTagText(text: string): string {
   return (
     text
+      // Strip control chars first (before the hashtag/whitespace passes) so a
+      // leading NUL can't shield the `#` marker from removal. Bluesky tags are
+      // attacker-controlled JSON and a NUL would make Postgres reject the whole
+      // insert batch for that feed.
+      .replace(/\p{Cc}/gu, "")
       .trim()
       .replace(/^#+/, "")
       .replace(/\s+/g, " ")
-      // Strip control chars: Bluesky tags are attacker-controlled JSON and a NUL
-      // would make Postgres reject the whole insert batch for that feed.
-      .replace(/\p{Cc}/gu, "")
       .trim()
   );
 }

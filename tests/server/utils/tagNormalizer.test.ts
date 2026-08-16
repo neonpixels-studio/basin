@@ -89,6 +89,11 @@ describe("normalizeTags", () => {
     expect(normalizeTags([withNul, "valid"])).toEqual(["tech", "valid"]);
   });
 
+  it("strips a leading control char before the hashtag marker", () => {
+    const nulThenHash = `${String.fromCharCode(0)}#tag`;
+    expect(normalizeTags([nulThenHash])).toEqual(["tag"]);
+  });
+
   it("returns null for a bare string instead of splitting it into characters", () => {
     expect(normalizeTags("tech" as unknown as string[])).toBeNull();
   });
