@@ -99,7 +99,10 @@ describe("useBilling", () => {
       await openPortal();
       expect(mockFetch).toHaveBeenCalledWith(
         "/api/billing/portal",
-        expect.objectContaining({ method: "POST" }),
+        expect.objectContaining({
+          method: "POST",
+          headers: { Authorization: "Bearer token-123" },
+        }),
       );
     });
 

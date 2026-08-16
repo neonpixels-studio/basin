@@ -10,13 +10,14 @@ function stubFeed(itemCount = 12) {
   }));
 }
 
-function stubBilling(plan = { ...FREE_ACCOUNT_PLAN }, openPortal = vi.fn()) {
+function stubBilling(plan = { ...FREE_ACCOUNT_PLAN }, overrides = {}) {
   vi.stubGlobal("useBilling", () => ({
     loading: ref(false),
     error: ref(null),
     loadPlan: vi.fn().mockResolvedValue(plan),
     startCheckout: vi.fn(),
-    openPortal,
+    openPortal: vi.fn(),
+    ...overrides,
   }));
 }
 
@@ -140,7 +141,7 @@ describe("SettingsAccount", () => {
 
     it("opens the billing portal when Manage subscription is clicked", async () => {
       const openPortal = vi.fn();
-      stubBilling({ ...PRO_PLAN }, openPortal);
+      stubBilling({ ...PRO_PLAN }, { openPortal });
       const wrapper = shallowMount(SettingsAccount);
       await flushPromises();
       await findManageButton(wrapper)?.trigger("click");
@@ -148,26 +149,17 @@ describe("SettingsAccount", () => {
     });
 
     it("disables the Manage subscription button while a billing request is in flight", async () => {
-      vi.stubGlobal("useBilling", () => ({
-        loading: ref(true),
-        error: ref(null),
-        loadPlan: vi.fn().mockResolvedValue({ ...PRO_PLAN }),
-        startCheckout: vi.fn(),
-        openPortal: vi.fn(),
-      }));
+      stubBilling({ ...PRO_PLAN }, { loading: ref(true) });
       const wrapper = shallowMount(SettingsAccount);
       await flushPromises();
       expect(findManageButton(wrapper)?.attributes("disabled")).toBeDefined();
     });
 
     it("shows a billing error message when the portal fails to open", async () => {
-      vi.stubGlobal("useBilling", () => ({
-        loading: ref(false),
-        error: ref("Failed to open billing portal. Please try again."),
-        loadPlan: vi.fn().mockResolvedValue({ ...PRO_PLAN }),
-        startCheckout: vi.fn(),
-        openPortal: vi.fn(),
-      }));
+      stubBilling(
+        { ...PRO_PLAN },
+        { error: ref("Failed to open billing portal. Please try again.") },
+      );
       const wrapper = shallowMount(SettingsAccount);
       await flushPromises();
       expect(wrapper.find(".billing-error").text()).toContain(
