@@ -496,3 +496,29 @@ describe("resolveGuid fallback", () => {
     expect(first.guid.length).toBeGreaterThan(0);
   });
 });
+
+describe("parseRssFeedFromXml tags", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("maps item.categories to normalized tags", async () => {
+    mockParseString.mockResolvedValue(
+      makeFeedOutput([
+        makeRssItem({ categories: ["Tech", "  News  ", "tech"] }),
+      ]),
+    );
+
+    const [item] = await parseRssFeedFromXml("<rss/>", FEED_ID);
+    expect(item.tags).toEqual(["Tech", "News"]);
+  });
+
+  it("leaves tags null when the item has no categories", async () => {
+    mockParseString.mockResolvedValue(
+      makeFeedOutput([makeRssItem({ categories: undefined })]),
+    );
+
+    const [item] = await parseRssFeedFromXml("<rss/>", FEED_ID);
+    expect(item.tags).toBeNull();
+  });
+});

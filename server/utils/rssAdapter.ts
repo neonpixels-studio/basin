@@ -3,6 +3,7 @@ import type { InferInsertModel } from "drizzle-orm";
 import { feedItems } from "../db/schema";
 import { MAX_ITEMS_PER_SYNC } from "../../netlify/functions/types";
 import { resolvePublicFeedUrl } from "./urlValidator";
+import { normalizeTags } from "./tagNormalizer";
 
 export type NewFeedItem = Omit<
   InferInsertModel<typeof feedItems>,
@@ -130,7 +131,7 @@ function mapItemToFeedItem(
     savedAt: null,
     readAt: null,
     starred: false,
-    tags: null,
+    tags: normalizeTags(item.categories),
     searchVector: null,
   };
 }

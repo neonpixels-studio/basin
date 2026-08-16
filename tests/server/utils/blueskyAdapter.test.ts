@@ -50,6 +50,7 @@ import {
   buildPermalinkFromUri,
   deriveTitleFromText,
   resolvePostImageUrl,
+  extractPostTags,
   shouldIncludePost,
   DEFAULT_POST_FILTER_POLICY,
   createAgentSession,
@@ -1117,5 +1118,60 @@ describe("fetchNewBlueskyPosts", () => {
     );
 
     expect(mockDeps.getTimeline).toHaveBeenCalledTimes(100);
+  });
+});
+
+describe("extractPostTags", () => {
+  it("collects hashtags from richtext facet tag features", () => {
+    const record = {
+      text: "Loving #photography today",
+      facets: [
+        {
+          index: { byteStart: 7, byteEnd: 19 },
+          features: [
+            { $type: "app.bsky.richtext.facet#tag", tag: "photography" },
+          ],
+        },
+      ],
+    };
+
+    expect(extractPostTags(record)).toEqual(["photography"]);
+  });
+
+  it("collects hashtags from record.tags and merges with facet tags, deduped", () => {
+    const record = {
+      tags: ["Nature", "#photography"],
+      facets: [
+        {
+          features: [
+            { $type: "app.bsky.richtext.facet#tag", tag: "photography" },
+          ],
+        },
+      ],
+    };
+
+    expect(extractPostTags(record)).toEqual(["Nature", "photography"]);
+  });
+
+  it("ignores non-tag facet features (mentions, links)", () => {
+    const record = {
+      facets: [
+        {
+          features: [
+            { $type: "app.bsky.richtext.facet#mention", did: "did:plc:x" },
+            {
+              $type: "app.bsky.richtext.facet#link",
+              uri: "https://example.com",
+            },
+          ],
+        },
+      ],
+    };
+
+    expect(extractPostTags(record)).toBeNull();
+  });
+
+  it("returns null when the post carries no tags or facets", () => {
+    expect(extractPostTags({ text: "plain post" })).toBeNull();
   });
 });
