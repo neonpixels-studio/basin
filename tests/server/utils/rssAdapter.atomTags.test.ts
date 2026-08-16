@@ -35,6 +35,24 @@ const ATOM_WITHOUT_CATEGORIES = `<?xml version="1.0" encoding="UTF-8"?>
   </entry>
 </feed>`;
 
+// RSS 2.0 item with multiple <category> elements: the built-in parser fills
+// `categories` here (unlike Atom), so this guards the RSS path end to end.
+const RSS_WITH_CATEGORIES = `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>RSS Feed</title>
+    <item>
+      <title>RSS Item</title>
+      <link>https://example.com/rss/1</link>
+      <guid>urn:rss:1</guid>
+      <pubDate>Sat, 01 Jun 2024 12:00:00 GMT</pubDate>
+      <category>Tech</category>
+      <category>tech</category>
+      <category domain="http://example.com/cats">Web Dev</category>
+    </item>
+  </channel>
+</rss>`;
+
 describe("parseRssFeedFromXml — Atom category tags (real parser)", () => {
   it("populates tags from <category term> on Atom entries", async () => {
     const [item] = await parseRssFeedFromXml(ATOM_WITH_CATEGORIES, FEED_ID);
@@ -46,5 +64,10 @@ describe("parseRssFeedFromXml — Atom category tags (real parser)", () => {
   it("leaves tags null when an Atom entry has no categories", async () => {
     const [item] = await parseRssFeedFromXml(ATOM_WITHOUT_CATEGORIES, FEED_ID);
     expect(item.tags).toBeNull();
+  });
+
+  it("populates tags from <category> on RSS items (domain attr and text)", async () => {
+    const [item] = await parseRssFeedFromXml(RSS_WITH_CATEGORIES, FEED_ID);
+    expect(item.tags).toEqual(["tech", "web dev"]);
   });
 });

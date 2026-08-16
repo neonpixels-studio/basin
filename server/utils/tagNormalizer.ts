@@ -11,11 +11,13 @@ export const MAX_TAGS_PER_ITEM = 25;
 // sentence miscategorized); drop them to keep the column clean.
 export const MAX_TAG_LENGTH = 100;
 
-// RSS/Atom <category> elements surface as plain strings, or as objects carrying
-// attributes: { _: "text", $: {...} } (RSS with a domain), { $: { term } }
-// (Atom), or { $: { text } } (iTunes category). Coerce any of these to text,
-// preferring the first candidate that is a genuinely non-empty string — a null,
-// non-string, or empty `_` must not shadow a valid `$.term`/`$.text`.
+// Category values arrive from xml2js in a few shapes: plain strings, or objects
+// carrying attributes — { _: "text", $: {...} } (RSS <category> with a domain),
+// { $: { term } } (Atom <category term>), or { $: { text } } (the generic
+// attribute-text shape, e.g. an itunes:category if a caller ever maps one).
+// Coerce any of these to text, preferring the first candidate that is a
+// genuinely non-empty string — a null, non-string, or empty `_` must not shadow
+// a valid `$.term`/`$.text`.
 function coerceToTagText(value: unknown): string | null {
   if (typeof value === "string") {
     return value;
@@ -43,11 +45,13 @@ function coerceToTagText(value: unknown): string | null {
 function cleanTagText(text: string): string {
   return (
     text
-      // Strip control chars first (before the hashtag/whitespace passes) so a
-      // leading NUL can't shield the `#` marker from removal. Bluesky tags are
-      // attacker-controlled JSON and a NUL would make Postgres reject the whole
-      // insert batch for that feed.
-      .replace(/\p{Cc}/gu, "")
+      // Strip unsafe code points first (before the hashtag/whitespace passes) so
+      // a leading NUL can't shield the `#` marker from removal. Bluesky tags are
+      // attacker-controlled JSON: control chars (\p{Cc}) like NUL and lone
+      // surrogates are invalid UTF-8 that make Postgres reject the whole insert
+      // batch, and format chars (\p{Cf}) like RLO/zero-width enable bidi/UI
+      // spoofing in the tag chip.
+      .replace(/[\p{Cc}\p{Cf}\uD800-\uDFFF]/gu, "")
       .trim()
       .replace(/^#+/, "")
       .replace(/\s+/g, " ")

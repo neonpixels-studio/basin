@@ -94,6 +94,12 @@ describe("normalizeTags", () => {
     expect(normalizeTags([nulThenHash])).toEqual(["tag"]);
   });
 
+  it("strips lone surrogates and format chars (invalid UTF-8 / bidi spoofing)", () => {
+    // U+D800 is a lone high surrogate (invalid UTF-8); U+202E is RLO (bidi).
+    const unsafe = `te${String.fromCharCode(0xd800)}${String.fromCharCode(0x202e)}ch`;
+    expect(normalizeTags([unsafe])).toEqual(["tech"]);
+  });
+
   it("returns null for a bare string instead of splitting it into characters", () => {
     expect(normalizeTags("tech" as unknown as string[])).toBeNull();
   });
