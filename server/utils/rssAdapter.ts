@@ -24,9 +24,16 @@ interface MediaGroup {
 type MediaItemFields = { mediaGroup?: MediaGroup };
 type MediaRssItem = RssParser.Item & MediaItemFields;
 
-// Tell rss-parser to surface the namespaced media:group element as `mediaGroup`.
-const MEDIA_ITEM_FIELDS: Array<[string, string]> = [
+// Tell rss-parser to surface the namespaced media:group element as `mediaGroup`,
+// and to copy raw <category> nodes into `categories` for Atom entries — the
+// built-in parser only populates categories for RSS, so without this Atom/YouTube
+// feeds would never expose their categories to tag extraction. keepArray keeps
+// every category (the parser default takes only the first element).
+const MEDIA_ITEM_FIELDS: Array<
+  [string, string] | [string, string, { keepArray: boolean }]
+> = [
   ["media:group", "mediaGroup"],
+  ["category", "categories", { keepArray: true }],
 ];
 
 const parser = new RssParser<Record<string, unknown>, MediaItemFields>({

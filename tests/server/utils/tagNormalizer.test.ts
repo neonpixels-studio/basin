@@ -77,6 +77,22 @@ describe("normalizeTags", () => {
     expect(normalizeTags([tooLong, "ok"])).toEqual(["ok"]);
   });
 
+  it("keeps a tag of exactly MAX_TAG_LENGTH, measured after cleaning", () => {
+    const exact = "a".repeat(MAX_TAG_LENGTH);
+    // Padded with a hash and whitespace that cleaning removes before the length
+    // check, proving the check runs on the cleaned text.
+    expect(normalizeTags([`  #${exact}  `])).toEqual([exact]);
+  });
+
+  it("strips control characters (e.g. NUL) that Postgres would reject", () => {
+    const withNul = `te${String.fromCharCode(0)}ch`;
+    expect(normalizeTags([withNul, "valid"])).toEqual(["tech", "valid"]);
+  });
+
+  it("returns null for a bare string instead of splitting it into characters", () => {
+    expect(normalizeTags("tech" as unknown as string[])).toBeNull();
+  });
+
   it("caps the number of tags at MAX_TAGS_PER_ITEM", () => {
     const many = Array.from(
       { length: MAX_TAGS_PER_ITEM + 10 },

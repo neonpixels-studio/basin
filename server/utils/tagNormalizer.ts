@@ -41,7 +41,16 @@ function coerceToTagText(value: unknown): string | null {
 // collapse internal whitespace so a pretty-printed <category> spanning lines
 // (e.g. "Web\n   Development") stores as a single clean "Web Development".
 function cleanTagText(text: string): string {
-  return text.trim().replace(/^#+/, "").replace(/\s+/g, " ").trim();
+  return (
+    text
+      .trim()
+      .replace(/^#+/, "")
+      .replace(/\s+/g, " ")
+      // Strip control chars: Bluesky tags are attacker-controlled JSON and a NUL
+      // would make Postgres reject the whole insert batch for that feed.
+      .replace(/\p{Cc}/gu, "")
+      .trim()
+  );
 }
 
 // Coerce and clean a single raw value into a usable tag, or null when it yields
@@ -70,7 +79,7 @@ function normalizeTag(value: unknown): string | null {
 export function normalizeTags(
   values: readonly unknown[] | undefined | null,
 ): string[] | null {
-  if (!values?.length) {
+  if (!Array.isArray(values) || !values.length) {
     return null;
   }
 
