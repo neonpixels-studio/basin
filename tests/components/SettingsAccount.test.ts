@@ -10,14 +10,23 @@ function stubFeed(itemCount = 12) {
   }));
 }
 
-function stubBilling(plan = { ...FREE_ACCOUNT_PLAN }) {
+function stubBilling(plan = { ...FREE_ACCOUNT_PLAN }, openPortal = vi.fn()) {
   vi.stubGlobal("useBilling", () => ({
     loading: ref(false),
     error: ref(null),
     loadPlan: vi.fn().mockResolvedValue(plan),
     startCheckout: vi.fn(),
+    openPortal,
   }));
 }
+
+const PRO_PLAN = {
+  plan: "pro",
+  status: "active",
+  trialEnd: null,
+  currentPeriodEnd: "2026-08-01T00:00:00.000Z",
+  cancelAtPeriodEnd: false,
+};
 
 describe("SettingsAccount", () => {
   beforeEach(() => {
@@ -108,6 +117,33 @@ describe("SettingsAccount", () => {
       const wrapper = shallowMount(SettingsAccount);
       await flushPromises();
       expect(wrapper.find(".billing-desc").text()).toContain("trial ends");
+    });
+
+    function findManageButton(wrapper) {
+      return wrapper
+        .findAll("button.btn")
+        .find((button) => button.text().includes("Manage subscription"));
+    }
+
+    it("hides the Manage subscription button on the free plan", () => {
+      const wrapper = shallowMount(SettingsAccount);
+      expect(findManageButton(wrapper)).toBeUndefined();
+    });
+
+    it("shows a Manage subscription button on the pro plan", async () => {
+      stubBilling({ ...PRO_PLAN });
+      const wrapper = shallowMount(SettingsAccount);
+      await flushPromises();
+      expect(findManageButton(wrapper)).toBeTruthy();
+    });
+
+    it("opens the billing portal when Manage subscription is clicked", async () => {
+      const openPortal = vi.fn();
+      stubBilling({ ...PRO_PLAN }, openPortal);
+      const wrapper = shallowMount(SettingsAccount);
+      await flushPromises();
+      await findManageButton(wrapper)?.trigger("click");
+      expect(openPortal).toHaveBeenCalledOnce();
     });
   });
 

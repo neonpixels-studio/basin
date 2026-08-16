@@ -2,12 +2,14 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const {
   mockSessionsCreate,
+  mockBillingPortalCreate,
   mockCustomersCreate,
   mockCustomersDel,
   mockConstructEvent,
   MockStripe,
 } = vi.hoisted(() => {
   const mockSessionsCreate = vi.fn();
+  const mockBillingPortalCreate = vi.fn();
   const mockCustomersCreate = vi.fn();
   const mockCustomersDel = vi.fn();
   const mockConstructEvent = vi.fn();
@@ -16,12 +18,14 @@ const {
   const MockStripe = vi.fn().mockImplementation(function () {
     return {
       checkout: { sessions: { create: mockSessionsCreate } },
+      billingPortal: { sessions: { create: mockBillingPortalCreate } },
       customers: { create: mockCustomersCreate, del: mockCustomersDel },
       webhooks: { constructEvent: mockConstructEvent },
     };
   });
   return {
     mockSessionsCreate,
+    mockBillingPortalCreate,
     mockCustomersCreate,
     mockCustomersDel,
     mockConstructEvent,
@@ -58,6 +62,7 @@ import {
   getStripeClient,
   priceIdForInterval,
   createCheckoutSession,
+  createBillingPortalSession,
   createStripeCustomer,
   deleteStripeCustomer,
   verifyWebhookSignature,
@@ -155,6 +160,35 @@ describe("createCheckoutSession", () => {
       cancelUrl: "https://example.com/cancel",
     });
     expect(session.url).toBe("https://checkout.stripe.com/session_123");
+  });
+});
+
+describe("createBillingPortalSession", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    runtimeConfigValue.value = null;
+    mockBillingPortalCreate.mockResolvedValue({
+      url: "https://billing.stripe.com/session_123",
+    });
+  });
+
+  it("creates a portal session for the customer with the return URL", async () => {
+    await createBillingPortalSession({
+      customerId: "cus_123",
+      returnUrl: "https://example.com/settings/account",
+    });
+    expect(mockBillingPortalCreate).toHaveBeenCalledWith({
+      customer: "cus_123",
+      return_url: "https://example.com/settings/account",
+    });
+  });
+
+  it("returns the created session", async () => {
+    const session = await createBillingPortalSession({
+      customerId: "cus_123",
+      returnUrl: "https://example.com/settings/account",
+    });
+    expect(session.url).toBe("https://billing.stripe.com/session_123");
   });
 });
 

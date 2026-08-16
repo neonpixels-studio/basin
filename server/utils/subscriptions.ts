@@ -88,6 +88,21 @@ export async function getAccountPlan(userId: number): Promise<AccountPlan> {
   };
 }
 
+// Resolves the Stripe customer id for the user's own subscription row, or null
+// when they have none. Ownership-scoped: the caller passes the authenticated
+// user id, never a client-supplied customer id, so a request can only reach its
+// own billing. Unlike getOrCreateStripeCustomerId this never creates a customer
+// — the billing portal is only meaningful for a user who already has one.
+export async function getStripeCustomerId(
+  userId: number,
+): Promise<string | null> {
+  const db = useDb();
+  const subscription = await db.query.subscriptions.findFirst({
+    where: eq(subscriptions.userId, userId),
+  });
+  return subscription?.stripeCustomerId ?? null;
+}
+
 function isStripeResourceMissing(error: unknown): boolean {
   return (
     typeof error === "object" &&

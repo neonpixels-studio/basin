@@ -4,7 +4,7 @@ import { FREE_ACCOUNT_PLAN } from "~/composables/useBilling";
 const feedStore = useFeedStore();
 const { user } = useUser();
 const clerk = useClerk();
-const { loadPlan } = useBilling();
+const { loadPlan, openPortal, loading: billingLoading } = useBilling();
 const { exporting, error: exportError, exportData } = useAccountExport();
 
 const plan = ref({ ...FREE_ACCOUNT_PLAN });
@@ -63,6 +63,9 @@ function handleSignOut() {
     <NuxtLink v-if="plan.plan !== 'pro'" to="/pricing" class="btn btn-primary">
       Upgrade to Pro
     </NuxtLink>
+    <button v-else class="btn" :disabled="billingLoading" @click="openPortal">
+      <RIcon name="settings" :size="16" /> Manage subscription
+    </button>
   </section>
 
   <section class="set-section">
