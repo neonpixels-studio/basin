@@ -78,4 +78,15 @@ describe("POST /api/billing/portal", () => {
     const event = { context: { user: { id: 1 } } };
     await expect(handler(event)).rejects.toMatchObject({ statusCode: 502 });
   });
+
+  it("throws a 502 with a generic message when the Stripe call fails", async () => {
+    mockCreateBillingPortalSession.mockRejectedValue(
+      new Error("No configuration provided"),
+    );
+    const event = { context: { user: { id: 1 } } };
+    await expect(handler(event)).rejects.toMatchObject({
+      statusCode: 502,
+      message: "Could not open the billing portal",
+    });
+  });
 });

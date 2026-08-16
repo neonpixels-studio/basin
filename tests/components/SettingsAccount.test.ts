@@ -125,8 +125,9 @@ describe("SettingsAccount", () => {
         .find((button) => button.text().includes("Manage subscription"));
     }
 
-    it("hides the Manage subscription button on the free plan", () => {
+    it("hides the Manage subscription button on the free plan", async () => {
       const wrapper = shallowMount(SettingsAccount);
+      await flushPromises();
       expect(findManageButton(wrapper)).toBeUndefined();
     });
 
@@ -144,6 +145,21 @@ describe("SettingsAccount", () => {
       await flushPromises();
       await findManageButton(wrapper)?.trigger("click");
       expect(openPortal).toHaveBeenCalledOnce();
+    });
+
+    it("shows a billing error message when the portal fails to open", async () => {
+      vi.stubGlobal("useBilling", () => ({
+        loading: ref(false),
+        error: ref("Failed to open billing portal. Please try again."),
+        loadPlan: vi.fn().mockResolvedValue({ ...PRO_PLAN }),
+        startCheckout: vi.fn(),
+        openPortal: vi.fn(),
+      }));
+      const wrapper = shallowMount(SettingsAccount);
+      await flushPromises();
+      expect(wrapper.find(".billing-error").text()).toContain(
+        "Failed to open billing portal",
+      );
     });
   });
 

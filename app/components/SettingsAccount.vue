@@ -4,7 +4,12 @@ import { FREE_ACCOUNT_PLAN } from "~/composables/useBilling";
 const feedStore = useFeedStore();
 const { user } = useUser();
 const clerk = useClerk();
-const { loadPlan, openPortal, loading: billingLoading } = useBilling();
+const {
+  loadPlan,
+  openPortal,
+  loading: billingLoading,
+  error: billingError,
+} = useBilling();
 const { exporting, error: exportError, exportData } = useAccountExport();
 
 const plan = ref({ ...FREE_ACCOUNT_PLAN });
@@ -20,6 +25,18 @@ const trialEndsAt = computed(() =>
     ? new Date(plan.value.trialEnd).toLocaleDateString()
     : null,
 );
+
+// Kept in the script (not inline template conditionals) so the billing copy
+// reads as one sentence and the template stays flat.
+const billingMessage = computed(() => {
+  if (plan.value.plan !== "pro") {
+    return "You're on the Free plan. Upgrade to Pro for unlimited sources.";
+  }
+  if (trialEndsAt.value) {
+    return `You're on the Pro plan. Your trial ends ${trialEndsAt.value}.`;
+  }
+  return "You're on the Pro plan.";
+});
 
 function handleSignOut() {
   clerk.value?.signOut({ redirectUrl: "/login" });
@@ -49,23 +66,14 @@ function handleSignOut() {
 
   <section class="set-section">
     <h2>Billing</h2>
-    <p class="desc billing-desc">
-      <template v-if="plan.plan === 'pro'">
-        You're on the Pro plan.
-        <template v-if="trialEndsAt"
-          >Your trial ends {{ trialEndsAt }}.</template
-        >
-      </template>
-      <template v-else>
-        You're on the Free plan. Upgrade to Pro for unlimited sources.
-      </template>
-    </p>
+    <p class="desc billing-desc">{{ billingMessage }}</p>
     <NuxtLink v-if="plan.plan !== 'pro'" to="/pricing" class="btn btn-primary">
       Upgrade to Pro
     </NuxtLink>
     <button v-else class="btn" :disabled="billingLoading" @click="openPortal">
       <RIcon name="settings" :size="16" /> Manage subscription
     </button>
+    <p v-if="billingError" class="desc billing-error">{{ billingError }}</p>
   </section>
 
   <section class="set-section">

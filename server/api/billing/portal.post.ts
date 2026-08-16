@@ -1,5 +1,28 @@
+import type Stripe from "stripe";
 import { createBillingPortalSession } from "../../utils/stripe";
 import { getStripeCustomerId } from "../../utils/subscriptions";
+
+async function createPortalSessionOrThrow(
+  customerId: string,
+  origin: string,
+  userId: number,
+): Promise<Stripe.BillingPortal.Session> {
+  try {
+    return await createBillingPortalSession({
+      customerId,
+      returnUrl: `${origin}/settings/account`,
+    });
+  } catch (caughtError) {
+    console.error(
+      `Stripe billing portal failed for user ${userId}:`,
+      caughtError,
+    );
+    throw createError({
+      statusCode: 502,
+      statusMessage: "Could not open the billing portal",
+    });
+  }
+}
 
 export default defineEventHandler(async (event) => {
   const user = event.context.user;
@@ -18,10 +41,11 @@ export default defineEventHandler(async (event) => {
   }
 
   const { origin } = getRequestURL(event);
-  const session = await createBillingPortalSession({
-    customerId,
-    returnUrl: `${origin}/settings/account`,
-  });
+  // The portal call throws on known-reachable states (an unconfigured portal in
+  // the Stripe dashboard, or a customer that no longer exists in Stripe). Map
+  // those to a 502 with a generic message rather than leaking Stripe's raw
+  // error text out of an unhandled 500.
+  const session = await createPortalSessionOrThrow(customerId, origin, user.id);
 
   if (!session.url) {
     throw createError({

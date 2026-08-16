@@ -17,7 +17,8 @@ exports[`SettingsAccount > matches snapshot 1`] = `
 </section>
 <section class="set-section">
   <h2>Billing</h2>
-  <p class="desc billing-desc"> You're on the Free plan. Upgrade to Pro for unlimited sources. </p><a href="/pricing" class="btn btn-primary"> Upgrade to Pro </a>
+  <p class="desc billing-desc">You're on the Free plan. Upgrade to Pro for unlimited sources.</p><a href="/pricing" class="btn btn-primary"> Upgrade to Pro </a>
+  <!--v-if-->
 </section>
 <section class="set-section">
   <h2>Your data</h2>
