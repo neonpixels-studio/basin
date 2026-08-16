@@ -423,7 +423,7 @@ describe("parsePodcastFeedFromXml tags", () => {
     );
 
     const [item] = await parsePodcastFeedFromXml("<rss/>", FEED_ID);
-    expect(item.tags).toEqual(["Comedy", "Society"]);
+    expect(item.tags).toEqual(["comedy", "society"]);
   });
 
   it("leaves tags null when the episode has no categories", async () => {

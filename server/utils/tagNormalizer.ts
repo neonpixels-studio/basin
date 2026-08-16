@@ -11,17 +11,11 @@ export const MAX_TAGS_PER_ITEM = 25;
 // sentence miscategorized); drop them to keep the column clean.
 export const MAX_TAG_LENGTH = 100;
 
-// Bound the raw values inspected so a broken feed with hundreds of thousands of
-// duplicate/over-length categories on one item can't burn CPU trimming values
-// that could never all be kept anyway. Generous multiple of the store cap so
-// legitimate feeds are never truncated.
-const MAX_VALUES_SCANNED = MAX_TAGS_PER_ITEM * 10;
-
 // RSS/Atom <category> elements surface as plain strings, or as objects carrying
 // attributes: { _: "text", $: {...} } (RSS with a domain), { $: { term } }
 // (Atom), or { $: { text } } (iTunes category). Coerce any of these to text,
-// preferring the first candidate that is genuinely a string (a non-string `_`
-// must not shadow a valid `$.term`).
+// preferring the first candidate that is a genuinely non-empty string — a null,
+// non-string, or empty `_` must not shadow a valid `$.term`/`$.text`.
 function coerceToTagText(value: unknown): string | null {
   if (typeof value === "string") {
     return value;
@@ -36,14 +30,18 @@ function coerceToTagText(value: unknown): string | null {
     $?: { term?: unknown; text?: unknown };
   };
   const candidates = [record._, record.$?.term, record.$?.text];
-  const text = candidates.find((candidate) => typeof candidate === "string");
+  const text = candidates.find(
+    (candidate) => typeof candidate === "string" && candidate.trim() !== "",
+  );
   return typeof text === "string" ? text : null;
 }
 
-// Strip a leading hashtag marker (Bluesky record.tags/facets may include it)
-// so the stored value stays bare and the UI's own `#` prefix isn't doubled.
+// Strip a leading hashtag marker (Bluesky record.tags/facets may include it) so
+// the stored value stays bare and the UI's own `#` prefix isn't doubled, and
+// collapse internal whitespace so a pretty-printed <category> spanning lines
+// (e.g. "Web\n   Development") stores as a single clean "Web Development".
 function cleanTagText(text: string): string {
-  return text.trim().replace(/^#+/, "").trim();
+  return text.trim().replace(/^#+/, "").replace(/\s+/g, " ").trim();
 }
 
 // Coerce and clean a single raw value into a usable tag, or null when it yields
@@ -63,6 +61,10 @@ function normalizeTag(value: unknown): string | null {
 }
 
 // Normalize a raw list of tag values into a clean, deduped, capped array.
+// Tags are stored lowercased (canonical form) so the same tag emitted with
+// different casing by different items collapses to one value in the GIN-indexed
+// column — cross-item filters and facet counts would otherwise fragment. The UI
+// renders whatever is stored with its own `#` prefix.
 // Returns null when nothing usable remains so callers store SQL NULL rather
 // than an empty array — the "no tags" state the UI already renders.
 export function normalizeTags(
@@ -75,7 +77,7 @@ export function normalizeTags(
   const seen = new Set<string>();
   const tags: string[] = [];
 
-  for (const value of values.slice(0, MAX_VALUES_SCANNED)) {
+  for (const value of values) {
     if (tags.length >= MAX_TAGS_PER_ITEM) {
       break;
     }
@@ -85,14 +87,13 @@ export function normalizeTags(
       continue;
     }
 
-    // Dedupe case-insensitively but preserve the first-seen casing for display.
-    const key = tag.toLowerCase();
-    if (seen.has(key)) {
+    const canonical = tag.toLowerCase();
+    if (seen.has(canonical)) {
       continue;
     }
 
-    seen.add(key);
-    tags.push(tag);
+    seen.add(canonical);
+    tags.push(canonical);
   }
 
   return tags.length ? tags : null;

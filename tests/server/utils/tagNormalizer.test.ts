@@ -27,15 +27,21 @@ describe("normalizeTags", () => {
     expect(normalizeTags(["", "   ", "#"])).toBeNull();
   });
 
-  it("dedupes case-insensitively, preserving first-seen casing", () => {
-    expect(normalizeTags(["Tech", "tech", "TECH", "news"])).toEqual([
-      "Tech",
+  it("dedupes case-insensitively, storing canonical lowercase", () => {
+    expect(normalizeTags(["Tech", "tech", "TECH", "News"])).toEqual([
+      "tech",
       "news",
     ]);
   });
 
+  it("collapses internal whitespace in multi-line categories", () => {
+    expect(normalizeTags(["  Web\n   Development "])).toEqual([
+      "web development",
+    ]);
+  });
+
   it("strips a leading hashtag marker", () => {
-    expect(normalizeTags(["#photography", "##double"])).toEqual([
+    expect(normalizeTags(["#Photography", "##Double"])).toEqual([
       "photography",
       "double",
     ]);
@@ -60,6 +66,10 @@ describe("normalizeTags", () => {
 
   it("skips a non-string _ in favour of a valid attribute", () => {
     expect(normalizeTags([{ _: 42, $: { term: "tech" } }])).toEqual(["tech"]);
+  });
+
+  it("skips an empty-string _ in favour of a valid attribute", () => {
+    expect(normalizeTags([{ _: "", $: { term: "tech" } }])).toEqual(["tech"]);
   });
 
   it("drops absurdly long tags", () => {

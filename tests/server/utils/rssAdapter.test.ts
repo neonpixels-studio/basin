@@ -510,7 +510,7 @@ describe("parseRssFeedFromXml tags", () => {
     );
 
     const [item] = await parseRssFeedFromXml("<rss/>", FEED_ID);
-    expect(item.tags).toEqual(["Tech", "News"]);
+    expect(item.tags).toEqual(["tech", "news"]);
   });
 
   it("leaves tags null when the item has no categories", async () => {

@@ -1189,7 +1189,7 @@ describe("extractPostTags", () => {
       ],
     };
 
-    expect(extractPostTags(record)).toEqual(["Nature", "photography"]);
+    expect(extractPostTags(record)).toEqual(["nature", "photography"]);
   });
 
   it("ignores non-tag facet features (mentions, links)", () => {
