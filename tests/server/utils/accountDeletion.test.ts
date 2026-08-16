@@ -3,19 +3,28 @@ import { eq } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
 import { users } from "../../../server/db/schema";
 
-const { mockDeleteBillingRecords, mockDeleteClerkUser, mockDelete, mockWhere } =
-  vi.hoisted(() => ({
-    mockDeleteBillingRecords: vi.fn(),
-    mockDeleteClerkUser: vi.fn(),
-    mockDelete: vi.fn(),
-    mockWhere: vi.fn(),
-  }));
+const {
+  mockDeleteBillingRecords,
+  mockDeleteClerkUser,
+  mockRecordDeletionTombstone,
+  mockDelete,
+  mockWhere,
+} = vi.hoisted(() => ({
+  mockDeleteBillingRecords: vi.fn(),
+  mockDeleteClerkUser: vi.fn(),
+  mockRecordDeletionTombstone: vi.fn(),
+  mockDelete: vi.fn(),
+  mockWhere: vi.fn(),
+}));
 
 vi.mock("../../../server/utils/subscriptions", () => ({
   deleteBillingRecords: mockDeleteBillingRecords,
 }));
 vi.mock("../../../server/utils/clerk", () => ({
   deleteClerkUser: mockDeleteClerkUser,
+}));
+vi.mock("../../../server/utils/tombstone", () => ({
+  recordDeletionTombstone: mockRecordDeletionTombstone,
 }));
 
 vi.stubGlobal("useDb", () => ({ delete: mockDelete }));
@@ -43,10 +52,11 @@ describe("deleteUserAccount", () => {
     mockWhere.mockResolvedValue(undefined);
   });
 
-  it("purges billing, deletes the db row for the right user, then deletes the clerk user", async () => {
+  it("purges billing, tombstones and deletes the db row for the right user, then deletes the clerk user", async () => {
     const event = { context: { user } };
     await deleteUserAccount(event as never, user);
     expect(mockDeleteBillingRecords).toHaveBeenCalledWith(7);
+    expect(mockRecordDeletionTombstone).toHaveBeenCalledWith("user_abc");
     expect(mockDelete).toHaveBeenCalledWith(users);
     expect(sameCondition(mockWhere.mock.calls[0][0], eq(users.id, 7))).toBe(
       true,
@@ -54,10 +64,13 @@ describe("deleteUserAccount", () => {
     expect(mockDeleteClerkUser).toHaveBeenCalledWith(event, "user_abc");
   });
 
-  it("purges billing before deleting the db row before deleting the clerk user", async () => {
+  it("tombstones the provider id before deleting the db row so no session can resurrect it", async () => {
     const order: string[] = [];
     mockDeleteBillingRecords.mockImplementation(async () => {
       order.push("billing");
+    });
+    mockRecordDeletionTombstone.mockImplementation(async () => {
+      order.push("tombstone");
     });
     mockWhere.mockImplementation(async () => {
       order.push("db-delete");
@@ -66,7 +79,27 @@ describe("deleteUserAccount", () => {
       order.push("clerk-delete");
     });
     await deleteUserAccount({ context: { user } } as never, user);
-    expect(order).toEqual(["billing", "db-delete", "clerk-delete"]);
+    expect(order).toEqual([
+      "billing",
+      "tombstone",
+      "db-delete",
+      "clerk-delete",
+    ]);
+  });
+
+  it("does not delete the db row or the clerk user when tombstoning throws", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    mockRecordDeletionTombstone.mockRejectedValue(new Error("tombstone down"));
+    await expect(
+      deleteUserAccount({ context: { user } } as never, user),
+    ).rejects.toThrow("tombstone down");
+    expect(mockDelete).not.toHaveBeenCalled();
+    expect(mockDeleteClerkUser).not.toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("recording the deletion tombstone failed"),
+      expect.any(Error),
+    );
+    errorSpy.mockRestore();
   });
 
   it("does not delete the db row when purging billing throws", async () => {
@@ -74,6 +107,7 @@ describe("deleteUserAccount", () => {
     await expect(
       deleteUserAccount({ context: { user } } as never, user),
     ).rejects.toThrow("stripe down");
+    expect(mockRecordDeletionTombstone).not.toHaveBeenCalled();
     expect(mockDelete).not.toHaveBeenCalled();
     expect(mockDeleteClerkUser).not.toHaveBeenCalled();
   });
@@ -85,9 +119,10 @@ describe("deleteUserAccount", () => {
       deleteUserAccount({ context: { user } } as never, user),
     ).rejects.toThrow("db down");
     expect(mockDeleteBillingRecords).toHaveBeenCalledWith(7);
+    expect(mockRecordDeletionTombstone).toHaveBeenCalledWith("user_abc");
     expect(mockDeleteClerkUser).not.toHaveBeenCalled();
     expect(errorSpy).toHaveBeenCalledWith(
-      expect.stringContaining("half-deleted"),
+      expect.stringContaining("deleting the users row failed"),
       expect.any(Error),
     );
     errorSpy.mockRestore();

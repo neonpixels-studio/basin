@@ -29,6 +29,22 @@ export const users = pgTable("users", {
   updatedAt: timestamp("updated_at").defaultNow(),
 });
 
+// Records the provider id (Clerk user id) of a deleted account. server/utils/
+// tombstone.ts owns the full rationale (why a still-valid session can otherwise
+// resurrect an empty row). The provider id is the primary key so the deletion
+// write can safely `onConflictDoNothing` if the account is deleted twice.
+//
+// Rows are retained and not pruned here: Clerk never reuses a user id, and a
+// row only ever needs to outlive the deleted account's longest valid session,
+// so pruning risks reopening the resurrection gap if the window undercut a
+// still-valid token's TTL. The stored value is Clerk's opaque provider id (a
+// pseudonymous identifier, not profile data); hashing it or bounding retention
+// past the max session lifetime are reasonable hardening follow-ups.
+export const deletionTombstones = pgTable("deletion_tombstones", {
+  providerId: text("provider_id").primaryKey(),
+  deletedAt: timestamp("deleted_at").notNull().defaultNow(),
+});
+
 export const feeds = pgTable(
   "feeds",
   {

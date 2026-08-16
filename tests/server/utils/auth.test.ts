@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 
 const mockFindFirst = vi.fn();
+const mockTombstoneFindFirst = vi.fn();
 const mockReturning = vi.fn();
 const mockValues = vi.fn();
 const mockInsert = vi.fn();
@@ -8,7 +9,10 @@ const mockInsert = vi.fn();
 const runtimeConfig = { disableSignups: "" };
 
 vi.stubGlobal("useDb", () => ({
-  query: { users: { findFirst: mockFindFirst } },
+  query: {
+    users: { findFirst: mockFindFirst },
+    deletionTombstones: { findFirst: mockTombstoneFindFirst },
+  },
   insert: mockInsert,
 }));
 vi.stubGlobal("useRuntimeConfig", () => runtimeConfig);
@@ -26,6 +30,7 @@ describe("getOrCreateUser", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     runtimeConfig.disableSignups = "";
+    mockTombstoneFindFirst.mockResolvedValue(undefined);
     mockInsert.mockReturnValue({ values: mockValues });
     mockValues.mockReturnValue({ returning: mockReturning });
   });
@@ -46,6 +51,32 @@ describe("getOrCreateUser", () => {
     const result = await getOrCreateUser("clerk_abc");
 
     expect(result).toEqual(mockUser);
+  });
+
+  describe("when the provider id has been tombstoned", () => {
+    beforeEach(() => {
+      mockFindFirst.mockResolvedValue(undefined);
+      mockTombstoneFindFirst.mockResolvedValue({
+        providerId: "clerk_deleted",
+        deletedAt: null,
+      });
+    });
+
+    it("refuses to re-create the user with a 403", async () => {
+      await expect(getOrCreateUser("clerk_deleted")).rejects.toMatchObject({
+        statusCode: 403,
+      });
+      expect(mockInsert).not.toHaveBeenCalled();
+    });
+
+    it("still returns an existing row rather than checking the tombstone", async () => {
+      mockFindFirst.mockResolvedValue(mockUser);
+
+      const result = await getOrCreateUser("clerk_deleted");
+
+      expect(result).toEqual(mockUser);
+      expect(mockTombstoneFindFirst).not.toHaveBeenCalled();
+    });
   });
 
   it("inserts with the correct providerId when creating", async () => {

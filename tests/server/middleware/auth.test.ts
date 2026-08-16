@@ -41,4 +41,17 @@ describe("server/middleware/auth", () => {
     expect(mockGetOrCreateUser).toHaveBeenCalledWith("clerk_abc");
     expect((event.context as any).user).toEqual(mockUser);
   });
+
+  // getOrCreateUser throws a 403 for a tombstoned (deleted) identity; the
+  // middleware must surface that rather than swallowing it into an
+  // unauthenticated request. End-to-end tombstone behavior is covered in
+  // tests/server/utils/auth.test.ts.
+  it("propagates an auth error from getOrCreateUser and attaches no user", async () => {
+    mockGetOrCreateUser.mockRejectedValue({ statusCode: 403 });
+    const event = makeEvent("clerk_deleted");
+    await expect(serverAuthMiddleware(event as any)).rejects.toMatchObject({
+      statusCode: 403,
+    });
+    expect(event.context).not.toHaveProperty("user");
+  });
 });
