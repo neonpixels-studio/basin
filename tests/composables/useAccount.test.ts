@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { ref } from "vue";
 import { useAccount } from "~/composables/useAccount";
 
 const mockFetch = vi.fn();
@@ -6,6 +7,28 @@ vi.stubGlobal("$fetch", mockFetch);
 
 const mockGetToken = vi.fn().mockResolvedValue("token-123");
 vi.stubGlobal("useAuth", () => ({ getToken: { value: mockGetToken } }));
+
+const reverificationError = () =>
+  Object.assign(new Error("reverify"), {
+    statusCode: 403,
+    data: { code: "reverification_required" },
+  });
+
+// Stubs the Clerk instance so the reverification modal either verifies or is
+// cancelled, then returns the openReverification spy for assertions.
+function stubClerkReverification(outcome: "verify" | "cancel") {
+  const openReverification = vi.fn((props) => {
+    if (outcome === "verify") {
+      props.afterVerification();
+      return;
+    }
+    props.afterVerificationCancelled();
+  });
+  vi.stubGlobal("useClerk", () =>
+    ref({ __internal_openReverification: openReverification }),
+  );
+  return openReverification;
+}
 
 describe("useAccount", () => {
   beforeEach(() => {
@@ -58,5 +81,42 @@ describe("useAccount", () => {
       "/api/account",
       expect.objectContaining({ headers: {} }),
     );
+  });
+
+  it("prompts reverification and retries when the server requires it", async () => {
+    const openReverification = stubClerkReverification("verify");
+    mockGetToken
+      .mockResolvedValueOnce("stale-token")
+      .mockResolvedValueOnce("fresh-token");
+    mockFetch
+      .mockRejectedValueOnce(reverificationError())
+      .mockResolvedValueOnce({ ok: true });
+
+    const { deleteAccount } = useAccount();
+    const result = await deleteAccount();
+
+    expect(result).toBe(true);
+    expect(openReverification).toHaveBeenCalledOnce();
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    // The retry rebuilds the header, so it carries the freshly reverified token.
+    expect(mockFetch).toHaveBeenLastCalledWith(
+      "/api/account",
+      expect.objectContaining({
+        headers: { Authorization: "Bearer fresh-token" },
+      }),
+    );
+  });
+
+  it("does not delete and reports cancellation when the user backs out", async () => {
+    stubClerkReverification("cancel");
+    mockFetch.mockRejectedValue(reverificationError());
+
+    const { deleteAccount, error } = useAccount();
+    const result = await deleteAccount();
+
+    expect(result).toBe(false);
+    expect(error.value).toMatch(/cancelled/i);
+    // Only the first attempt fired; no retry after cancellation.
+    expect(mockFetch).toHaveBeenCalledOnce();
   });
 });

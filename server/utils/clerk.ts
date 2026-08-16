@@ -12,3 +12,30 @@ export async function deleteClerkUser(
 ): Promise<void> {
   await clerkClient(event).users.deleteUser(providerId);
 }
+
+// Minimal shape of the Clerk auth object we read here — kept local so the
+// reverification gate depends on this seam, not on Clerk's exported types.
+type ClerkAuthContext = {
+  sessionClaims?: { fva?: unknown } | null;
+};
+
+// Reads Clerk's `fva` (factor verification age) session claim: a tuple of
+// minutes `[since last first-factor verification, since last second-factor
+// verification]`, where `-1` means the factor doesn't apply. Returns the
+// first-factor age, or `null` when the claim is absent or malformed. Isolated
+// here so destructive-action gates can be unit-tested without a live Clerk
+// session — callers hand it a plain event with a stubbed `auth()`.
+export function getFirstFactorVerificationAgeMinutes(
+  event: H3Event,
+): number | null {
+  const auth = event.context.auth?.() as ClerkAuthContext | undefined;
+  const fva = auth?.sessionClaims?.fva;
+  if (!Array.isArray(fva)) {
+    return null;
+  }
+  const firstFactorAgeMinutes = fva[0];
+  if (typeof firstFactorAgeMinutes !== "number") {
+    return null;
+  }
+  return firstFactorAgeMinutes;
+}
