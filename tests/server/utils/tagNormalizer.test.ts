@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   normalizeTags,
   MAX_TAGS_PER_ITEM,
+  MAX_TAG_LENGTH,
 } from "../../../server/utils/tagNormalizer";
 
 describe("normalizeTags", () => {
@@ -57,15 +58,19 @@ describe("normalizeTags", () => {
     expect(normalizeTags([{ $: { domain: "x" } }, 42, null])).toBeNull();
   });
 
+  it("skips a non-string _ in favour of a valid attribute", () => {
+    expect(normalizeTags([{ _: 42, $: { term: "tech" } }])).toEqual(["tech"]);
+  });
+
   it("drops absurdly long tags", () => {
-    const tooLong = "a".repeat(101);
+    const tooLong = "a".repeat(MAX_TAG_LENGTH + 1);
     expect(normalizeTags([tooLong, "ok"])).toEqual(["ok"]);
   });
 
   it("caps the number of tags at MAX_TAGS_PER_ITEM", () => {
     const many = Array.from(
       { length: MAX_TAGS_PER_ITEM + 10 },
-      (_unused, i) => `tag-${i}`,
+      (_element, index) => `tag-${index}`,
     );
     const result = normalizeTags(many);
     expect(result).toHaveLength(MAX_TAGS_PER_ITEM);

@@ -648,6 +648,45 @@ describe("fetchNewBlueskyPosts", () => {
     expect(items[0].publishedAt).toEqual(new Date("2024-06-01T10:00:00.000Z"));
   });
 
+  it("populates mapped items with hashtags from facets and record.tags", async () => {
+    const watermark = new Date("2024-06-01T09:00:00.000Z");
+
+    mockDeps.getTimeline.mockResolvedValueOnce({
+      feed: [
+        makePost({
+          post: {
+            ...makePost().post,
+            indexedAt: "2024-06-01T10:00:00.000Z",
+            record: {
+              $type: "app.bsky.feed.post",
+              text: "Shipping #tags today",
+              createdAt: "2024-06-01T10:00:00.000Z",
+              tags: ["release"],
+              facets: [
+                {
+                  features: [
+                    { $type: "app.bsky.richtext.facet#tag", tag: "tags" },
+                  ],
+                },
+              ],
+            },
+          },
+        }),
+      ],
+    });
+
+    const items = await fetchNewBlueskyPosts(
+      makeCredentials(),
+      FEED_ID,
+      watermark,
+      DEFAULT_POST_FILTER_POLICY,
+      mockDeps,
+    );
+
+    expect(items).toHaveLength(1);
+    expect(items[0].tags).toEqual(["release", "tags"]);
+  });
+
   it("stops paging once a post predates the watermark", async () => {
     const watermark = new Date("2024-06-01T09:00:00.000Z");
 
