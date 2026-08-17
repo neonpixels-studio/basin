@@ -3,15 +3,18 @@ import { ref } from "vue";
 import { useAccount } from "~/composables/useAccount";
 
 const mockFetch = vi.fn();
-vi.stubGlobal("$fetch", mockFetch);
+const mockGetToken = vi.fn();
 
-const mockGetToken = vi.fn().mockResolvedValue("token-123");
-vi.stubGlobal("useAuth", () => ({ getToken: { value: mockGetToken } }));
-
+// Mirrors the real $fetch failure: Nitro's createError({ data }) serializes as
+// { ...error, data }, so the FetchError nests our payload at `error.data.data`.
 const reverificationError = () =>
   Object.assign(new Error("reverify"), {
     statusCode: 403,
-    data: { code: "reverification_required" },
+    data: {
+      statusCode: 403,
+      statusMessage: "Reverification required",
+      data: { code: "reverification_required" },
+    },
   });
 
 // Stubs the Clerk instance so the reverification modal either verifies or is
@@ -31,9 +34,14 @@ function stubClerkReverification(outcome: "verify" | "cancel") {
 }
 
 describe("useAccount", () => {
+  // Re-establish the base stubs each test (and clear any per-test useClerk
+  // stub) so a reverification test can't leak its Clerk instance into others.
   beforeEach(() => {
-    vi.resetAllMocks();
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
     mockGetToken.mockResolvedValue("token-123");
+    vi.stubGlobal("$fetch", mockFetch);
+    vi.stubGlobal("useAuth", () => ({ getToken: { value: mockGetToken } }));
   });
 
   it("sends a DELETE to /api/account with the Clerk bearer token", async () => {
@@ -118,5 +126,21 @@ describe("useAccount", () => {
     expect(error.value).toMatch(/cancelled/i);
     // Only the first attempt fired; no retry after cancellation.
     expect(mockFetch).toHaveBeenCalledOnce();
+  });
+
+  it("surfaces a failure without looping when the retry still lacks a fresh session", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const openReverification = stubClerkReverification("verify");
+    // The gate keeps rejecting (e.g. token never refreshed): prompt once, retry
+    // once, then surface the failure rather than reprompting indefinitely.
+    mockFetch.mockRejectedValue(reverificationError());
+
+    const { deleteAccount, error } = useAccount();
+    const result = await deleteAccount();
+
+    expect(result).toBe(false);
+    expect(error.value).toMatch(/Failed to delete/);
+    expect(openReverification).toHaveBeenCalledOnce();
+    expect(mockFetch).toHaveBeenCalledTimes(2);
   });
 });

@@ -7,7 +7,9 @@ vi.mock("@clerk/nuxt/server", () => ({ clerkClient: vi.fn() }));
 import {
   assertRecentReverification,
   REVERIFICATION_MAX_AGE_MINUTES,
+  REVERIFICATION_REQUIRED_CODE as SERVER_CODE,
 } from "../../../server/utils/reverification";
+import { REVERIFICATION_REQUIRED_CODE as CLIENT_CODE } from "~/composables/useReverification";
 
 // Builds an event whose Clerk auth() reports a first-factor verification
 // `minutes` old. `null` omits auth() entirely (no claim available).
@@ -57,5 +59,11 @@ describe("assertRecentReverification", () => {
     expect(() => assertRecentReverification(event as never)).toThrowError(
       expect.objectContaining({ statusCode: 403 }),
     );
+  });
+
+  it("shares the reverification code with the client composable", () => {
+    // The client matches this code to open Clerk's modal; drift silently breaks
+    // the gate's UX, so the duplicated constant is asserted equal here.
+    expect(SERVER_CODE).toBe(CLIENT_CODE);
   });
 });

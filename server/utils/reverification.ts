@@ -28,13 +28,11 @@ function reverificationRequiredError() {
 // check, so it's rejected too.
 export function assertRecentReverification(event: H3Event): void {
   const firstFactorAgeMinutes = getFirstFactorVerificationAgeMinutes(event);
-  if (firstFactorAgeMinutes === null) {
-    throw reverificationRequiredError();
-  }
-  if (firstFactorAgeMinutes < 0) {
-    throw reverificationRequiredError();
-  }
-  if (firstFactorAgeMinutes > REVERIFICATION_MAX_AGE_MINUTES) {
+  const isRecentlyVerified =
+    firstFactorAgeMinutes !== null &&
+    firstFactorAgeMinutes >= 0 &&
+    firstFactorAgeMinutes <= REVERIFICATION_MAX_AGE_MINUTES;
+  if (!isRecentlyVerified) {
     throw reverificationRequiredError();
   }
 }

@@ -22,21 +22,27 @@ export function isReverificationCancelledError(
   return input instanceof ReverificationCancelledError;
 }
 
-type ReverificationFetchError = {
-  statusCode?: number;
-  status?: number;
+type ReverificationErrorBody = {
+  code?: string;
   data?: { code?: string } | null;
 };
 
+type ReverificationFetchError = {
+  data?: ReverificationErrorBody | null;
+};
+
+// A Nitro createError({ data }) serializes as { ...error, data }, so $fetch's
+// FetchError nests our payload at `error.data.data`. We also accept the flat
+// `error.data` shape for non-$fetch callers. Match only the explicit code — a
+// bare 403 (auth rule, rate limit, WAF) must not open the modal and re-fire a
+// destructive request.
+function reverificationCode(caughtError: unknown): string | undefined {
+  const body = (caughtError as ReverificationFetchError | null)?.data;
+  return body?.data?.code ?? body?.code;
+}
+
 function needsReverification(caughtError: unknown): boolean {
-  const error = caughtError as ReverificationFetchError | null;
-  if (!error) {
-    return false;
-  }
-  if (error.data?.code === REVERIFICATION_REQUIRED_CODE) {
-    return true;
-  }
-  return (error.statusCode ?? error.status) === 403;
+  return reverificationCode(caughtError) === REVERIFICATION_REQUIRED_CODE;
 }
 
 export function useReverification() {
@@ -49,12 +55,22 @@ export function useReverification() {
         reject(new Error("Clerk is not loaded; cannot reverify."));
         return;
       }
+      // Guard against the modal firing both callbacks (or one twice): the first
+      // outcome wins so the wrapped request settles exactly once.
+      let settled = false;
+      const settleOnce = (finish: () => void) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        finish();
+      };
       // `__internal_openReverification` is the same entry point Clerk's own
       // React useReverification uses; @clerk/vue exposes no public wrapper.
       instance.__internal_openReverification({
-        afterVerification: () => resolve(),
+        afterVerification: () => settleOnce(resolve),
         afterVerificationCancelled: () =>
-          reject(new ReverificationCancelledError()),
+          settleOnce(() => reject(new ReverificationCancelledError())),
       });
     });
   }

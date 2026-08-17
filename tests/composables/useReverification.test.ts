@@ -5,10 +5,12 @@ import {
   isReverificationCancelledError,
 } from "~/composables/useReverification";
 
+// Mirrors the real $fetch failure: the reverification code is nested at
+// `error.data.data.code` (Nitro serializes createError({ data }) as {...,data}).
 const reverificationError = () =>
   Object.assign(new Error("reverify"), {
     statusCode: 403,
-    data: { code: "reverification_required" },
+    data: { data: { code: "reverification_required" } },
   });
 
 function stubClerk(openReverification: unknown) {
@@ -40,6 +42,20 @@ describe("useReverification", () => {
     const action = vi.fn().mockRejectedValue(new Error("boom"));
     const { withReverification } = useReverification();
     await expect(withReverification(action)()).rejects.toThrow("boom");
+    expect(openReverification).not.toHaveBeenCalled();
+    expect(action).toHaveBeenCalledOnce();
+  });
+
+  it("does not prompt for a bare 403 that lacks the reverification code", async () => {
+    const openReverification = vi.fn();
+    stubClerk(openReverification);
+    const bare403 = Object.assign(new Error("forbidden"), {
+      statusCode: 403,
+      data: { statusCode: 403 },
+    });
+    const action = vi.fn().mockRejectedValue(bare403);
+    const { withReverification } = useReverification();
+    await expect(withReverification(action)()).rejects.toBe(bare403);
     expect(openReverification).not.toHaveBeenCalled();
     expect(action).toHaveBeenCalledOnce();
   });

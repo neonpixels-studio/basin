@@ -6,8 +6,13 @@
 export function useAuthHeaders() {
   const { getToken } = useAuth();
 
-  async function buildAuthHeaders(): Promise<Record<string, string>> {
-    const token = await getToken.value();
+  // `skipCache` forces Clerk to mint a fresh JWT rather than return its cached
+  // one (~60s leeway). Callers gating on a just-changed claim (e.g. `fva` after
+  // a reverification) need this so the header reflects the new session state.
+  async function buildAuthHeaders(options?: {
+    skipCache?: boolean;
+  }): Promise<Record<string, string>> {
+    const token = await getToken.value(options);
     return token ? { Authorization: `Bearer ${token}` } : {};
   }
 

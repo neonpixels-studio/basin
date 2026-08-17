@@ -28,7 +28,7 @@ type ClerkAuthContext = {
 export function getFirstFactorVerificationAgeMinutes(
   event: H3Event,
 ): number | null {
-  const auth = event.context.auth?.() as ClerkAuthContext | undefined;
+  const auth = readClerkAuthContext(event);
   const fva = auth?.sessionClaims?.fva;
   if (!Array.isArray(fva)) {
     return null;
@@ -38,4 +38,14 @@ export function getFirstFactorVerificationAgeMinutes(
     return null;
   }
   return firstFactorAgeMinutes;
+}
+
+function readClerkAuthContext(event: H3Event): ClerkAuthContext | undefined {
+  try {
+    return event.context.auth?.() as ClerkAuthContext | undefined;
+  } catch {
+    // Fail closed: an unloaded/misconfigured Clerk instance must not let a
+    // caller past the gate — treat it as "no verification age available".
+    return undefined;
+  }
 }

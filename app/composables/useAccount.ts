@@ -9,12 +9,12 @@ export function useAccount() {
 
   // The server rejects deletions without a recent factor verification, so wrap
   // the request in Clerk reverification: a stale session is prompted to reverify
-  // and the retry rebuilds the auth header, carrying a fresh token. Headers are
-  // rebuilt per attempt (inside the wrapped action) for exactly that reason.
+  // and the retry rebuilds the auth header. `skipCache` forces a freshly minted
+  // token so the retry carries the just-reverified `fva`, not Clerk's cached JWT.
   const requestAccountDeletion = withReverification(async () => {
     await $fetch("/api/account", {
       method: "DELETE",
-      headers: await buildAuthHeaders(),
+      headers: await buildAuthHeaders({ skipCache: true }),
     });
   });
 
