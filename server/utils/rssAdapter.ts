@@ -3,6 +3,7 @@ import type { InferInsertModel } from "drizzle-orm";
 import { feedItems } from "../db/schema";
 import { MAX_ITEMS_PER_SYNC } from "../../netlify/functions/types";
 import { resolvePublicFeedUrl } from "./urlValidator";
+import { normalizeTags } from "./tagNormalizer";
 
 export type NewFeedItem = Omit<
   InferInsertModel<typeof feedItems>,
@@ -23,15 +24,22 @@ interface MediaGroup {
 type MediaItemFields = { mediaGroup?: MediaGroup };
 type MediaRssItem = RssParser.Item & MediaItemFields;
 
-// Tell rss-parser to surface the namespaced media:group element as `mediaGroup`.
-const MEDIA_ITEM_FIELDS: Array<[string, string]> = [
+// Tell rss-parser to surface the namespaced media:group element as `mediaGroup`,
+// and to copy raw <category> nodes into `categories` for Atom entries — the
+// built-in parser only populates categories for RSS, so without this Atom/YouTube
+// feeds would never expose their categories to tag extraction. keepArray keeps
+// every category (the parser default takes only the first element).
+const CUSTOM_ITEM_FIELDS: Array<
+  [string, string] | [string, string, { keepArray: boolean }]
+> = [
   ["media:group", "mediaGroup"],
+  ["category", "categories", { keepArray: true }],
 ];
 
 const parser = new RssParser<Record<string, unknown>, MediaItemFields>({
   timeout: 10_000,
   customFields: {
-    item: MEDIA_ITEM_FIELDS,
+    item: CUSTOM_ITEM_FIELDS,
   },
 });
 
@@ -130,7 +138,7 @@ function mapItemToFeedItem(
     savedAt: null,
     readAt: null,
     starred: false,
-    tags: null,
+    tags: normalizeTags(item.categories),
     searchVector: null,
   };
 }

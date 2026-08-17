@@ -50,6 +50,7 @@ import {
   buildPermalinkFromUri,
   deriveTitleFromText,
   resolvePostImageUrl,
+  extractPostTags,
   shouldIncludePost,
   DEFAULT_POST_FILTER_POLICY,
   createAgentSession,
@@ -647,6 +648,45 @@ describe("fetchNewBlueskyPosts", () => {
     expect(items[0].publishedAt).toEqual(new Date("2024-06-01T10:00:00.000Z"));
   });
 
+  it("populates mapped items with hashtags from facets and record.tags", async () => {
+    const watermark = new Date("2024-06-01T09:00:00.000Z");
+
+    mockDeps.getTimeline.mockResolvedValueOnce({
+      feed: [
+        makePost({
+          post: {
+            ...makePost().post,
+            indexedAt: "2024-06-01T10:00:00.000Z",
+            record: {
+              $type: "app.bsky.feed.post",
+              text: "Shipping #tags today",
+              createdAt: "2024-06-01T10:00:00.000Z",
+              tags: ["release"],
+              facets: [
+                {
+                  features: [
+                    { $type: "app.bsky.richtext.facet#tag", tag: "tags" },
+                  ],
+                },
+              ],
+            },
+          },
+        }),
+      ],
+    });
+
+    const items = await fetchNewBlueskyPosts(
+      makeCredentials(),
+      FEED_ID,
+      watermark,
+      DEFAULT_POST_FILTER_POLICY,
+      mockDeps,
+    );
+
+    expect(items).toHaveLength(1);
+    expect(items[0].tags).toEqual(["release", "tags"]);
+  });
+
   it("stops paging once a post predates the watermark", async () => {
     const watermark = new Date("2024-06-01T09:00:00.000Z");
 
@@ -1117,5 +1157,60 @@ describe("fetchNewBlueskyPosts", () => {
     );
 
     expect(mockDeps.getTimeline).toHaveBeenCalledTimes(100);
+  });
+});
+
+describe("extractPostTags", () => {
+  it("collects hashtags from richtext facet tag features", () => {
+    const record = {
+      text: "Loving #photography today",
+      facets: [
+        {
+          index: { byteStart: 7, byteEnd: 19 },
+          features: [
+            { $type: "app.bsky.richtext.facet#tag", tag: "photography" },
+          ],
+        },
+      ],
+    };
+
+    expect(extractPostTags(record)).toEqual(["photography"]);
+  });
+
+  it("collects hashtags from record.tags and merges with facet tags, deduped", () => {
+    const record = {
+      tags: ["Nature", "#photography"],
+      facets: [
+        {
+          features: [
+            { $type: "app.bsky.richtext.facet#tag", tag: "photography" },
+          ],
+        },
+      ],
+    };
+
+    expect(extractPostTags(record)).toEqual(["nature", "photography"]);
+  });
+
+  it("ignores non-tag facet features (mentions, links)", () => {
+    const record = {
+      facets: [
+        {
+          features: [
+            { $type: "app.bsky.richtext.facet#mention", did: "did:plc:x" },
+            {
+              $type: "app.bsky.richtext.facet#link",
+              uri: "https://example.com",
+            },
+          ],
+        },
+      ],
+    };
+
+    expect(extractPostTags(record)).toBeNull();
+  });
+
+  it("returns null when the post carries no tags or facets", () => {
+    expect(extractPostTags({ text: "plain post" })).toBeNull();
   });
 });

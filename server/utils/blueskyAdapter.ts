@@ -8,8 +8,12 @@ import type {
   AtpSessionEvent,
 } from "@atproto/api";
 import type { NewFeedItem } from "./rssAdapter";
+import { normalizeTags } from "./tagNormalizer";
 
 export const BLUESKY_SOURCE = "bluesky" as const;
+
+// Facet feature type carrying a hashtag (see @atproto AppBskyRichtextFacet.Tag).
+const FACET_TAG_TYPE = "app.bsky.richtext.facet#tag";
 
 // Posts longer than this many characters get truncated for the title derivation.
 const TITLE_MAX_CHARS = 100;
@@ -147,6 +151,38 @@ export function shouldIncludePost(
   return true;
 }
 
+// Pulls hashtags out of a single facet's feature list. A facet annotates a
+// text range and can carry mentions, links, or tags; we keep only tag features.
+function tagsFromFacetFeatures(features: unknown): string[] {
+  if (!Array.isArray(features)) {
+    return [];
+  }
+
+  return features
+    .filter(
+      (feature): feature is { tag: string } =>
+        (feature as { $type?: string })?.$type === FACET_TAG_TYPE &&
+        typeof (feature as { tag?: unknown }).tag === "string",
+    )
+    .map((feature) => feature.tag);
+}
+
+// Exported for unit testing. Collects hashtags from both the post's richtext
+// facets (inline #hashtags) and record.tags (hashtags added out of band), then
+// normalizes them. Returns null when the post carries no tags.
+export function extractPostTags(record: {
+  tags?: unknown;
+  facets?: unknown;
+}): string[] | null {
+  const recordTags = Array.isArray(record.tags) ? record.tags : [];
+  const facets = Array.isArray(record.facets) ? record.facets : [];
+  const facetTags = facets.flatMap((facet) =>
+    tagsFromFacetFeatures((facet as { features?: unknown })?.features),
+  );
+
+  return normalizeTags([...recordTags, ...facetTags]);
+}
+
 function mapPostToFeedItem(
   feedPost: AppBskyFeedDefs.FeedViewPost,
   feedId: number,
@@ -156,6 +192,8 @@ function mapPostToFeedItem(
     text?: string;
     createdAt?: string;
     reply?: unknown;
+    tags?: unknown;
+    facets?: unknown;
   };
 
   const author = post.author;
@@ -178,7 +216,7 @@ function mapPostToFeedItem(
     savedAt: null,
     readAt: null,
     starred: false,
-    tags: null,
+    tags: extractPostTags(record),
     searchVector: null,
   };
 }
