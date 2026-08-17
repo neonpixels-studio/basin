@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { and, eq, inArray, isNotNull, or } from "drizzle-orm";
+import { feedItems, feeds } from "../../../../server/db/schema";
 
 const mockFeedsFindMany = vi.fn();
 const mockFeedItemsFindMany = vi.fn();
@@ -7,11 +9,18 @@ const mockIntegrationsFindMany = vi.fn();
 const mockSetHeader = vi.fn();
 
 // db.select(...).from(...).where(...) builds the ownership subquery fed to
-// inArray; it only needs to be chainable since findMany is mocked.
-const mockSubquery = { from: () => ({ where: () => "owned-feed-ids" }) };
+// inArray. Spy each link so tests can pin the projection, table, and per-user
+// where clause; OWNED_FEED_IDS is a unique sentinel standing in for the
+// subquery result so a test can assert it reaches the saved-items where clause.
+const OWNED_FEED_IDS = "owned-feed-ids";
+const mockSubqueryWhere = vi.fn<(_clause: unknown) => string>(
+  () => OWNED_FEED_IDS,
+);
+const mockSubqueryFrom = vi.fn(() => ({ where: mockSubqueryWhere }));
+const mockSelect = vi.fn(() => ({ from: mockSubqueryFrom }));
 
 vi.stubGlobal("useDb", () => ({
-  select: () => mockSubquery,
+  select: mockSelect,
   query: {
     feeds: { findMany: mockFeedsFindMany },
     feedItems: { findMany: mockFeedItemsFindMany },
@@ -28,6 +37,8 @@ const mockUser = {
   providerId: "user_abc",
   createdAt: new Date("2026-01-01T00:00:00.000Z"),
 };
+
+const otherUser = { ...mockUser, id: 2 };
 
 const mockFeed = {
   id: 10,
@@ -105,6 +116,44 @@ describe("GET /api/account/export", () => {
     // dropping `where: eq(feeds.userId, user.id)` would make these identical.
     expect(whereForUserOne).toBeDefined();
     expect(whereForUserOne).not.toEqual(whereForUserTwo);
+  });
+
+  it("scopes the saved-items ownership subquery to the authenticated user", async () => {
+    await handler(eventFor(mockUser));
+    expect(mockSubqueryWhere).toHaveBeenCalledTimes(1);
+    const feedOwnershipForUserOne = mockSubqueryWhere.mock.calls[0][0];
+
+    mockSubqueryWhere.mockClear();
+    await handler(eventFor(otherUser));
+    expect(mockSubqueryWhere).toHaveBeenCalledTimes(1);
+    const feedOwnershipForUserTwo = mockSubqueryWhere.mock.calls[0][0];
+
+    // Saved items are scoped to feeds the user owns via
+    // `where(eq(feeds.userId, user.id))` on the ownership subquery. Pin the
+    // exact clause so removing the guard, or scoping by the wrong column/value,
+    // fails: dropping it never calls `.where`, and a wrong column won't
+    // deep-equal `eq(feeds.userId, id)`.
+    expect(feedOwnershipForUserOne).toEqual(eq(feeds.userId, mockUser.id));
+    expect(feedOwnershipForUserTwo).toEqual(eq(feeds.userId, otherUser.id));
+  });
+
+  it("builds the saved-items query from the user's owned feeds", async () => {
+    await handler(eventFor(mockUser));
+
+    // The ownership subquery must project feed ids from the feeds table, and
+    // its result must be the inArray source in the saved-items where clause. A
+    // regression that projects the wrong column, queries the wrong table, drops
+    // inArray, or loosens `and` to `or` would leak other users' saved items.
+    expect(mockSelect).toHaveBeenCalledWith({ id: feeds.id });
+    expect(mockSubqueryFrom).toHaveBeenCalledWith(feeds);
+
+    const savedItemsWhere = mockFeedItemsFindMany.mock.calls[0][0].where;
+    expect(savedItemsWhere).toEqual(
+      and(
+        inArray(feedItems.feedId, OWNED_FEED_IDS),
+        or(isNotNull(feedItems.savedAt), eq(feedItems.starred, true)),
+      ),
+    );
   });
 
   it("returns an empty saved-items list when the user has none", async () => {
