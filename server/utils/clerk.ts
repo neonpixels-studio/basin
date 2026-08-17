@@ -12,3 +12,39 @@ export async function deleteClerkUser(
 ): Promise<void> {
   await clerkClient(event).users.deleteUser(providerId);
 }
+
+// Minimal shape of the Clerk auth object we read here — kept local so the
+// reverification gate depends on this seam, not on Clerk's exported types.
+type ClerkAuthContext = {
+  sessionClaims?: { fva?: unknown } | null;
+};
+
+// Reads Clerk's `fva` (factor verification age) session claim: a tuple of
+// minutes `[since last first-factor verification, since last second-factor
+// verification]`, where `-1` means the factor doesn't apply. Returns the ages of
+// the factors that were actually verified (dropping the `-1` sentinels and any
+// malformed entries), so a caller can accept whichever factor Clerk refreshed —
+// its reverification modal defaults to the second factor for MFA users. Empty
+// when the claim is absent or malformed. Isolated here so destructive-action
+// gates can be unit-tested without a live Clerk session.
+export function getFactorVerificationAgesMinutes(event: H3Event): number[] {
+  const auth = readClerkAuthContext(event);
+  const fva = auth?.sessionClaims?.fva;
+  if (!Array.isArray(fva)) {
+    return [];
+  }
+  return fva.filter(
+    (ageMinutes): ageMinutes is number =>
+      typeof ageMinutes === "number" && ageMinutes >= 0,
+  );
+}
+
+function readClerkAuthContext(event: H3Event): ClerkAuthContext | undefined {
+  try {
+    return event.context.auth?.() as ClerkAuthContext | undefined;
+  } catch {
+    // Fail closed: an unloaded/misconfigured Clerk instance must not let a
+    // caller past the gate — treat it as "no verification age available".
+    return undefined;
+  }
+}

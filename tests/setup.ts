@@ -12,6 +12,10 @@ import { useFeedStore } from "../app/stores/feed.ts";
 import { useInputValidation } from "../app/composables/useInputValidation.ts";
 import { useAuthHeaders } from "../app/composables/useAuthHeaders.ts";
 import { usePodcastPlayer } from "../app/composables/usePodcastPlayer.ts";
+import {
+  useReverification,
+  isReverificationCancelledError,
+} from "../app/composables/useReverification.ts";
 
 globalThis.useToast = useToast;
 globalThis.useSearch = useSearch;
@@ -22,6 +26,10 @@ globalThis.useInputValidation = useInputValidation;
 // useAuth a test stubs (called at invocation time, not definition time).
 globalThis.useAuthHeaders = useAuthHeaders;
 globalThis.usePodcastPlayer = usePodcastPlayer;
+// Real composables as globals — reverification wrapping + its cancellation guard
+// (mirrors Nuxt auto-import; both read whatever useClerk a test stubs).
+globalThis.useReverification = useReverification;
+globalThis.isReverificationCancelledError = isReverificationCancelledError;
 
 // Default stub for useUserSettings — returns defaults, no-ops on save.
 // Individual tests can override this with vi.stubGlobal if needed.
@@ -63,10 +71,12 @@ globalThis.defineEventHandler = (fn: Function) => fn;
 globalThis.createError = ({
   statusCode,
   statusMessage,
+  data,
 }: {
   statusCode: number;
   statusMessage: string;
-}) => Object.assign(new Error(statusMessage), { statusCode });
+  data?: unknown;
+}) => Object.assign(new Error(statusMessage), { statusCode, data });
 globalThis.isError = (input: unknown): input is { statusCode: number } =>
   input instanceof Error &&
   typeof (input as { statusCode?: unknown }).statusCode === "number";

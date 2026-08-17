@@ -3,8 +3,20 @@
 // an action) for consistency.
 export function useAccount() {
   const { buildAuthHeaders } = useAuthHeaders();
+  const { withReverification } = useReverification();
   const deleting = ref(false);
   const error = ref<string | null>(null);
+
+  // The server rejects deletions without a recent factor verification, so wrap
+  // the request in Clerk reverification: a stale session is prompted to reverify
+  // and the retry rebuilds the auth header. `skipCache` forces a freshly minted
+  // token so the retry carries the just-reverified `fva`, not Clerk's cached JWT.
+  const requestAccountDeletion = withReverification(async () => {
+    await $fetch("/api/account", {
+      method: "DELETE",
+      headers: await buildAuthHeaders({ skipCache: true }),
+    });
+  });
 
   // Resolves true when the account was deleted, false when the request failed
   // (with `error` set). Returning a boolean lets the caller decide whether to
@@ -13,12 +25,14 @@ export function useAccount() {
     deleting.value = true;
     error.value = null;
     try {
-      await $fetch("/api/account", {
-        method: "DELETE",
-        headers: await buildAuthHeaders(),
-      });
+      await requestAccountDeletion();
       return true;
     } catch (caughtError) {
+      if (isReverificationCancelledError(caughtError)) {
+        // Not a failure: the user backed out of the verification prompt.
+        error.value = "Verification cancelled — your account was not deleted.";
+        return false;
+      }
       // Log the real error: a mid-deletion 500 (billing may already be purged)
       // must not be indistinguishable from a benign failure in production logs.
       console.error("Account deletion request failed:", caughtError);
