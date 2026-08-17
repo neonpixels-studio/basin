@@ -89,6 +89,14 @@ describe("useReverification", () => {
     stubClerk(null);
     const action = vi.fn().mockRejectedValue(reverificationError());
     const { withReverification } = useReverification();
-    await expect(withReverification(action)()).rejects.toThrow(/not loaded/i);
+    await expect(withReverification(action)()).rejects.toThrow(/unavailable/i);
+  });
+
+  it("rejects when the internal reverification method is missing", async () => {
+    // A Clerk minor could rename the unstable __internal_openReverification.
+    vi.stubGlobal("useClerk", () => ref({}));
+    const action = vi.fn().mockRejectedValue(reverificationError());
+    const { withReverification } = useReverification();
+    await expect(withReverification(action)()).rejects.toThrow(/unavailable/i);
   });
 });

@@ -10,31 +10,44 @@ import { getFactorVerificationAgesMinutes } from "./clerk";
 // app/composables/useReverification.ts (the cross-boundary contract).
 export const REVERIFICATION_REQUIRED_CODE = "reverification_required";
 
-// How recently the user must have completed a first-factor verification for a
+// How recently the user must have completed a factor verification for a
 // destructive action to proceed. Mirrors Clerk's default "strict" reverification
 // window so a token minted long before the request can't erase data.
 export const REVERIFICATION_MAX_AGE_MINUTES = 10;
 
-function reverificationRequiredError() {
+function reverificationRequiredError(actionDescription: string) {
   return createError({
     statusCode: 403,
-    statusMessage: "Recent reverification is required to delete your account.",
+    statusMessage: `Recent reverification is required to ${actionDescription}.`,
     data: { code: REVERIFICATION_REQUIRED_CODE },
   });
 }
 
-// Throws a 403 unless the session carries a first-factor verification within the
-// allowed window. A missing/negative age means the token can't prove a recent
-// check, so it's rejected too.
-export function assertRecentReverification(event: H3Event): void {
+// Throws a 403 unless the session reverified a factor within the allowed window.
+// `actionDescription` names the guarded action in the error message so the gate
+// stays reusable beyond account deletion.
+export function assertRecentReverification(
+  event: H3Event,
+  actionDescription = "perform this action",
+): void {
+  const verificationAgesMinutes = getFactorVerificationAgesMinutes(event);
+  if (verificationAgesMinutes.length === 0) {
+    // No usable factor age at all: a session that never verified, a route
+    // missing Clerk middleware, or a JWT template without `fva`. Log it so a
+    // misconfiguration is visible rather than silently blocking every user —
+    // distinct from an ordinary stale session, which carries a real age below.
+    console.error(
+      "Clerk `fva` claim unavailable; reverification gate cannot evaluate a factor age and is rejecting the request.",
+    );
+    throw reverificationRequiredError(actionDescription);
+  }
   // Recently verified if ANY factor was reverified within the window — Clerk's
   // modal defaults to the second factor for MFA users, so a fresh first factor
-  // isn't guaranteed. Empty ages (no claim / not applicable) fail closed.
-  const verificationAgesMinutes = getFactorVerificationAgesMinutes(event);
+  // isn't guaranteed.
   const isRecentlyVerified = verificationAgesMinutes.some(
     (ageMinutes) => ageMinutes <= REVERIFICATION_MAX_AGE_MINUTES,
   );
   if (!isRecentlyVerified) {
-    throw reverificationRequiredError();
+    throw reverificationRequiredError(actionDescription);
   }
 }

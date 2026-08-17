@@ -71,10 +71,12 @@ globalThis.defineEventHandler = (fn: Function) => fn;
 globalThis.createError = ({
   statusCode,
   statusMessage,
+  data,
 }: {
   statusCode: number;
   statusMessage: string;
-}) => Object.assign(new Error(statusMessage), { statusCode });
+  data?: unknown;
+}) => Object.assign(new Error(statusMessage), { statusCode, data });
 globalThis.isError = (input: unknown): input is { statusCode: number } =>
   input instanceof Error &&
   typeof (input as { statusCode?: unknown }).statusCode === "number";

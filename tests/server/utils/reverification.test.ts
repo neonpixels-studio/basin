@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // The seam lives in server/utils/clerk, which imports the Clerk SDK
 // (unresolvable `#imports` under vitest); stub it — this gate never calls it.
@@ -26,6 +26,16 @@ function eventWithFva(fva: [number, number]) {
 }
 
 describe("assertRecentReverification", () => {
+  // The "no usable factor age" path logs; suppress the noise and let one test
+  // assert the log fired.
+  let errorSpy: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    errorSpy.mockRestore();
+  });
+
   it("passes when the first factor was verified within the window", () => {
     const event = eventWithVerificationAge(REVERIFICATION_MAX_AGE_MINUTES - 1);
     expect(() => assertRecentReverification(event as never)).not.toThrow();
@@ -64,11 +74,23 @@ describe("assertRecentReverification", () => {
     expect(() => assertRecentReverification(event as never)).not.toThrow();
   });
 
-  it("rejects when a stale first factor is the only applicable factor", () => {
+  it("rejects a stale session with a 403 carrying the reverification code", () => {
     const event = eventWithFva([45, -1]);
+    // Assert the machine-readable code the client keys on, not just the status —
+    // dropping `data.code` would silently stop the client opening the modal.
     expect(() => assertRecentReverification(event as never)).toThrowError(
-      expect.objectContaining({ statusCode: 403 }),
+      expect.objectContaining({
+        statusCode: 403,
+        data: { code: SERVER_CODE },
+      }),
     );
+    expect(errorSpy).not.toHaveBeenCalled();
+  });
+
+  it("logs when the fva claim is unavailable so a misconfig is visible", () => {
+    const event = { context: { auth: () => ({ sessionClaims: {} }) } };
+    expect(() => assertRecentReverification(event as never)).toThrow();
+    expect(errorSpy).toHaveBeenCalledOnce();
   });
 
   it("rejects with 403 when both factors are the -1 sentinel", () => {

@@ -38,7 +38,7 @@ describe("useAccount", () => {
   // stub) so a reverification test can't leak its Clerk instance into others.
   beforeEach(() => {
     vi.unstubAllGlobals();
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     mockGetToken.mockResolvedValue("token-123");
     vi.stubGlobal("$fetch", mockFetch);
     vi.stubGlobal("useAuth", () => ({ getToken: { value: mockGetToken } }));

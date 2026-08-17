@@ -51,8 +51,16 @@ export function useReverification() {
   function promptReverification(): Promise<void> {
     return new Promise((resolve, reject) => {
       const instance = clerk.value;
-      if (!instance) {
-        reject(new Error("Clerk is not loaded; cannot reverify."));
+      // `__internal_openReverification` is unstable API a Clerk minor could
+      // rename; guard it so we fail loud with a clear message instead of a bare
+      // "is not a function" TypeError deep in the executor.
+      if (
+        !instance ||
+        typeof instance.__internal_openReverification !== "function"
+      ) {
+        reject(
+          new Error("Clerk reverification is unavailable; cannot reverify."),
+        );
         return;
       }
       // Guard against the modal firing both callbacks (or one twice): the first
