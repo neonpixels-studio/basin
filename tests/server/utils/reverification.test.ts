@@ -12,14 +12,17 @@ import {
 import { REVERIFICATION_REQUIRED_CODE as CLIENT_CODE } from "~/composables/useReverification";
 
 // Builds an event whose Clerk auth() reports a first-factor verification
-// `minutes` old. `null` omits auth() entirely (no claim available).
+// `minutes` old (second factor not applicable). `null` omits auth() entirely.
 function eventWithVerificationAge(minutes: number | null) {
   if (minutes === null) {
     return { context: {} };
   }
-  return {
-    context: { auth: () => ({ sessionClaims: { fva: [minutes, -1] } }) },
-  };
+  return eventWithFva([minutes, -1]);
+}
+
+// Builds an event with an explicit `fva` tuple for MFA scenarios.
+function eventWithFva(fva: [number, number]) {
+  return { context: { auth: () => ({ sessionClaims: { fva } }) } };
 }
 
 describe("assertRecentReverification", () => {
@@ -54,8 +57,22 @@ describe("assertRecentReverification", () => {
     );
   });
 
-  it("rejects with 403 when the first-factor age is the -1 sentinel", () => {
-    const event = eventWithVerificationAge(-1);
+  it("passes when only the second factor was recently reverified (MFA)", () => {
+    // Clerk's modal defaults to the second factor, so an MFA user's first factor
+    // can be stale while the second is fresh — that must still count.
+    const event = eventWithFva([45, 0]);
+    expect(() => assertRecentReverification(event as never)).not.toThrow();
+  });
+
+  it("rejects when a stale first factor is the only applicable factor", () => {
+    const event = eventWithFva([45, -1]);
+    expect(() => assertRecentReverification(event as never)).toThrowError(
+      expect.objectContaining({ statusCode: 403 }),
+    );
+  });
+
+  it("rejects with 403 when both factors are the -1 sentinel", () => {
+    const event = eventWithFva([-1, -1]);
     expect(() => assertRecentReverification(event as never)).toThrowError(
       expect.objectContaining({ statusCode: 403 }),
     );

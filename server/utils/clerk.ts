@@ -21,23 +21,22 @@ type ClerkAuthContext = {
 
 // Reads Clerk's `fva` (factor verification age) session claim: a tuple of
 // minutes `[since last first-factor verification, since last second-factor
-// verification]`, where `-1` means the factor doesn't apply. Returns the
-// first-factor age, or `null` when the claim is absent or malformed. Isolated
-// here so destructive-action gates can be unit-tested without a live Clerk
-// session — callers hand it a plain event with a stubbed `auth()`.
-export function getFirstFactorVerificationAgeMinutes(
-  event: H3Event,
-): number | null {
+// verification]`, where `-1` means the factor doesn't apply. Returns the ages of
+// the factors that were actually verified (dropping the `-1` sentinels and any
+// malformed entries), so a caller can accept whichever factor Clerk refreshed —
+// its reverification modal defaults to the second factor for MFA users. Empty
+// when the claim is absent or malformed. Isolated here so destructive-action
+// gates can be unit-tested without a live Clerk session.
+export function getFactorVerificationAgesMinutes(event: H3Event): number[] {
   const auth = readClerkAuthContext(event);
   const fva = auth?.sessionClaims?.fva;
   if (!Array.isArray(fva)) {
-    return null;
+    return [];
   }
-  const firstFactorAgeMinutes = fva[0];
-  if (typeof firstFactorAgeMinutes !== "number") {
-    return null;
-  }
-  return firstFactorAgeMinutes;
+  return fva.filter(
+    (ageMinutes): ageMinutes is number =>
+      typeof ageMinutes === "number" && ageMinutes >= 0,
+  );
 }
 
 function readClerkAuthContext(event: H3Event): ClerkAuthContext | undefined {

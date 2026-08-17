@@ -6,9 +6,9 @@ afterEach(() => {
 });
 
 function stubToken(token: string | null) {
-  vi.stubGlobal("useAuth", () => ({
-    getToken: { value: vi.fn().mockResolvedValue(token) },
-  }));
+  const getToken = vi.fn().mockResolvedValue(token);
+  vi.stubGlobal("useAuth", () => ({ getToken: { value: getToken } }));
+  return getToken;
 }
 
 describe("useAuthHeaders", () => {
@@ -24,5 +24,12 @@ describe("useAuthHeaders", () => {
     stubToken(null);
     const { buildAuthHeaders } = useAuthHeaders();
     expect(await buildAuthHeaders()).toEqual({});
+  });
+
+  it("forwards options (e.g. skipCache) to getToken so callers can force a fresh mint", async () => {
+    const getToken = stubToken("token-abc");
+    const { buildAuthHeaders } = useAuthHeaders();
+    await buildAuthHeaders({ skipCache: true });
+    expect(getToken).toHaveBeenCalledWith({ skipCache: true });
   });
 });

@@ -3,7 +3,7 @@
 // have completed a recent factor verification (Clerk's `fva` claim). The client
 // forces this via Clerk reverification, then retries with a fresh token.
 import type { H3Event } from "h3";
-import { getFirstFactorVerificationAgeMinutes } from "./clerk";
+import { getFactorVerificationAgesMinutes } from "./clerk";
 
 // Machine-readable code the client matches to trigger Clerk's reverification
 // flow. Kept in sync with REVERIFICATION_REQUIRED_CODE in
@@ -27,11 +27,13 @@ function reverificationRequiredError() {
 // allowed window. A missing/negative age means the token can't prove a recent
 // check, so it's rejected too.
 export function assertRecentReverification(event: H3Event): void {
-  const firstFactorAgeMinutes = getFirstFactorVerificationAgeMinutes(event);
-  const isRecentlyVerified =
-    firstFactorAgeMinutes !== null &&
-    firstFactorAgeMinutes >= 0 &&
-    firstFactorAgeMinutes <= REVERIFICATION_MAX_AGE_MINUTES;
+  // Recently verified if ANY factor was reverified within the window — Clerk's
+  // modal defaults to the second factor for MFA users, so a fresh first factor
+  // isn't guaranteed. Empty ages (no claim / not applicable) fail closed.
+  const verificationAgesMinutes = getFactorVerificationAgesMinutes(event);
+  const isRecentlyVerified = verificationAgesMinutes.some(
+    (ageMinutes) => ageMinutes <= REVERIFICATION_MAX_AGE_MINUTES,
+  );
   if (!isRecentlyVerified) {
     throw reverificationRequiredError();
   }

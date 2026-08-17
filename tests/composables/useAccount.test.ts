@@ -113,6 +113,9 @@ describe("useAccount", () => {
         headers: { Authorization: "Bearer fresh-token" },
       }),
     );
+    // skipCache forces a fresh mint so the retry can't reuse Clerk's cached JWT
+    // with the stale fva — without it the gate would keep rejecting.
+    expect(mockGetToken).toHaveBeenLastCalledWith({ skipCache: true });
   });
 
   it("does not delete and reports cancellation when the user backs out", async () => {
