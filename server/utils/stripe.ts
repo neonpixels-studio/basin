@@ -73,6 +73,21 @@ export async function createCheckoutSession(
   });
 }
 
+export interface CreateBillingPortalSessionParams {
+  customerId: string;
+  returnUrl: string;
+}
+
+export async function createBillingPortalSession(
+  params: CreateBillingPortalSessionParams,
+): Promise<Stripe.BillingPortal.Session> {
+  const stripe = getStripeClient();
+  return stripe.billingPortal.sessions.create({
+    customer: params.customerId,
+    return_url: params.returnUrl,
+  });
+}
+
 export interface CreateStripeCustomerParams {
   email: string | null;
   userId: number;

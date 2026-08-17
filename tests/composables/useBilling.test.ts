@@ -91,4 +91,34 @@ describe("useBilling", () => {
       expect(error.value).toBeNull();
     });
   });
+
+  describe("openPortal()", () => {
+    it("posts to the billing portal endpoint", async () => {
+      mockFetch.mockResolvedValue({ url: "https://billing.stripe.com/x" });
+      const { openPortal } = useBilling();
+      await openPortal();
+      expect(mockFetch).toHaveBeenCalledWith(
+        "/api/billing/portal",
+        expect.objectContaining({
+          method: "POST",
+          headers: { Authorization: "Bearer token-123" },
+        }),
+      );
+    });
+
+    it("redirects the browser to the returned portal URL", async () => {
+      mockFetch.mockResolvedValue({ url: "https://billing.stripe.com/x" });
+      const { openPortal } = useBilling();
+      await openPortal();
+      expect(mockLocation.href).toBe("https://billing.stripe.com/x");
+    });
+
+    it("sets error and does not navigate when the request fails", async () => {
+      mockFetch.mockRejectedValue(new Error("network error"));
+      const { openPortal, error } = useBilling();
+      await openPortal();
+      expect(error.value).toBeTruthy();
+      expect(mockLocation.href).toBe("");
+    });
+  });
 });

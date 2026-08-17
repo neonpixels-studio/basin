@@ -68,11 +68,20 @@ export const FREE_PLAN: AccountPlan = {
   cancelAtPeriodEnd: false,
 };
 
-export async function getAccountPlan(userId: number): Promise<AccountPlan> {
-  const db = useDb();
-  const subscription = await db.query.subscriptions.findFirst({
+// Loads the user's subscription row (userId is unique, so at most one). Shared
+// by every by-userId lookup in this module so the query lives in one place.
+function findSubscriptionByUserId(
+  db: ReturnType<typeof useDb>,
+  userId: number,
+) {
+  return db.query.subscriptions.findFirst({
     where: eq(subscriptions.userId, userId),
   });
+}
+
+export async function getAccountPlan(userId: number): Promise<AccountPlan> {
+  const db = useDb();
+  const subscription = await findSubscriptionByUserId(db, userId);
   if (!subscription) {
     // Return a copy — FREE_PLAN is a shared module-level object and callers
     // must not be able to mutate it for other requests.
@@ -86,6 +95,19 @@ export async function getAccountPlan(userId: number): Promise<AccountPlan> {
     currentPeriodEnd: subscription.currentPeriodEnd,
     cancelAtPeriodEnd: subscription.cancelAtPeriodEnd,
   };
+}
+
+// Resolves the Stripe customer id for the user's own subscription row, or null
+// when they have none. Ownership-scoped: the caller passes the authenticated
+// user id, never a client-supplied customer id, so a request can only reach its
+// own billing. Unlike getOrCreateStripeCustomerId this never creates a customer
+// — the billing portal is only meaningful for a user who already has one.
+export async function getStripeCustomerId(
+  userId: number,
+): Promise<string | null> {
+  const db = useDb();
+  const subscription = await findSubscriptionByUserId(db, userId);
+  return subscription?.stripeCustomerId ?? null;
 }
 
 function isStripeResourceMissing(error: unknown): boolean {
@@ -105,9 +127,7 @@ function isStripeResourceMissing(error: unknown): boolean {
 // first attempt) doesn't wedge the whole deletion.
 export async function deleteBillingRecords(userId: number): Promise<void> {
   const db = useDb();
-  const subscription = await db.query.subscriptions.findFirst({
-    where: eq(subscriptions.userId, userId),
-  });
+  const subscription = await findSubscriptionByUserId(db, userId);
   if (!subscription?.stripeCustomerId) {
     return;
   }
@@ -128,9 +148,7 @@ export async function getOrCreateStripeCustomerId(
   email: string | null,
 ): Promise<string> {
   const db = useDb();
-  const existing = await db.query.subscriptions.findFirst({
-    where: eq(subscriptions.userId, userId),
-  });
+  const existing = await findSubscriptionByUserId(db, userId);
   if (existing) {
     return existing.stripeCustomerId;
   }
@@ -145,9 +163,7 @@ export async function getOrCreateStripeCustomerId(
     .values({ userId, stripeCustomerId: customer.id })
     .onConflictDoNothing({ target: subscriptions.userId });
 
-  const persisted = await db.query.subscriptions.findFirst({
-    where: eq(subscriptions.userId, userId),
-  });
+  const persisted = await findSubscriptionByUserId(db, userId);
   const winningCustomerId = persisted?.stripeCustomerId ?? customer.id;
 
   // If we lost the race our freshly-created customer is now orphaned in Stripe
@@ -359,10 +375,7 @@ export async function upsertSubscriptionFromStripe(
   // metadata-fallback path updates an existing row rather than colliding on
   // the user_id unique constraint.
   const existing =
-    existingByCustomer ??
-    (await db.query.subscriptions.findFirst({
-      where: eq(subscriptions.userId, userId),
-    }));
+    existingByCustomer ?? (await findSubscriptionByUserId(db, userId));
 
   const eventCreatedAt = new Date(event.created * 1000);
   if (isStaleEvent(existing, subscription, eventCreatedAt)) {

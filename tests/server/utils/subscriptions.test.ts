@@ -63,6 +63,7 @@ vi.stubGlobal("useDb", () => ({
 import {
   planForStatus,
   getAccountPlan,
+  getStripeCustomerId,
   FREE_PLAN,
   getOrCreateStripeCustomerId,
   upsertSubscriptionFromStripe,
@@ -154,6 +155,20 @@ describe("getAccountPlan", () => {
       currentPeriodEnd,
       cancelAtPeriodEnd: false,
     });
+  });
+});
+
+describe("getStripeCustomerId", () => {
+  beforeEach(() => vi.resetAllMocks());
+
+  it("returns the customer id from the user's subscription row", async () => {
+    mockFindFirst.mockResolvedValue({ stripeCustomerId: "cus_123" });
+    expect(await getStripeCustomerId(1)).toBe("cus_123");
+  });
+
+  it("returns null when the user has no subscription row", async () => {
+    mockFindFirst.mockResolvedValue(undefined);
+    expect(await getStripeCustomerId(1)).toBeNull();
   });
 });
 
