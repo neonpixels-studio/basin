@@ -479,6 +479,125 @@ describe("useFeedStore", () => {
     });
   });
 
+  describe("filter-scoped loading", () => {
+    beforeEach(() => {
+      vi.mocked(globalThis.$fetch).mockReset();
+      vi.mocked(globalThis.$fetch).mockResolvedValue({
+        items: [],
+        total: 0,
+        nextOffset: null,
+      });
+    });
+
+    afterEach(() => {
+      vi.mocked(globalThis.$fetch).mockReset();
+    });
+
+    it("omits the filter param when the active filter is all", async () => {
+      state.filter = "all";
+      await feed.loadItems();
+      const options = vi.mocked(globalThis.$fetch).mock.calls[0][1];
+      expect(options.query).toEqual({});
+    });
+
+    it("sends the active filter as a query param for saved", async () => {
+      state.filter = "saved";
+      await feed.loadItems();
+      const options = vi.mocked(globalThis.$fetch).mock.calls[0][1];
+      expect(options.query).toEqual({ filter: "saved" });
+    });
+
+    it("sends the active filter alongside the offset when paginating", async () => {
+      state.filter = "starred";
+      await feed.loadItems({ offset: 20 });
+      const options = vi.mocked(globalThis.$fetch).mock.calls[0][1];
+      expect(options.query).toEqual({ filter: "starred", offset: "20" });
+    });
+  });
+
+  describe("loadCounts", () => {
+    beforeEach(() => {
+      vi.mocked(globalThis.$fetch).mockReset();
+    });
+
+    afterEach(() => {
+      vi.mocked(globalThis.$fetch).mockReset();
+    });
+
+    it("populates state.counts from the counts endpoint", async () => {
+      vi.mocked(globalThis.$fetch).mockResolvedValue({
+        all: 12,
+        saved: 4,
+        starred: 3,
+        article: 6,
+        podcast: 1,
+        video: 1,
+        tweet: 4,
+      });
+      await feed.loadCounts();
+      expect(state.counts.all).toBe(12);
+      expect(state.counts.saved).toBe(4);
+    });
+
+    it("requests the counts endpoint", async () => {
+      vi.mocked(globalThis.$fetch).mockResolvedValue({
+        all: 0,
+        saved: 0,
+        starred: 0,
+      });
+      await feed.loadCounts();
+      expect(vi.mocked(globalThis.$fetch).mock.calls[0][0]).toBe(
+        "/api/feed-item-counts",
+      );
+    });
+
+    it("leaves existing counts untouched when the request fails", async () => {
+      state.counts = { saved: 5 };
+      vi.mocked(globalThis.$fetch).mockRejectedValue(new Error("boom"));
+      await feed.loadCounts();
+      expect(state.counts.saved).toBe(5);
+    });
+  });
+
+  describe("countFor with server counts", () => {
+    it("prefers the whole-account server count over the loaded-page tally", () => {
+      state.counts = { saved: 42 };
+      expect(feed.countFor("saved")).toBe(42);
+    });
+
+    it("falls back to the loaded-page tally when no server count exists", () => {
+      state.counts = {};
+      // The fixture holds one saved item (id 2).
+      expect(feed.countFor("saved")).toBe(1);
+    });
+  });
+
+  describe("optimistic count adjustment", () => {
+    it("increments the saved count when saving with counts loaded", () => {
+      state.counts = { saved: 2 };
+      const target = state.items[0];
+      target.saved = false;
+      feed.toggleSave(target);
+      expect(state.counts.saved).toBe(3);
+    });
+
+    it("decrements the starred count when unstarring", () => {
+      state.counts = { starred: 5 };
+      const target = state.items[0];
+      target.starred = true;
+      feed.toggleStar(target);
+      expect(state.counts.starred).toBe(4);
+    });
+
+    it("never invents a count before the counts have loaded", () => {
+      state.counts = {};
+      const target = state.items[0];
+      target.saved = false;
+      feed.toggleSave(target);
+      expect(state.counts.saved).toBeUndefined();
+    });
+  });
+
   describe("loadMore pagination", () => {
     const pageOne = [item({ id: 201 }), item({ id: 202 })];
     const pageTwo = [item({ id: 203 }), item({ id: 204 })];

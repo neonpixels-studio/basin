@@ -15,6 +15,7 @@ onMounted(async () => {
     await loadFeeds();
     if (realFeeds.value.length > 0) {
       await feedStore.loadItems();
+      await feedStore.loadCounts();
     }
   } catch (error) {
     console.error("Failed to load dashboard data:", error);
