@@ -7,12 +7,14 @@ const {
   mockDeleteBillingRecords,
   mockDeleteClerkUser,
   mockRecordDeletionTombstone,
+  mockFindUserByProviderId,
   mockDelete,
   mockWhere,
 } = vi.hoisted(() => ({
   mockDeleteBillingRecords: vi.fn(),
   mockDeleteClerkUser: vi.fn(),
   mockRecordDeletionTombstone: vi.fn(),
+  mockFindUserByProviderId: vi.fn(),
   mockDelete: vi.fn(),
   mockWhere: vi.fn(),
 }));
@@ -26,10 +28,16 @@ vi.mock("../../../server/utils/clerk", () => ({
 vi.mock("../../../server/utils/tombstone", () => ({
   recordDeletionTombstone: mockRecordDeletionTombstone,
 }));
+vi.mock("../../../server/utils/auth", () => ({
+  findUserByProviderId: mockFindUserByProviderId,
+}));
 
 vi.stubGlobal("useDb", () => ({ delete: mockDelete }));
 
-import { deleteUserAccount } from "../../../server/utils/accountDeletion";
+import {
+  deleteUserAccount,
+  deleteAccountByProviderId,
+} from "../../../server/utils/accountDeletion";
 
 const user = { id: 7, providerId: "user_abc" } as never;
 const dialect = new PgDialect();
@@ -137,5 +145,51 @@ describe("deleteUserAccount", () => {
     expect(mockDelete).toHaveBeenCalledTimes(1);
     expect(errorSpy).toHaveBeenCalled();
     errorSpy.mockRestore();
+  });
+});
+
+describe("deleteAccountByProviderId", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    mockDelete.mockReturnValue({ where: mockWhere });
+    mockWhere.mockResolvedValue(undefined);
+  });
+
+  it("purges billing, tombstones and deletes the db row for the resolved user, without touching Clerk", async () => {
+    mockFindUserByProviderId.mockResolvedValue(user);
+
+    await deleteAccountByProviderId("user_abc");
+
+    expect(mockFindUserByProviderId).toHaveBeenCalledWith("user_abc");
+    expect(mockDeleteBillingRecords).toHaveBeenCalledWith(7);
+    expect(mockRecordDeletionTombstone).toHaveBeenCalledWith("user_abc");
+    expect(mockDelete).toHaveBeenCalledWith(users);
+    expect(sameCondition(mockWhere.mock.calls[0][0], eq(users.id, 7))).toBe(
+      true,
+    );
+    // The Clerk identity is already gone on Clerk's side — never re-delete it.
+    expect(mockDeleteClerkUser).not.toHaveBeenCalled();
+  });
+
+  it("tombstones the provider id (but purges nothing) when no user row matches", async () => {
+    mockFindUserByProviderId.mockResolvedValue(undefined);
+
+    await deleteAccountByProviderId("user_ghost");
+
+    expect(mockRecordDeletionTombstone).toHaveBeenCalledWith("user_ghost");
+    expect(mockDeleteBillingRecords).not.toHaveBeenCalled();
+    expect(mockDelete).not.toHaveBeenCalled();
+    expect(mockDeleteClerkUser).not.toHaveBeenCalled();
+  });
+
+  it("does not delete the db row when purging billing throws", async () => {
+    mockFindUserByProviderId.mockResolvedValue(user);
+    mockDeleteBillingRecords.mockRejectedValue(new Error("stripe down"));
+
+    await expect(deleteAccountByProviderId("user_abc")).rejects.toThrow(
+      "stripe down",
+    );
+    expect(mockRecordDeletionTombstone).not.toHaveBeenCalled();
+    expect(mockDelete).not.toHaveBeenCalled();
   });
 });

@@ -17,12 +17,21 @@ export function signupsDisabled(): boolean {
   return useRuntimeConfig().disableSignups === "true";
 }
 
+// Reads the user row for a Clerk provider id, or undefined when none exists.
+// Isolated so the deletion sweep and getOrCreateUser share one lookup and can
+// be unit-tested without a live database.
+export async function findUserByProviderId(
+  providerId: string,
+): Promise<DbUser | undefined> {
+  return useDb().query.users.findFirst({
+    where: eq(users.providerId, providerId),
+  });
+}
+
 export async function getOrCreateUser(providerId: string): Promise<DbUser> {
   const db = useDb();
 
-  const existing = await db.query.users.findFirst({
-    where: eq(users.providerId, providerId),
-  });
+  const existing = await findUserByProviderId(providerId);
   if (existing) return existing;
 
   // A session minted just before account deletion stays valid until it expires

@@ -134,6 +134,12 @@ Authentication is handled by [Clerk](https://clerk.com) via the [`@clerk/nuxt`](
 3. `server/middleware/auth.ts` — runs on every server request; reads `event.context.auth()` (set by Clerk) and upserts the user into Neon via `getOrCreateUser()`
 4. `event.context.user` is then available in all downstream API route handlers
 
+### Account deletion webhook
+
+`server/api/clerk/webhook.post.ts` verifies Clerk's Svix signature (via `@clerk/nuxt`'s `verifyWebhook`, wrapped in `server/utils/clerk.ts` so nothing else touches the SDK) and, on `user.deleted`, cascades the deletion into Neon: it purges billing, records a deletion tombstone, and deletes the `users` row (whose `ON DELETE CASCADE` removes feeds, feed items, integrations with their stored OAuth tokens, settings, and subscriptions). The cleanup logic is shared with the in-app deletion route in `server/utils/accountDeletion.ts`. Without this, deleting an account directly in Clerk would leave that data — including encrypted OAuth tokens — orphaned indefinitely.
+
+To enable it, add a webhook endpoint in the Clerk Dashboard under **Configure → Webhooks** pointing at `<your-app-url>/api/clerk/webhook`, subscribed to the `user.deleted` event, then copy its **Signing Secret** into `NUXT_CLERK_WEBHOOK_SIGNING_SECRET`.
+
 ### Client composables
 
 ```ts
