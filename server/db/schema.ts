@@ -65,6 +65,14 @@ export const feeds = pgTable(
     syncStatus: text("sync_status").notNull().default(SYNC_STATUS.OK),
     syncError: text("sync_error"),
     syncFailedAt: timestamp("sync_failed_at"),
+    // Backoff for permanently-failing syncs. consecutiveFailures counts how
+    // many permanent failures in a row the feed has hit; nextRetryAt is the
+    // earliest time the scheduler is allowed to re-sync it. Both grow with
+    // each failure (exponential, capped — see server/utils/feedSyncBackoff.ts)
+    // and reset to 0 / null on the next successful sync, so a healthy feed is
+    // never gated.
+    consecutiveFailures: integer("consecutive_failures").notNull().default(0),
+    nextRetryAt: timestamp("next_retry_at"),
     // Paused sources are kept (not removed) but excluded from scheduled sync,
     // so they stop pulling new content while their existing items stay intact.
     // Set when a Pro→Free downgrade pushes an account over the Free source cap

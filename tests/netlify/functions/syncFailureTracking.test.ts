@@ -1,14 +1,19 @@
 import { ErrorDoNotRetry } from "@netlify/async-workloads";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const { mockUpdate, mockUpdateSet, mockUpdateWhere } = vi.hoisted(() => ({
-  mockUpdate: vi.fn(),
-  mockUpdateSet: vi.fn(),
-  mockUpdateWhere: vi.fn(),
-}));
+const { mockUpdate, mockUpdateSet, mockUpdateWhere, mockFindFirst } =
+  vi.hoisted(() => ({
+    mockUpdate: vi.fn(),
+    mockUpdateSet: vi.fn(),
+    mockUpdateWhere: vi.fn(),
+    mockFindFirst: vi.fn(),
+  }));
 
 vi.mock("../../../netlify/functions/db", () => ({
-  createDb: vi.fn(() => ({ update: mockUpdate })),
+  createDb: vi.fn(() => ({
+    update: mockUpdate,
+    query: { feeds: { findFirst: mockFindFirst } },
+  })),
 }));
 
 import {
@@ -25,6 +30,8 @@ describe("syncFailureTracking", () => {
     mockUpdate.mockReturnValue({ set: mockUpdateSet });
     mockUpdateSet.mockReturnValue({ where: mockUpdateWhere });
     mockUpdateWhere.mockResolvedValue(undefined);
+    // Default: the feed has no prior failures on record.
+    mockFindFirst.mockResolvedValue({ consecutiveFailures: 0 });
   });
 
   describe("providerForSourceType()", () => {
@@ -55,6 +62,72 @@ describe("syncFailureTracking", () => {
           syncFailedAt: expect.any(Date),
         }),
       );
+    });
+
+    it("advances the backoff to the first failure and sets nextRetryAt", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+
+      await persistPermanentSyncFailure(
+        1,
+        42,
+        new ErrorDoNotRetry("Feed unreachable"),
+      );
+
+      // First failure: count becomes 1 and the retry is pushed out one base
+      // interval (15 minutes) from the failure time.
+      expect(mockUpdateSet).toHaveBeenCalledWith(
+        expect.objectContaining({
+          consecutiveFailures: 1,
+          nextRetryAt: new Date("2026-01-01T00:15:00.000Z"),
+        }),
+      );
+
+      vi.useRealTimers();
+    });
+
+    it("escalates the backoff from the feed's existing consecutive-failure count", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+      // Feed has already failed 3 times in a row; this is the 4th.
+      mockFindFirst.mockResolvedValue({ consecutiveFailures: 3 });
+
+      await persistPermanentSyncFailure(
+        1,
+        42,
+        new ErrorDoNotRetry("Feed still unreachable"),
+      );
+
+      // 4th failure: 2^3 * 15min = 2 hours from now.
+      expect(mockUpdateSet).toHaveBeenCalledWith(
+        expect.objectContaining({
+          consecutiveFailures: 4,
+          nextRetryAt: new Date("2026-01-01T02:00:00.000Z"),
+        }),
+      );
+
+      vi.useRealTimers();
+    });
+
+    it("treats a missing feed row as zero prior failures", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+      mockFindFirst.mockResolvedValue(undefined);
+
+      await persistPermanentSyncFailure(
+        1,
+        42,
+        new ErrorDoNotRetry("Feed unreachable"),
+      );
+
+      expect(mockUpdateSet).toHaveBeenCalledWith(
+        expect.objectContaining({
+          consecutiveFailures: 1,
+          nextRetryAt: new Date("2026-01-01T00:15:00.000Z"),
+        }),
+      );
+
+      vi.useRealTimers();
     });
 
     it("does not touch integrations for a feed-only failure (not IntegrationAuthError)", async () => {
@@ -129,6 +202,10 @@ describe("syncFailureTracking", () => {
           syncStatus: "ok",
           syncError: null,
           syncFailedAt: null,
+          // A successful sync clears the backoff so the feed returns to the
+          // normal cadence immediately.
+          consecutiveFailures: 0,
+          nextRetryAt: null,
         }),
       );
       expect(mockUpdate).toHaveBeenCalledTimes(1);

@@ -1,8 +1,14 @@
 import { ErrorDoNotRetry } from "@netlify/async-workloads";
 import { and, eq } from "drizzle-orm";
 import { feeds, integrations } from "../../server/db/schema";
+import { computeNextRetryAt } from "../../server/utils/feedSyncBackoff";
 import { SYNC_STATUS } from "../../server/utils/syncStatus";
 import { createDb } from "./db";
+
+// Consecutive-failure count for a feed that has never failed (or has just
+// succeeded). Kept as a named constant so the "reset on success" write reads
+// intentionally rather than as a bare 0.
+const NO_CONSECUTIVE_FAILURES = 0;
 
 // Maps a feed's sourceType to the integration provider it depends on. RSS
 // and podcast feeds have no backing integration, so they map to null and
@@ -49,23 +55,47 @@ export class ServerConfigError extends ErrorDoNotRetry {
   }
 }
 
-// Scoped by (id, userId) — matching fetchFeedRecord's read scope — so a
+// Current consecutive-failure count for a feed. Scoped by (id, userId) —
+// matching fetchFeedRecord's read scope and every other write here — so a
 // feedId belonging to a different user than the event claims can never be
-// written to. In practice this is a no-op guard: resolveFeedForSync already
-// verifies ownership before any sync runs, but the write should never rely
-// on that alone.
+// read or written. A missing row (deleted between the sync attempt and this
+// write) reads as zero failures, so the increment below still produces a sane
+// first-failure backoff.
+async function readConsecutiveFailures(
+  feedId: number,
+  userId: number,
+): Promise<number> {
+  const db = createDb();
+  const feed = await db.query.feeds.findFirst({
+    where: and(eq(feeds.id, feedId), eq(feeds.userId, userId)),
+    columns: { consecutiveFailures: true },
+  });
+
+  return feed?.consecutiveFailures ?? NO_CONSECUTIVE_FAILURES;
+}
+
+// Records a permanent failure and advances the backoff: increments the
+// consecutive-failure count and pushes nextRetryAt out by the schedule in
+// feedSyncBackoff.ts. Advancing nextRetryAt is what stops the scheduler from
+// re-emitting a sync for this feed on every 15-minute tick.
 async function recordFeedSyncFailure(
   feedId: number,
   userId: number,
   message: string,
 ): Promise<void> {
+  const consecutiveFailures =
+    (await readConsecutiveFailures(feedId, userId)) + 1;
+  const failedAt = new Date();
+
   const db = createDb();
   await db
     .update(feeds)
     .set({
       syncStatus: SYNC_STATUS.ERROR,
       syncError: message,
-      syncFailedAt: new Date(),
+      syncFailedAt: failedAt,
+      consecutiveFailures,
+      nextRetryAt: computeNextRetryAt(consecutiveFailures, failedAt),
     })
     .where(and(eq(feeds.id, feedId), eq(feeds.userId, userId)));
 }
@@ -83,6 +113,8 @@ async function recordFeedSyncSuccess(
       syncStatus: SYNC_STATUS.OK,
       syncError: null,
       syncFailedAt: null,
+      consecutiveFailures: NO_CONSECUTIVE_FAILURES,
+      nextRetryAt: null,
     })
     .where(and(eq(feeds.id, feedId), eq(feeds.userId, userId)));
 }
