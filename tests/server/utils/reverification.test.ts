@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 // The seam lives in server/utils/clerk, which imports the Clerk SDK
 // (unresolvable `#imports` under vitest); stub it — this gate never calls it.
 vi.mock("@clerk/nuxt/server", () => ({ clerkClient: vi.fn() }));
+vi.mock("@clerk/nuxt/webhooks", () => ({ verifyWebhook: vi.fn() }));
 
 import {
   assertRecentReverification,

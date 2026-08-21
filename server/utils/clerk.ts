@@ -3,6 +3,8 @@
 // tests/server/utils/clerk.test.ts for the mocked-client unit tests.
 import type { H3Event } from "h3";
 import { clerkClient } from "@clerk/nuxt/server";
+import { verifyWebhook } from "@clerk/nuxt/webhooks";
+import type { WebhookEvent } from "@clerk/nuxt/webhooks";
 
 // Permanently deletes the Clerk user (the identity behind our `provider_id`),
 // which also revokes all of their active sessions.
@@ -11,6 +13,27 @@ export async function deleteClerkUser(
   providerId: string,
 ): Promise<void> {
   await clerkClient(event).users.deleteUser(providerId);
+}
+
+// Verifies an incoming Clerk webhook (Svix signature) and returns the parsed
+// event. Isolated here — the only file that imports Clerk's webhook verifier —
+// so the route handler and tests never touch the SDK directly, mirroring
+// stripe.ts's verifyWebhookSignature. Fails loud with a 500 when the signing
+// secret is missing (a server misconfiguration, not a bad signature) so the
+// route reports it as a retryable 5xx rather than masking it as a permanent
+// 400 that Clerk won't retry.
+export async function verifyClerkWebhook(
+  event: H3Event,
+): Promise<WebhookEvent> {
+  const { clerk } = useRuntimeConfig(event);
+  if (!clerk?.webhookSigningSecret) {
+    throw createError({
+      statusCode: 500,
+      statusMessage:
+        "Clerk is not configured: missing NUXT_CLERK_WEBHOOK_SIGNING_SECRET",
+    });
+  }
+  return verifyWebhook(event);
 }
 
 // Minimal shape of the Clerk auth object we read here — kept local so the

@@ -11,6 +11,7 @@ vi.mock("../../../../server/utils/accountDeletion", () => ({
 // The reverification gate pulls in server/utils/clerk, which imports the Clerk
 // SDK (unresolvable `#imports` under vitest); stub it — this test never calls it.
 vi.mock("@clerk/nuxt/server", () => ({ clerkClient: vi.fn() }));
+vi.mock("@clerk/nuxt/webhooks", () => ({ verifyWebhook: vi.fn() }));
 
 import handler from "../../../../server/api/account/index.delete";
 
