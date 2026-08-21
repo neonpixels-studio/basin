@@ -19,7 +19,7 @@ const tsvector = customType<{ data: string }>({
     return "tsvector";
   },
 });
-import { relations } from "drizzle-orm";
+import { relations, sql } from "drizzle-orm";
 import { SYNC_STATUS } from "../utils/syncStatus";
 
 export const users = pgTable("users", {
@@ -106,6 +106,14 @@ export const feedItems = pgTable(
     uniqueIndex("feed_items_feed_id_guid_idx").on(table.feedId, table.guid),
     index("feed_items_tags_gin_idx").using("gin", table.tags),
     index("feed_items_search_vector_gin_idx").using("gin", table.searchVector),
+    // Supports the retention prune in
+    // netlify/functions/scheduled-feed-items-cleanup.ts. Partial to match the
+    // prune predicate exactly: the job only ever scans rows old enough to drop
+    // and never a starred or saved item, so indexing those preserved rows would
+    // only bloat the index without ever being read by the range query.
+    index("feed_items_retention_created_at_idx")
+      .on(table.createdAt)
+      .where(sql`${table.starred} = false and ${table.savedAt} is null`),
   ],
 );
 
