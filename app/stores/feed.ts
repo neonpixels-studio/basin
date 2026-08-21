@@ -31,6 +31,10 @@ export const FEED_ITEMS_TIMEOUT_MS = 15000;
 // by the exact same value.
 export const MARK_ALL_READ_TIMEOUT_MS = 15000;
 
+// Bounds the /api/feed-item-counts request so a never-settling response can't
+// wedge the caller (loadCounts is best effort, but must still settle).
+const FEED_COUNTS_TIMEOUT_MS = 15000;
+
 export const useFeedStore = defineStore("feed", () => {
   const { getToken } = useAuth();
 
@@ -58,6 +62,12 @@ export const useFeedStore = defineStore("feed", () => {
     // never on an append. Consumers watch it to reset scroll windows on a new
     // list without resetting when older pages are appended.
     listVersion: 0,
+    // Whole-account totals per dashboard filter id, loaded from
+    // /api/feed-item-counts so the filter chips reflect every matching item and
+    // not just the paginated page currently held in `items`. Empty until the
+    // first load resolves, at which point countFor prefers these over the
+    // loaded-page tally.
+    counts: {} as Record<string, number>,
   });
 
   const timers: Record<string, ReturnType<typeof setTimeout> | null> = {
@@ -145,9 +155,12 @@ export const useFeedStore = defineStore("feed", () => {
     nextOffset: number | null;
   }
 
+  // "all" carries no restriction, so it is sent as no param at all — keeping the
+  // default request identical to before the server-side filter existed.
   function buildItemsQuery(params: {
     limit?: number;
     offset?: number;
+    filter?: string;
   }): Record<string, string> {
     const query: Record<string, string> = {};
     if (params.limit !== undefined) {
@@ -155,6 +168,9 @@ export const useFeedStore = defineStore("feed", () => {
     }
     if (params.offset !== undefined) {
       query.offset = String(params.offset);
+    }
+    if (params.filter && params.filter !== "all") {
+      query.filter = params.filter;
     }
     return query;
   }
@@ -231,7 +247,7 @@ export const useFeedStore = defineStore("feed", () => {
 
     try {
       const headers = await buildAuthHeaders();
-      const query = buildItemsQuery(params);
+      const query = buildItemsQuery({ ...params, filter: state.filter });
       const response = await $fetchWithTimeout<FeedItemsResponse>(
         "/api/feed-items",
         FEED_ITEMS_TIMEOUT_MS,
@@ -270,6 +286,41 @@ export const useFeedStore = defineStore("feed", () => {
     }
   }
 
+  interface FeedCountsResponse {
+    all: number;
+    saved: number;
+    starred: number;
+    [itemType: string]: number;
+  }
+
+  // Load whole-account totals per filter for the chip counts. Deliberately best
+  // effort: a failure leaves the previous counts in place and countFor falls
+  // back to the loaded-page tally, so the feed still renders. No toast — the
+  // counts are a secondary annotation, not the primary content.
+  async function loadCounts(): Promise<void> {
+    try {
+      const headers = await buildAuthHeaders();
+      const response = await $fetchWithTimeout<FeedCountsResponse>(
+        "/api/feed-item-counts",
+        FEED_COUNTS_TIMEOUT_MS,
+        { headers },
+      );
+      state.counts = { ...response };
+    } catch {
+      // Keep the existing counts; the chips degrade to the loaded-page tally.
+    }
+  }
+
+  // Keep a chip count in step with an optimistic save/star toggle so the number
+  // moves with the item instead of waiting for the next counts reload. No-op
+  // until server counts have loaded, so it can never invent a count from zero.
+  function adjustCount(id: string, delta: number) {
+    if (state.counts[id] === undefined) {
+      return;
+    }
+    state.counts[id] = Math.max(0, state.counts[id] + delta);
+  }
+
   async function setupWatchers() {
     if (initialized || !import.meta.client) return;
     initialized = true;
@@ -290,9 +341,17 @@ export const useFeedStore = defineStore("feed", () => {
         save({ showUnreadOnly });
       },
     );
+    // Switching filter must refetch the first page for the new filter, not just
+    // re-run the cosmetic reveal timer: the server now scopes the result set, so
+    // Saved/Starred/type views span every matching item rather than whatever the
+    // previous filter's page happened to hold. Counts are account-wide and don't
+    // change with the active filter, so they are not reloaded here.
     watch(
       () => state.filter,
-      () => runFeedLoad(420),
+      () => {
+        runFeedLoad(420);
+        loadItems();
+      },
     );
     setTimeout(() => {
       state.loading = false;
@@ -354,6 +413,9 @@ export const useFeedStore = defineStore("feed", () => {
       const queued = await triggerFeedSync();
       showToast(syncToastMessage(queued));
       await loadItems();
+      // Counts are a secondary annotation; refresh a fresh snapshot in the
+      // background rather than holding the loading state on it.
+      loadCounts();
     } catch {
       showToast(REFRESH_ERROR_MESSAGE);
     } finally {
@@ -362,7 +424,13 @@ export const useFeedStore = defineStore("feed", () => {
     }
   }
 
+  // Prefer the whole-account total from the server; fall back to the loaded-page
+  // tally only until those counts land (or if their request failed), so the chip
+  // is never stuck at 0 before the first counts load resolves.
   function countFor(id: string) {
+    if (state.counts[id] !== undefined) {
+      return state.counts[id];
+    }
     return state.items.filter((i: Record<string, unknown>) =>
       itemMatchesFilter(i, id),
     ).length;
@@ -381,6 +449,7 @@ export const useFeedStore = defineStore("feed", () => {
     const { showToast } = useToast();
     const previousSaved = item.saved;
     item.saved = !item.saved;
+    adjustCount("saved", item.saved ? 1 : -1);
     showToast(item.saved ? "Saved for later" : "Removed from saved");
 
     const { queueAction } = useSyncQueue();
@@ -392,6 +461,7 @@ export const useFeedStore = defineStore("feed", () => {
       });
     } catch {
       item.saved = previousSaved;
+      adjustCount("saved", item.saved ? 1 : -1);
       showToast(SYNC_ERROR_MESSAGE);
     }
   }
@@ -400,6 +470,7 @@ export const useFeedStore = defineStore("feed", () => {
     const { showToast } = useToast();
     const previousStarred = item.starred;
     item.starred = !item.starred;
+    adjustCount("starred", item.starred ? 1 : -1);
     showToast(item.starred ? "Starred" : "Removed from starred");
 
     const { queueAction } = useSyncQueue();
@@ -411,6 +482,7 @@ export const useFeedStore = defineStore("feed", () => {
       });
     } catch {
       item.starred = previousStarred;
+      adjustCount("starred", item.starred ? 1 : -1);
       showToast(SYNC_ERROR_MESSAGE);
     }
   }
@@ -665,6 +737,7 @@ export const useFeedStore = defineStore("feed", () => {
     countFor,
     loadItems,
     loadMore,
+    loadCounts,
     hasMore,
     setupWatchers,
     runFeedLoad,

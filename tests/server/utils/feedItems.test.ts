@@ -1,8 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { PgDialect } from "drizzle-orm/pg-core";
 
 const mockSelect = vi.fn();
 const mockFrom = vi.fn();
 const mockInnerJoin = vi.fn();
+const mockWhere = vi.fn();
 const mockOrderBy = vi.fn();
 const mockLimit = vi.fn();
 const mockOffset = vi.fn();
@@ -13,9 +15,19 @@ vi.stubGlobal("useDb", () => ({
 
 import {
   fetchFeedItems,
+  fetchFeedItemCounts,
   FEED_ITEMS_DEFAULT_LIMIT,
   FEED_ITEMS_MAX_LIMIT,
 } from "../../../server/utils/feedItems";
+
+// Render the drizzle SQL passed to a mocked .where() into real SQL so filter
+// assertions pin the operator (in / is not null / = true), not just a column
+// name — a saved→starred swap must fail the test.
+const dialect = new PgDialect();
+
+function renderWhere(): { sql: string; params: unknown[] } {
+  return dialect.sqlToQuery(mockWhere.mock.calls[0][0]);
+}
 
 const mockRow = {
   id: 1,
@@ -44,7 +56,8 @@ describe("fetchFeedItems", () => {
     vi.resetAllMocks();
     mockSelect.mockReturnValue({ from: mockFrom });
     mockFrom.mockReturnValue({ innerJoin: mockInnerJoin });
-    mockInnerJoin.mockReturnValue({ orderBy: mockOrderBy });
+    mockInnerJoin.mockReturnValue({ where: mockWhere });
+    mockWhere.mockReturnValue({ orderBy: mockOrderBy });
     mockOrderBy.mockReturnValue({ limit: mockLimit });
     mockLimit.mockReturnValue({ offset: mockOffset });
     mockOffset.mockResolvedValue([]);
@@ -183,11 +196,12 @@ describe("fetchFeedItems", () => {
     expect(mockLimit).toHaveBeenCalledWith(11);
   });
 
-  it("calls select, from, innerJoin, orderBy, limit, offset in order", async () => {
+  it("calls select, from, innerJoin, where, orderBy, limit, offset in order", async () => {
     await fetchFeedItems(1, {});
     expect(mockSelect).toHaveBeenCalledTimes(1);
     expect(mockFrom).toHaveBeenCalledTimes(1);
     expect(mockInnerJoin).toHaveBeenCalledTimes(1);
+    expect(mockWhere).toHaveBeenCalledTimes(1);
     expect(mockOrderBy).toHaveBeenCalledTimes(1);
     expect(mockLimit).toHaveBeenCalledTimes(1);
     expect(mockOffset).toHaveBeenCalledTimes(1);
@@ -195,15 +209,59 @@ describe("fetchFeedItems", () => {
     const [selectOrder] = mockSelect.mock.invocationCallOrder;
     const [fromOrder] = mockFrom.mock.invocationCallOrder;
     const [innerJoinOrder] = mockInnerJoin.mock.invocationCallOrder;
+    const [whereOrder] = mockWhere.mock.invocationCallOrder;
     const [orderByOrder] = mockOrderBy.mock.invocationCallOrder;
     const [limitOrder] = mockLimit.mock.invocationCallOrder;
     const [offsetOrder] = mockOffset.mock.invocationCallOrder;
 
     expect(selectOrder).toBeLessThan(fromOrder);
     expect(fromOrder).toBeLessThan(innerJoinOrder);
-    expect(innerJoinOrder).toBeLessThan(orderByOrder);
+    expect(innerJoinOrder).toBeLessThan(whereOrder);
+    expect(whereOrder).toBeLessThan(orderByOrder);
     expect(orderByOrder).toBeLessThan(limitOrder);
     expect(limitOrder).toBeLessThan(offsetOrder);
+  });
+
+  describe("filter scoping", () => {
+    it("scopes to the user with no filter restriction by default", async () => {
+      await fetchFeedItems(42, {});
+      const { sql, params } = renderWhere();
+      expect(sql).toContain('"user_id" =');
+      expect(params).toContain(42);
+      expect(sql).not.toContain("saved_at");
+      expect(sql).not.toContain("starred");
+    });
+
+    it("restricts by feed source for a type filter", async () => {
+      await fetchFeedItems(1, { filter: "tweet" });
+      const { sql, params } = renderWhere();
+      // "tweet" is produced by both the "tweet" and "bluesky" sources.
+      expect(sql).toContain('"source" in');
+      expect(params).toContain("tweet");
+      expect(params).toContain("bluesky");
+    });
+
+    it("restricts to saved items for the saved filter", async () => {
+      await fetchFeedItems(1, { filter: "saved" });
+      const { sql } = renderWhere();
+      expect(sql).toContain('"saved_at" is not null');
+      expect(sql).not.toContain('"source" in');
+    });
+
+    it("restricts to starred items for the starred filter", async () => {
+      await fetchFeedItems(1, { filter: "starred" });
+      const { sql, params } = renderWhere();
+      expect(sql).toContain('"starred" =');
+      expect(params).toContain(true);
+      expect(sql).not.toContain('"source" in');
+    });
+
+    it("applies no saved/starred/source restriction for the all filter", async () => {
+      await fetchFeedItems(1, { filter: "all" });
+      const { sql } = renderWhere();
+      expect(sql).not.toContain("saved_at");
+      expect(sql).not.toContain('"source" in');
+    });
   });
 
   it("orders by publishedAt desc nulls last then id desc for deterministic pagination", async () => {
@@ -215,5 +273,70 @@ describe("fetchFeedItems", () => {
       expect.anything(),
       expect.anything(),
     );
+  });
+});
+
+describe("fetchFeedItemCounts", () => {
+  const countsRow = {
+    all: 10,
+    saved: 3,
+    starred: 2,
+    article: 5,
+    podcast: 1,
+    video: 2,
+    tweet: 2,
+  };
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    mockSelect.mockReturnValue({ from: mockFrom });
+    mockFrom.mockReturnValue({ innerJoin: mockInnerJoin });
+    mockInnerJoin.mockReturnValue({ where: mockWhere });
+    mockWhere.mockResolvedValue([countsRow]);
+  });
+
+  it("returns whole-account totals per filter id", async () => {
+    const counts = await fetchFeedItemCounts(1);
+    expect(counts).toMatchObject({
+      all: 10,
+      saved: 3,
+      starred: 2,
+      article: 5,
+      podcast: 1,
+      video: 2,
+      tweet: 2,
+    });
+  });
+
+  it("scopes the aggregate to the authenticated user", async () => {
+    await fetchFeedItemCounts(7);
+    const { sql, params } = renderWhere();
+    expect(sql).toContain('"user_id" =');
+    expect(params).toContain(7);
+  });
+
+  it("coerces bigint-string counts to numbers", async () => {
+    mockWhere.mockResolvedValue([
+      {
+        all: "10",
+        saved: "3",
+        starred: "0",
+        article: "10",
+        podcast: "0",
+        video: "0",
+        tweet: "0",
+      },
+    ]);
+    const counts = await fetchFeedItemCounts(1);
+    expect(counts.all).toBe(10);
+    expect(counts.saved).toBe(3);
+  });
+
+  it("defaults every count to zero when no aggregate row is returned", async () => {
+    mockWhere.mockResolvedValue([]);
+    const counts = await fetchFeedItemCounts(1);
+    expect(counts.all).toBe(0);
+    expect(counts.saved).toBe(0);
+    expect(counts.tweet).toBe(0);
   });
 });

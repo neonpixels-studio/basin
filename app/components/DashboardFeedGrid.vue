@@ -1,10 +1,11 @@
 <script>
 export const PAGE_SIZE = 20;
 
-// visibleItems is filtered client-side while the API paginates unfiltered, so a
-// fetched page may add zero items to the current filter. Bound how many pages a
-// single scroll will pull chasing visible growth so a sparse filter can't fire
-// an unbounded burst of requests; a manual "Load more" then takes over.
+// The server scopes the page to the active filter, but the unread-only toggle is
+// still applied client-side, so a fetched page can add zero visible items when
+// it holds only already-read rows. Bound how many pages a single scroll will
+// pull chasing visible growth so a sparse unread set can't fire an unbounded
+// burst of requests; a manual "Load more" then takes over.
 export const MAX_PAGES_PER_SCROLL = 5;
 </script>
 
@@ -32,10 +33,11 @@ const visibleCount = ref(PAGE_SIZE);
 // whole multi-page burst rather than flickering per request.
 const fetching = ref(false);
 
-// Reset the window when the filter/unread toggle changes (those swap to a
-// different client-side set) or when the store replaces the list with a fresh
-// first page (listVersion bumps). Appending a fetched page grows visibleItems
-// but leaves listVersion untouched, so an append never resets the window.
+// Reset the window when the unread toggle changes (it swaps to a different
+// client-side set) or when the store replaces the list with a fresh first page
+// (listVersion bumps — a filter change now triggers exactly that reload).
+// Appending a fetched page grows visibleItems but leaves listVersion untouched,
+// so an append never resets the window.
 watch(
   [() => state.filter, () => state.unreadOnly, () => state.listVersion],
   () => {
