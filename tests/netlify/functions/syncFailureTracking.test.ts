@@ -1,4 +1,5 @@
 import { ErrorDoNotRetry } from "@netlify/async-workloads";
+import { PgDialect } from "drizzle-orm/pg-core";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 const { mockUpdate, mockUpdateSet, mockUpdateWhere, mockFindFirst } =
@@ -128,6 +129,24 @@ describe("syncFailureTracking", () => {
           nextRetryAt: new Date("2026-01-01T00:15:00.000Z"),
         }),
       );
+    });
+
+    it("scopes the consecutive-failure read to the feed's (id, userId) and only selects that column", async () => {
+      // The read is a security boundary: a feedId belonging to a different user
+      // than the event claims must never be read. Assert the scope so dropping
+      // the userId predicate (or widening the column selection) fails here.
+      await persistPermanentSyncFailure(
+        1,
+        42,
+        new ErrorDoNotRetry("Feed unreachable"),
+      );
+
+      const [findArgs] = mockFindFirst.mock.calls[0];
+      const { sql, params } = new PgDialect().sqlToQuery(findArgs.where);
+      expect(sql).toContain('"feeds"."id" = ');
+      expect(sql).toContain('"feeds"."user_id" = ');
+      expect(params).toEqual([42, 1]);
+      expect(findArgs.columns).toEqual({ consecutiveFailures: true });
     });
 
     it("does not touch integrations for a feed-only failure (not IntegrationAuthError)", async () => {

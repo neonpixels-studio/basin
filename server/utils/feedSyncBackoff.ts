@@ -19,8 +19,8 @@ const BASE_BACKOFF_MS = 15 * 60 * 1000;
 const MAX_BACKOFF_MS = 24 * 60 * 60 * 1000;
 
 // Once 2^exponent would exceed the cap the exact value no longer matters, so
-// the exponent is clamped below this to keep the shift well away from any
-// floating-point/overflow territory for very large failure counts.
+// the exponent is clamped below this so a huge failure count can't push
+// 2 ** exponent to Infinity before Math.min pins the delay to the cap.
 const MAX_BACKOFF_EXPONENT = 30;
 
 // Delay, in milliseconds, to wait before the next retry given how many
