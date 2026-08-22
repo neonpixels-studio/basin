@@ -24,6 +24,8 @@ const EXPORT_EXCLUDED_FEED_COLUMNS = new Set([
   "syncStatus",
   "syncError",
   "syncFailedAt",
+  "consecutiveFailures",
+  "nextRetryAt",
   "updatedAt",
 ]);
 
