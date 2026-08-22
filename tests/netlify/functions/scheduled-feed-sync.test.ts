@@ -148,7 +148,17 @@ describe("scheduled-feed-sync", () => {
     // the future so they are excluded until their retry window opens — see
     // server/utils/feedSyncBackoff.ts.
     expect(sql).toContain('"feeds"."next_retry_at" is null');
-    expect(sql).toContain('"feeds"."next_retry_at" <');
+    // Assert the value bound to the next_retry_at predicate is `now`, so a feed
+    // whose retry window has not opened yet is genuinely excluded — binding the
+    // debounce cutoff or a stale time here would gate feeds early and this test
+    // must catch that.
+    const nextRetryPlaceholder = sql.match(
+      /"feeds"\."next_retry_at" < \$(\d+)/,
+    );
+    expect(nextRetryPlaceholder).not.toBeNull();
+    expect(params[Number(nextRetryPlaceholder![1]) - 1]).toBe(
+      new Date("2026-01-01T00:00:00.000Z").toISOString(),
+    );
     // Paused sources (over the Free cap after a downgrade) are excluded so they
     // stop pulling new content — see netlify/functions/scheduled-feed-sync.ts.
     // Assert the value bound to the paused predicate specifically is `false`, so

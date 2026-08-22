@@ -59,8 +59,8 @@ export class ServerConfigError extends ErrorDoNotRetry {
 // matching fetchFeedRecord's read scope and every other write here — so a
 // feedId belonging to a different user than the event claims can never be
 // read or written. A missing row (deleted between the sync attempt and this
-// write) reads as zero failures, so the increment below still produces a sane
-// first-failure backoff.
+// write) yields zero here; the scoped UPDATE below then matches no rows and is
+// a no-op, which is the correct outcome for a feed that no longer exists.
 async function readConsecutiveFailures(
   feedId: number,
   userId: number,

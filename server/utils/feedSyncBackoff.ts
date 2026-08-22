@@ -41,7 +41,7 @@ export function computeBackoffDelayMs(consecutiveFailures: number): number {
 // when the feed has no consecutive failures, so a healthy feed is never gated.
 export function computeNextRetryAt(
   consecutiveFailures: number,
-  from: Date = new Date(),
+  from: Date,
 ): Date | null {
   if (consecutiveFailures <= 0) {
     return null;

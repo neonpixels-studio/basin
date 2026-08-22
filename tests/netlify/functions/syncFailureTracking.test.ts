@@ -1,5 +1,5 @@
 import { ErrorDoNotRetry } from "@netlify/async-workloads";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 const { mockUpdate, mockUpdateSet, mockUpdateWhere, mockFindFirst } =
   vi.hoisted(() => ({
@@ -32,6 +32,12 @@ describe("syncFailureTracking", () => {
     mockUpdateWhere.mockResolvedValue(undefined);
     // Default: the feed has no prior failures on record.
     mockFindFirst.mockResolvedValue({ consecutiveFailures: 0 });
+  });
+
+  // Restore real timers even when an assertion throws, so a single failure in a
+  // fake-timer test can't cascade into every later test running on a frozen clock.
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   describe("providerForSourceType()", () => {
@@ -82,8 +88,6 @@ describe("syncFailureTracking", () => {
           nextRetryAt: new Date("2026-01-01T00:15:00.000Z"),
         }),
       );
-
-      vi.useRealTimers();
     });
 
     it("escalates the backoff from the feed's existing consecutive-failure count", async () => {
@@ -105,8 +109,6 @@ describe("syncFailureTracking", () => {
           nextRetryAt: new Date("2026-01-01T02:00:00.000Z"),
         }),
       );
-
-      vi.useRealTimers();
     });
 
     it("treats a missing feed row as zero prior failures", async () => {
@@ -126,8 +128,6 @@ describe("syncFailureTracking", () => {
           nextRetryAt: new Date("2026-01-01T00:15:00.000Z"),
         }),
       );
-
-      vi.useRealTimers();
     });
 
     it("does not touch integrations for a feed-only failure (not IntegrationAuthError)", async () => {
