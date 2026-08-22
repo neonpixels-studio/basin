@@ -1,7 +1,14 @@
-import { desc, eq, and, sql } from "drizzle-orm";
+import { desc, eq, and, sql, inArray, type SQL } from "drizzle-orm";
 import { feedItems, feeds } from "../db/schema";
 import { FEED_SOURCE_TO_ITEM_TYPE } from "../../app/utils/feedSources";
 import { formatRelativeTime } from "./search";
+import {
+  SAVED_FILTER,
+  STARRED_FILTER,
+  feedSourcesForFilter,
+  feedSourcesForItemType,
+  savedStarredFilterCondition,
+} from "./feedFilters";
 
 export const FEED_ITEMS_DEFAULT_LIMIT = 50;
 export const FEED_ITEMS_MAX_LIMIT = 200;
@@ -41,6 +48,10 @@ export interface FeedItemsPage {
 export interface FeedItemsQuery {
   limit?: number;
   offset?: number;
+  // A dashboard filter id (feed.ts filterDefs). When omitted or "all", every
+  // owned item is returned; otherwise the query is narrowed server-side so
+  // Saved/Starred/type views span the whole result set, not just a loaded page.
+  filter?: string;
 }
 
 function clampLimit(raw: number | undefined): number {
@@ -50,6 +61,26 @@ function clampLimit(raw: number | undefined): number {
 
 function resolveOffset(raw: number | undefined): number {
   return Math.max(0, raw ?? 0);
+}
+
+// Every condition that scopes the listing to one user and (optionally) one
+// dashboard filter. A type filter narrows on feed source; "saved"/"starred"
+// narrow on their own column. "all"/undefined add neither, so the user sees
+// their whole feed. drizzle's `and()` drops the undefined entries.
+function feedItemsConditions(
+  userId: number,
+  filter: string | undefined,
+): SQL[] {
+  const conditions: SQL[] = [eq(feeds.userId, userId)];
+  const sources = feedSourcesForFilter(filter);
+  if (sources) {
+    conditions.push(inArray(feeds.source, sources));
+  }
+  const savedStarred = savedStarredFilterCondition(filter);
+  if (savedStarred) {
+    conditions.push(savedStarred);
+  }
+  return conditions;
 }
 
 function mapRow(row: {
@@ -131,10 +162,8 @@ export async function fetchFeedItems(
       updatedAt: feedItems.updatedAt,
     })
     .from(feedItems)
-    .innerJoin(
-      feeds,
-      and(eq(feedItems.feedId, feeds.id), eq(feeds.userId, userId)),
-    )
+    .innerJoin(feeds, eq(feedItems.feedId, feeds.id))
+    .where(and(...feedItemsConditions(userId, query.filter)))
     .orderBy(sql`${feedItems.publishedAt} DESC NULLS LAST`, desc(feedItems.id))
     .limit(limit + 1)
     .offset(offset);
@@ -148,4 +177,65 @@ export async function fetchFeedItems(
     total: pageRows.length,
     nextOffset,
   };
+}
+
+// Whole-account totals per dashboard filter, so the sidebar chips reflect every
+// matching item — not just the paginated page the client happens to hold. Keyed
+// by filter id (feed.ts filterDefs): "all", each item type, plus "saved"/
+// "starred".
+export interface FeedFilterCounts {
+  all: number;
+  saved: number;
+  starred: number;
+  [itemType: string]: number;
+}
+
+// A conditional aggregate: how many owned rows satisfy `condition`. Cast to int
+// so the Neon driver hands back a number rather than a bigint string.
+function countWhere(condition: SQL): SQL<number> {
+  return sql<number>`cast(count(*) filter (where ${condition}) as int)`;
+}
+
+// Postgres count() can surface as a bigint string over the HTTP driver; coerce
+// so callers always get a real number.
+function toCount(value: unknown): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+// One grouped query returning every filter chip's total in a single row, so the
+// dashboard counts stay whole-account-accurate independent of pagination. Each
+// type total reuses feedSourcesForItemType, so a new source only needs one edit.
+export async function fetchFeedItemCounts(
+  userId: number,
+): Promise<FeedFilterCounts> {
+  const db = useDb();
+  const itemTypes = [...new Set(Object.values(FEED_SOURCE_TO_ITEM_TYPE))];
+
+  const selection: Record<string, SQL<number>> = {
+    all: countWhere(sql`true`),
+    saved: countWhere(savedStarredFilterCondition(SAVED_FILTER) as SQL),
+    starred: countWhere(savedStarredFilterCondition(STARRED_FILTER) as SQL),
+  };
+  itemTypes.forEach((itemType) => {
+    selection[itemType] = countWhere(
+      inArray(feeds.source, feedSourcesForItemType(itemType)),
+    );
+  });
+
+  const [row] = await db
+    .select(selection)
+    .from(feedItems)
+    .innerJoin(feeds, eq(feedItems.feedId, feeds.id))
+    .where(eq(feeds.userId, userId));
+
+  const counts: FeedFilterCounts = {
+    all: toCount(row?.all),
+    saved: toCount(row?.saved),
+    starred: toCount(row?.starred),
+  };
+  itemTypes.forEach((itemType) => {
+    counts[itemType] = toCount(row?.[itemType]);
+  });
+  return counts;
 }

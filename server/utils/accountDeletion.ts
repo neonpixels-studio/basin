@@ -5,6 +5,7 @@ import type { H3Event } from "h3";
 import { eq } from "drizzle-orm";
 import { users } from "../db/schema";
 import type { DbUser } from "./auth";
+import { findUserByProviderId } from "./auth";
 import { deleteClerkUser } from "./clerk";
 import { deleteBillingRecords } from "./subscriptions";
 import { recordDeletionTombstone } from "./tombstone";
@@ -36,10 +37,15 @@ import { recordDeletionTombstone } from "./tombstone";
 //      would tell the user "nothing happened" while everything is irreversibly
 //      deleted. We log the provider id for manual reconciliation instead and
 //      let the caller report success so the client signs out.
-export async function deleteUserAccount(
-  event: H3Event,
-  user: DbUser,
-): Promise<void> {
+// Purges all stored account data for a user: billing first, then a
+// resurrection-proof tombstone, then the users row whose ON DELETE CASCADE
+// removes everything else (feeds, feed_items, integrations, user_settings,
+// subscriptions). Shared by the in-app deletion route (which then also removes
+// the Clerk identity) and the Clerk user.deleted webhook (where the identity is
+// already gone), so the ordering and its partial-failure handling live in one
+// place. See deleteUserAccount's step-by-step comment above for why the order
+// matters and why each step is retryable.
+async function purgeAccountData(user: DbUser): Promise<void> {
   await deleteBillingRecords(user.id);
   // Split from the delete below so a reconciler can tell which write failed —
   // the single fact they need is whether the users row still exists. Both steps
@@ -63,6 +69,13 @@ export async function deleteUserAccount(
     );
     throw caughtError;
   }
+}
+
+export async function deleteUserAccount(
+  event: H3Event,
+  user: DbUser,
+): Promise<void> {
+  await purgeAccountData(user);
   try {
     await deleteClerkUser(event, user.providerId);
   } catch (caughtError) {
@@ -75,4 +88,25 @@ export async function deleteUserAccount(
       caughtError,
     );
   }
+}
+
+// Handles Clerk's `user.deleted` webhook: the identity is already gone on
+// Clerk's side, so we only purge our stored data and never call deleteClerkUser
+// (unlike the in-app deleteUserAccount above). Resolves the app user by the
+// Clerk provider id, then purges. When no row matches there is nothing to purge,
+// but we still record the tombstone: a session token minted just before the
+// deletion stays valid (Clerk verifies JWTs networklessly), so without it the
+// auth middleware could resurrect an empty users row on that token's next
+// request. Idempotent — Clerk retries webhooks, and re-running on an
+// already-deleted account is a no-op (findUserByProviderId returns undefined,
+// recordDeletionTombstone is onConflictDoNothing).
+export async function deleteAccountByProviderId(
+  providerId: string,
+): Promise<void> {
+  const user = await findUserByProviderId(providerId);
+  if (!user) {
+    await recordDeletionTombstone(providerId);
+    return;
+  }
+  await purgeAccountData(user);
 }

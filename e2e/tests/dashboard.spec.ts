@@ -48,4 +48,38 @@ test.describe("Dashboard", () => {
     await page.locator(".seg button").nth(2).click();
     await expect(page.locator(".feed")).toHaveClass(/layout-columns/);
   });
+
+  test("Saved filter returns saved items from the server, not just the loaded page", async ({
+    page,
+  }) => {
+    // Both seeded items load under "All". The saved item (Article One) is saved
+    // server-side; the starred item (Article Two) is not, so switching to Saved
+    // must fetch the filtered set and drop the non-saved item.
+    await expect(page.getByText("E2E Article One")).toBeVisible({
+      timeout: 10_000,
+    });
+    await expect(page.getByText("E2E Article Two")).toBeVisible();
+
+    await page.locator(".filters .fchip", { hasText: "Saved" }).click();
+
+    await expect(page.getByText("E2E Article One")).toBeVisible({
+      timeout: 10_000,
+    });
+    await expect(page.getByText("E2E Article Two")).toBeHidden();
+  });
+
+  test("Starred filter returns starred items from the server", async ({
+    page,
+  }) => {
+    await expect(page.getByText("E2E Article Two")).toBeVisible({
+      timeout: 10_000,
+    });
+
+    await page.locator(".filters .fchip", { hasText: "Starred" }).click();
+
+    await expect(page.getByText("E2E Article Two")).toBeVisible({
+      timeout: 10_000,
+    });
+    await expect(page.getByText("E2E Article One")).toBeHidden();
+  });
 });

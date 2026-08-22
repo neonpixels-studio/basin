@@ -75,6 +75,7 @@ describe("GET /api/feed-items", () => {
     expect(mockFetchFeedItems).toHaveBeenCalledWith(1, {
       limit: 20,
       offset: 40,
+      filter: undefined,
     });
   });
 
@@ -86,6 +87,7 @@ describe("GET /api/feed-items", () => {
     expect(mockFetchFeedItems).toHaveBeenCalledWith(1, {
       limit: undefined,
       offset: undefined,
+      filter: undefined,
     });
   });
 
@@ -97,6 +99,7 @@ describe("GET /api/feed-items", () => {
     expect(mockFetchFeedItems).toHaveBeenCalledWith(1, {
       limit: undefined,
       offset: undefined,
+      filter: undefined,
     });
   });
 
@@ -108,6 +111,7 @@ describe("GET /api/feed-items", () => {
     expect(mockFetchFeedItems).toHaveBeenCalledWith(1, {
       limit: undefined,
       offset: undefined,
+      filter: undefined,
     });
   });
 
@@ -134,5 +138,35 @@ describe("GET /api/feed-items", () => {
     const event = { context: { user: { id: 1 } } };
     const result = await handler(event);
     expect(result.items).toEqual([]);
+  });
+
+  it("passes a valid dashboard filter through to fetchFeedItems", async () => {
+    mockGetQuery.mockReturnValue({ filter: "saved" });
+    mockFetchFeedItems.mockResolvedValue(mockPage);
+    const event = { context: { user: { id: 1 } } };
+    await handler(event);
+    expect(mockFetchFeedItems).toHaveBeenCalledWith(1, {
+      limit: undefined,
+      offset: undefined,
+      filter: "saved",
+    });
+  });
+
+  it("treats the 'all' filter as no restriction", async () => {
+    mockGetQuery.mockReturnValue({ filter: "all" });
+    mockFetchFeedItems.mockResolvedValue(mockPage);
+    const event = { context: { user: { id: 1 } } };
+    await handler(event);
+    expect(mockFetchFeedItems).toHaveBeenCalledWith(1, {
+      limit: undefined,
+      offset: undefined,
+      filter: undefined,
+    });
+  });
+
+  it("throws 400 for an unknown filter", async () => {
+    mockGetQuery.mockReturnValue({ filter: "bogus" });
+    const event = { context: { user: { id: 1 } } };
+    await expect(handler(event)).rejects.toMatchObject({ statusCode: 400 });
   });
 });

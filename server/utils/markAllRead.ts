@@ -1,55 +1,22 @@
-import { and, eq, inArray, isNull, isNotNull } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import type { useDb } from "../db/index";
 import { feedItems, feeds } from "../db/schema";
-import { FEED_SOURCE_TO_ITEM_TYPE } from "../../app/utils/feedSources";
+import {
+  VALID_FEED_FILTERS,
+  feedSourcesForFilter,
+  savedStarredFilterCondition,
+} from "./feedFilters";
 
-// Dashboard filter ids that are not backed by a feed source: "all" applies no
-// source restriction; "saved" restricts on savedAt and "starred" on the starred
-// column, rather than on the source.
-export const ALL_FILTER = "all";
-export const SAVED_FILTER = "saved";
-export const STARRED_FILTER = "starred";
-
-// Every filter id the endpoint accepts: the non-source views plus each item type
-// produced by a known feed source. Anything else is rejected up front (fail
-// loud) rather than silently marking nothing read.
-export const VALID_MARK_ALL_READ_FILTERS = new Set<string>([
-  ALL_FILTER,
-  SAVED_FILTER,
-  STARRED_FILTER,
-  ...Object.values(FEED_SOURCE_TO_ITEM_TYPE),
-]);
+// The mark-all-read endpoint accepts the same dashboard filter ids as the feed
+// listing. Re-exported under the historical name so existing callers keep
+// working while the definition lives in one place (feedFilters).
+export const VALID_MARK_ALL_READ_FILTERS = VALID_FEED_FILTERS;
 
 export interface MarkAllReadOptions {
   // A dashboard filter id (feed.ts filterDefs). When omitted or "all", every
   // unread item in the account is marked read; otherwise the update is scoped
   // to that filter so a filtered "mark all read" only affects what it claims to.
   filter?: string;
-}
-
-// Reverse of FEED_SOURCE_TO_ITEM_TYPE: one item type can be produced by several
-// feed sources (e.g. "tweet" from both "tweet" and "bluesky"), so map a filter's
-// item type back to every feed source that yields it. Unknown types return [],
-// which scopes the update to no feeds — an honest empty result, not a crash.
-function feedSourcesForItemType(itemType: string): string[] {
-  return Object.entries(FEED_SOURCE_TO_ITEM_TYPE)
-    .filter(([, type]) => type === itemType)
-    .map(([source]) => source);
-}
-
-// null means "no source restriction" (the "all", "saved" and "starred" views
-// span every source); "saved"/"starred" are narrowed later by their own column,
-// not by source.
-function feedSourcesForFilter(filter: string | undefined): string[] | null {
-  if (
-    !filter ||
-    filter === ALL_FILTER ||
-    filter === SAVED_FILTER ||
-    filter === STARRED_FILTER
-  ) {
-    return null;
-  }
-  return feedSourcesForItemType(filter);
 }
 
 type MarkAllReadDb = ReturnType<typeof useDb>;
@@ -69,18 +36,6 @@ async function selectUserFeedIds(
     .from(feeds)
     .where(and(...conditions));
   return rows.map((row) => row.id);
-}
-
-// The "saved" and "starred" views narrow the update beyond feed ownership +
-// unread: "saved" to items with a savedAt, "starred" to starred items.
-function viewOnlyCondition(filter: string | undefined) {
-  if (filter === SAVED_FILTER) {
-    return isNotNull(feedItems.savedAt);
-  }
-  if (filter === STARRED_FILTER) {
-    return eq(feedItems.starred, true);
-  }
-  return undefined;
 }
 
 // Account-scoped bulk mark-as-read: marks every unread feed item the user owns
@@ -106,7 +61,7 @@ export async function markAllItemsRead(
       and(
         inArray(feedItems.feedId, feedIds),
         isNull(feedItems.readAt),
-        viewOnlyCondition(options.filter),
+        savedStarredFilterCondition(options.filter),
       ),
     );
 }

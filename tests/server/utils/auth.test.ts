@@ -17,7 +17,10 @@ vi.stubGlobal("useDb", () => ({
 }));
 vi.stubGlobal("useRuntimeConfig", () => runtimeConfig);
 
-import { getOrCreateUser } from "../../../server/utils/auth";
+import {
+  getOrCreateUser,
+  findUserByProviderId,
+} from "../../../server/utils/auth";
 
 const mockUser = {
   id: 1,
@@ -87,6 +90,25 @@ describe("getOrCreateUser", () => {
     await getOrCreateUser("clerk_xyz");
 
     expect(mockValues).toHaveBeenCalledWith({ providerId: "clerk_xyz" });
+  });
+
+  describe("findUserByProviderId", () => {
+    it("returns the matching user row", async () => {
+      mockFindFirst.mockResolvedValue(mockUser);
+
+      const result = await findUserByProviderId("clerk_abc");
+
+      expect(result).toEqual(mockUser);
+    });
+
+    it("returns undefined when no row matches", async () => {
+      mockFindFirst.mockResolvedValue(undefined);
+
+      const result = await findUserByProviderId("clerk_missing");
+
+      expect(result).toBeUndefined();
+      expect(mockInsert).not.toHaveBeenCalled();
+    });
   });
 
   describe("when sign-ups are disabled", () => {

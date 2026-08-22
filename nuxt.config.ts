@@ -71,7 +71,13 @@ export default defineNuxtConfig({
     googleClientId: process.env.NUXT_GOOGLE_CLIENT_ID || "",
     googleClientSecret: process.env.NUXT_GOOGLE_CLIENT_SECRET || "",
     disableSignups: process.env.NUXT_DISABLE_SIGNUPS || "",
-    clerk: { secretKey: process.env.NUXT_CLERK_SECRET_KEY || "" },
+    clerk: {
+      secretKey: process.env.NUXT_CLERK_SECRET_KEY || "",
+      // Read by @clerk/nuxt's verifyWebhook to authenticate incoming Clerk
+      // webhooks (Svix signature). Verifies user.deleted so a Clerk-side
+      // account deletion cascades into our database.
+      webhookSigningSecret: process.env.NUXT_CLERK_WEBHOOK_SIGNING_SECRET || "",
+    },
     stripeSecretKey: process.env.NUXT_STRIPE_SECRET_KEY || "",
     stripeWebhookSecret: process.env.NUXT_STRIPE_WEBHOOK_SECRET || "",
     stripePriceProMonthly: process.env.NUXT_STRIPE_PRICE_PRO_MONTHLY || "",
