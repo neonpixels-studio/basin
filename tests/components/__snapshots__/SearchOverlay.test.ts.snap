@@ -11,6 +11,7 @@ exports[`SearchOverlay > matches snapshot (open, empty query) 1`] = `
       </button>
     </div>
     <div class="search-results">
+      <!--v-if-->
       <div class="sr-group">Pages</div>
       <div class="sr-item cursor"><span class="sr-pill" style="--c: var(--accent-soft-ink);">PAGE</span>
         <div class="sr-main">
@@ -46,10 +47,10 @@ exports[`SearchOverlay > matches snapshot (open, search request failed) 1`] = `
       </button>
     </div>
     <div class="search-results">
-      <div class="empty search-error" role="alert">
-        <h3>Search unavailable</h3>
-        <p>Something went wrong running that search. Please try again.</p>
+      <div class="search-error" role="alert">
+        <p>Search is unavailable right now. Please try again.</p><button class="btn">Retry</button>
       </div>
+      <!--v-if-->
     </div>
     <div class="search-foot"><span class="hint"><span class="kbd">↑↓</span> navigate</span><span class="hint"><span class="kbd">↵</span> open</span><span class="hint"><span class="kbd">esc</span> close</span></div>
   </div>

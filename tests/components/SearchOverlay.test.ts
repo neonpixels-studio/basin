@@ -9,11 +9,9 @@ import { useSearch } from "~/composables/useSearch";
 
 const { state } = useSearch();
 
-// A query no page title/sub matches, so without the error the template would
-// otherwise fall through to the "No matches" empty state.
+// A query no page title/sub matches, so the template falls through to the
+// "No matches" empty state when the search succeeds with no results.
 const NO_PAGE_MATCH_QUERY = "zzznomatchzzz";
-// Must match the search debounce delay in SearchOverlay.vue.
-const SEARCH_DEBOUNCE_MS = 300;
 
 // A promise whose settlement the test controls — used to hold a request
 // in-flight while a newer query supersedes it.
@@ -27,18 +25,26 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
-// Mounts the overlay, types a non-matching query, and drives the debounced
-// request to completion with the given $fetch behaviour. Uses fake timers so
-// the 300ms debounce resolves instantly instead of sleeping in real time.
-async function runSearch(fetchImplementation) {
+// Mounts the overlay with a controlled $fetch. Fake timers let the debounce
+// resolve instantly instead of sleeping in real time.
+function mountOverlay(fetchImplementation) {
   vi.useFakeTimers();
   vi.stubGlobal("$fetch", fetchImplementation);
   state.open = true;
-  const wrapper = shallowMount(SearchOverlay);
-  state.query = NO_PAGE_MATCH_QUERY;
-  await vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS);
+  return shallowMount(SearchOverlay);
+}
+
+// Types a query and drains the debounce timer plus the resulting request.
+async function typeQuery(wrapper, query) {
+  state.query = query;
+  await vi.runAllTimersAsync();
   await flushPromises();
   await wrapper.vm.$nextTick();
+}
+
+async function runSearch(fetchImplementation, query = NO_PAGE_MATCH_QUERY) {
+  const wrapper = mountOverlay(fetchImplementation);
+  await typeQuery(wrapper, query);
   return wrapper;
 }
 
@@ -90,7 +96,27 @@ describe("SearchOverlay", () => {
   it("shows a distinct error state, not 'No matches', when the search request fails", async () => {
     const wrapper = await mountWithFailedSearch();
     expect(wrapper.find(".search-error").exists()).toBe(true);
-    expect(wrapper.text()).toContain("Search unavailable");
+    expect(wrapper.text()).toContain("Search is unavailable");
+    expect(wrapper.text()).not.toContain("No matches");
+  });
+
+  it("surfaces the error even when a page still matches the query", async () => {
+    const wrapper = await runSearch(
+      vi.fn().mockRejectedValue(new Error("network down")),
+      "feed",
+    );
+    expect(wrapper.find(".search-error").exists()).toBe(true);
+    // The Pages group still renders (Settings/Dashboard match "feed")…
+    expect(wrapper.text()).toContain("Dashboard");
+    // …but the error must not be masked as a "No matches" result.
+    expect(wrapper.text()).not.toContain("No matches");
+  });
+
+  it("shows the error state when the API returns a non-array body", async () => {
+    const wrapper = await runSearch(
+      vi.fn().mockResolvedValue({ error: "boom" }),
+    );
+    expect(wrapper.find(".search-error").exists()).toBe(true);
     expect(wrapper.text()).not.toContain("No matches");
   });
 
@@ -100,7 +126,7 @@ describe("SearchOverlay", () => {
     expect(wrapper.text()).toContain("No matches");
   });
 
-  it("clears the error state after a successful retry", async () => {
+  it("clears a stale error the moment the query changes, before the retry fires", async () => {
     const fetchMock = vi
       .fn()
       .mockRejectedValueOnce(new Error("network down"))
@@ -108,8 +134,15 @@ describe("SearchOverlay", () => {
     const wrapper = await runSearch(fetchMock);
     expect(wrapper.find(".search-error").exists()).toBe(true);
 
+    // Changing the query clears the previous failure synchronously — before the
+    // debounced retry has even fired (guards the watcher's searchError reset).
     state.query = `${NO_PAGE_MATCH_QUERY}x`;
-    await vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS);
+    await wrapper.vm.$nextTick();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(wrapper.find(".search-error").exists()).toBe(false);
+
+    // The successful retry keeps it clear.
+    await vi.runAllTimersAsync();
     await flushPromises();
     await wrapper.vm.$nextTick();
     expect(wrapper.find(".search-error").exists()).toBe(false);
@@ -122,20 +155,17 @@ describe("SearchOverlay", () => {
       .fn()
       .mockReturnValueOnce(firstRequest.promise)
       .mockResolvedValueOnce([]);
-    vi.useFakeTimers();
-    vi.stubGlobal("$fetch", fetchMock);
-    state.open = true;
-    const wrapper = shallowMount(SearchOverlay);
+    const wrapper = mountOverlay(fetchMock);
 
-    state.query = `${NO_PAGE_MATCH_QUERY}a`;
-    await vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS);
-    state.query = `${NO_PAGE_MATCH_QUERY}b`;
-    await vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS);
+    await typeQuery(wrapper, `${NO_PAGE_MATCH_QUERY}a`);
+    await typeQuery(wrapper, `${NO_PAGE_MATCH_QUERY}b`);
     firstRequest.reject(new Error("aborted"));
     await flushPromises();
     await wrapper.vm.$nextTick();
 
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(wrapper.find(".search-error").exists()).toBe(false);
+    expect(wrapper.text()).toContain("No matches");
   });
 
   it("matches snapshot (open, search request failed)", async () => {
