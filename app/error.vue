@@ -16,8 +16,10 @@ const DEFAULT_MESSAGE = "Something threw us off the trail.";
 const statusCode = computed(
   () => props.error?.statusCode ?? DEFAULT_STATUS_CODE,
 );
-// Only surface statusMessage — never error.message, which can carry raw JS
-// throw text, upstream API detail, or DB driver messages to the end user.
+// statusMessage is the only error field we treat as user-facing copy; never
+// error.message, which can carry raw JS throw text, upstream API detail, or DB
+// driver messages. Server routes must never assign a raw caught err.message to
+// statusMessage (they throw purpose-written errors today) or it lands here.
 const message = computed(() => props.error?.statusMessage || DEFAULT_MESSAGE);
 
 useHead({ title: message });

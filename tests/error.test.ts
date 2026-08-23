@@ -2,7 +2,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { shallowMount } from "@vue/test-utils";
 import ErrorPage from "~/error.vue";
 
-const sampleError = { statusCode: 500, statusMessage: "Internal Server Error" };
+// A non-default status code so the passthrough assertions can't pass on the
+// DEFAULT_STATUS_CODE (500) fallback — the {} case below covers that fallback.
+const sampleError = { statusCode: 503, statusMessage: "Service Unavailable" };
 
 describe("error.vue (fatal error page)", () => {
   let clearError;
@@ -21,12 +23,12 @@ describe("error.vue (fatal error page)", () => {
 
   it("renders the error status code", () => {
     const wrapper = shallowMount(ErrorPage, { props: { error: sampleError } });
-    expect(wrapper.find("h1").text()).toBe("500");
+    expect(wrapper.find("h1").text()).toBe("503");
   });
 
   it("renders the status message from the error prop", () => {
     const wrapper = shallowMount(ErrorPage, { props: { error: sampleError } });
-    expect(wrapper.text()).toContain("Internal Server Error");
+    expect(wrapper.text()).toContain("Service Unavailable");
   });
 
   it("falls back to defaults when the error prop is sparse", () => {
@@ -49,7 +51,7 @@ describe("error.vue (fatal error page)", () => {
     shallowMount(ErrorPage, { props: { error: sampleError } });
     expect(useHead).toHaveBeenCalledTimes(1);
     const [headArg] = useHead.mock.calls[0];
-    expect(headArg.title.value).toBe("Internal Server Error");
+    expect(headArg.title.value).toBe("Service Unavailable");
   });
 
   it("re-renders the current route via clearError on Try again", async () => {
