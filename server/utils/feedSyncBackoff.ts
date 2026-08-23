@@ -14,7 +14,7 @@
 // useRuntimeConfig) so the Netlify functions in netlify/functions/, which run
 // outside Nitro, can import it. The "cleared state" write-shapes below live
 // here for the same reason.
-import { feeds } from "../db/schema";
+import type { feeds } from "../db/schema";
 import { SYNC_STATUS } from "./syncStatus";
 
 // Consecutive-failure count for a feed that has never failed, has just
@@ -81,7 +81,16 @@ export const HEALTHY_SYNC_STATE = {
 // the feed is still broken (e.g. a dead channel URL a reconnect can't fix), the
 // next failure feeds the preserved count into computeNextRetryAt and jumps
 // straight back to the cap instead of restarting the 15-minute ramp. So a
-// repaired feed syncs immediately; a still-broken one costs exactly one retry.
+// repaired feed syncs immediately; a still-broken one costs a single extra
+// sync before it re-gates.
+//
+// On the reconnect path this write is scoped by (userId, source), so it
+// un-gates every feed of that source at once — including feed-only failures a
+// reconnect can't fix. The cost is bounded (one extra sync per such feed per
+// manual reconnect, then straight back to the cap), not the unbounded per-tick
+// churn the backoff exists to stop, so per-feed failure attribution is left as
+// a follow-up rather than blocking this. The re-add path has no such fan-out:
+// a live validating fetch gates each un-gate to a single URL.
 export const UNGATED_SYNC_STATE = {
   syncStatus: SYNC_STATUS.OK,
   syncError: null,
