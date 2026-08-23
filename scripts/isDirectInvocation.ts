@@ -17,9 +17,15 @@ export function isDirectInvocation(moduleUrl: string): boolean {
     return false;
   }
 
+  // Fall back to the unresolved path rather than returning false: a realpath
+  // failure must not silently turn a directly-invoked backfill into a no-op
+  // that exits 0 and reads as success.
+  let resolvedEntrypoint = entrypoint;
   try {
-    return moduleUrl === pathToFileURL(realpathSync(entrypoint)).href;
-  } catch {
-    return false;
+    resolvedEntrypoint = realpathSync(entrypoint);
+  } catch (error) {
+    console.warn("could not resolve entrypoint symlinks:", error);
   }
+
+  return moduleUrl === pathToFileURL(resolvedEntrypoint).href;
 }

@@ -2,9 +2,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   backfillRow,
   backfillRowReportingFailure,
+  fetchLegacyTombstoneRows,
 } from "../../scripts/backfill-hash-tombstones";
 import {
   hashProviderId,
+  HASHED_PROVIDER_ID_PATTERN_SOURCE,
   isHashedProviderId,
 } from "../../server/utils/tombstoneHash";
 
@@ -86,6 +88,25 @@ describe("backfillRow", () => {
     const outcome = await backfillRow(fakeSql, { providerId: "user_abc" });
 
     expect(outcome).toBe("skipped-not-found");
+  });
+});
+
+describe("fetchLegacyTombstoneRows", () => {
+  it("selects only rows that are not already hashed, ordered stably", async () => {
+    const { fakeSql, calls, statements } = createFakeSql([
+      [{ providerId: "user_abc" }],
+    ]);
+
+    const rows = await fetchLegacyTombstoneRows(fakeSql);
+
+    expect(rows).toEqual([{ providerId: "user_abc" }]);
+    const statement = statements[0];
+    expect(statement).toContain("FROM deletion_tombstones");
+    expect(statement).toContain("provider_id !~");
+    expect(statement).toContain("ORDER BY provider_id");
+    // The hash-shape filter must be the exact pattern the app uses, bound as a
+    // parameter — a drifted or unbound pattern would silently migrate nothing.
+    expect(calls[0]).toContain(HASHED_PROVIDER_ID_PATTERN_SOURCE);
   });
 });
 

@@ -62,6 +62,11 @@ describe("hashProviderId", () => {
 
     expect(() => hashProviderId("user_abc")).toThrow(TombstonePepperError);
   });
+
+  it("throws on an empty or blank provider id rather than hashing nothing", () => {
+    expect(() => hashProviderId("")).toThrow(/non-empty/);
+    expect(() => hashProviderId("   ")).toThrow(/non-empty/);
+  });
 });
 
 describe("isHashedProviderId", () => {

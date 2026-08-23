@@ -23,8 +23,13 @@ const HASH_OUTPUT_ENCODING = "hex";
 // id ("user_...") never matches this, so the shape doubles as a detector for
 // legacy rows written before hashing existed. Case-sensitive on purpose: our
 // own hashes are always lowercase, so accepting uppercase would only widen the
-// false-positive surface.
-const HASHED_PROVIDER_ID_PATTERN = /^[0-9a-f]{64}$/;
+// false-positive surface. Exported as a source string so the backfill's Postgres
+// POSIX filter reuses the exact same pattern (the two dialects can't share a
+// compiled regex, but must not drift — a mismatch would re-hash a hash).
+export const HASHED_PROVIDER_ID_PATTERN_SOURCE = "^[0-9a-f]{64}$";
+const HASHED_PROVIDER_ID_PATTERN = new RegExp(
+  HASHED_PROVIDER_ID_PATTERN_SOURCE,
+);
 
 // A pepper shorter than this is almost certainly a placeholder or a typo rather
 // than a real secret; fail loud instead of silently weakening the hash.
@@ -54,6 +59,13 @@ function getTombstonePepper(): string {
 // defeats precomputation, so H(message || secret) is sufficient here. Changing
 // the construction later would invalidate every stored hash, so it is pinned.
 export function hashProviderId(providerId: string): string {
+  if (!providerId.trim()) {
+    // The security boundary: an empty/blank id would hash to a stable
+    // sha256(pepper) and silently tombstone "nothing" (or match it). Fail loud
+    // rather than record a meaningless equality token.
+    throw new Error("hashProviderId requires a non-empty provider id.");
+  }
+
   const pepper = getTombstonePepper();
 
   return createHash(HASH_ALGORITHM)

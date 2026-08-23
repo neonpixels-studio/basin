@@ -2,6 +2,11 @@ import { config } from "@vue/test-utils";
 import { vi, beforeEach } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 
+// A valid tombstone pepper for every test by default, so any suite that reaches
+// getOrCreateUser or the account-deletion sweep doesn't throw TombstonePepperError.
+// The fail-closed tests override it to "" via vi.stubEnv to assert the throw.
+process.env.TOMBSTONE_ID_PEPPER ??= "test-tombstone-pepper-0123456789";
+
 // Real composables as globals — mirrors Nuxt's auto-import behavior.
 import { useToast } from "../app/composables/useToast.js";
 import { useSearch } from "../app/composables/useSearch.js";

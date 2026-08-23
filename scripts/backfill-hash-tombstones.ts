@@ -16,6 +16,7 @@
 import { neon } from "@neondatabase/serverless";
 import {
   hashProviderId,
+  HASHED_PROVIDER_ID_PATTERN_SOURCE,
   isHashedProviderId,
 } from "../server/utils/tombstoneHash.ts";
 import { isDirectInvocation } from "./isDirectInvocation.ts";
@@ -43,16 +44,19 @@ function connectToDatabase(): SqlTag {
   return neon(databaseUrl) as unknown as SqlTag;
 }
 
-// Only legacy raw rows need migrating, so filter server-side rather than
-// pulling the whole (append-only, never-pruned) table across the wire and
-// discarding hashed rows in JS. A stable ORDER BY makes the failure log's row
-// position meaningful across re-runs. backfillRow keeps its own
-// isHashedProviderId guard as defence-in-depth.
-async function fetchLegacyTombstoneRows(sql: SqlTag): Promise<TombstoneRow[]> {
+// Only legacy raw rows need migrating, so filter server-side (reusing the exact
+// hash-shape pattern the app uses, bound as a parameter) rather than pulling the
+// whole append-only table across the wire and discarding hashed rows in JS.
+// backfillRow keeps its own isHashedProviderId guard as defence-in-depth.
+// Exported so the filter — the single point that decides which rows migrate — is
+// unit-testable.
+export async function fetchLegacyTombstoneRows(
+  sql: SqlTag,
+): Promise<TombstoneRow[]> {
   const rows = await sql`
     SELECT provider_id AS "providerId"
     FROM deletion_tombstones
-    WHERE provider_id !~ '^[0-9a-f]{64}$'
+    WHERE provider_id !~ ${HASHED_PROVIDER_ID_PATTERN_SOURCE}
     ORDER BY provider_id
   `;
   return rows as TombstoneRow[];
@@ -126,7 +130,6 @@ async function main(): Promise<void> {
   const rows = await fetchLegacyTombstoneRows(sql);
 
   let migratedCount = 0;
-  let alreadyHashedCount = 0;
   let skippedNotFoundCount = 0;
   let failedCount = 0;
 
@@ -135,10 +138,6 @@ async function main(): Promise<void> {
 
     if (outcome === "migrated") {
       migratedCount += 1;
-    }
-
-    if (outcome === "already-hashed") {
-      alreadyHashedCount += 1;
     }
 
     if (outcome === "skipped-not-found") {
@@ -150,11 +149,12 @@ async function main(): Promise<void> {
     }
   }
 
-  // Every fetched row lands in exactly one bucket, so the counts sum to
-  // rows.length — an operator can verify coverage by eye.
+  // fetchLegacyTombstoneRows already excludes hashed rows, so every fetched row
+  // is migrated, removed-concurrently, or failed — the three counts sum to
+  // rows.length and an operator can verify coverage by eye.
   console.log(
     `Found ${rows.length} legacy raw provider id(s); removed ${migratedCount} (now retained only as a hash), ` +
-      `${alreadyHashedCount} already hashed, ${skippedNotFoundCount} removed concurrently, ${failedCount} failed.` +
+      `${skippedNotFoundCount} removed concurrently, ${failedCount} failed.` +
       (failedCount > 0
         ? " Re-run to retry the failures — see errors above."
         : ""),
