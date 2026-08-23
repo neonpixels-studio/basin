@@ -3,9 +3,9 @@ import { and, eq } from "drizzle-orm";
 import { feeds, integrations } from "../../server/db/schema";
 import {
   computeNextRetryAt,
+  HEALTHY_SYNC_STATE,
   NO_CONSECUTIVE_FAILURES,
 } from "../../server/utils/feedSyncBackoff";
-import { CLEARED_SYNC_FAILURE_STATE } from "../../server/utils/feedSyncStatus";
 import { SYNC_STATUS } from "../../server/utils/syncStatus";
 import { createDb } from "./db";
 
@@ -107,7 +107,7 @@ async function recordFeedSyncSuccess(
   const db = createDb();
   await db
     .update(feeds)
-    .set({ ...CLEARED_SYNC_FAILURE_STATE, lastFetched: syncedAt })
+    .set({ ...HEALTHY_SYNC_STATE, lastFetched: syncedAt })
     .where(and(eq(feeds.id, feedId), eq(feeds.userId, userId)));
 }
 

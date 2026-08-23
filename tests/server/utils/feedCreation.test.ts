@@ -123,32 +123,41 @@ describe("createFeedForUser", () => {
     );
   });
 
-  // Documents pre-existing single-add upsert behavior (unchanged by the OPML
-  // work): re-adding a URL without a sourceOverride resets any existing
-  // override to auto-detected. OPML import calls createFeedForUser without a
-  // sourceOverride for every entry, so re-importing a file containing a feed
-  // the user manually overrode elsewhere will reset that override — this
-  // test locks the behavior in so a future change to it is intentional, not
-  // silent. See the note on createFeedForUser for the full explanation.
-  // The conflict-update set clause covers two behaviors: it resets an existing
-  // sourceOverride to null when re-adding without one (pre-existing single-add
-  // behavior — see the note on createFeedForUser), and it clears any recorded
-  // sync failure and retry backoff so a repaired feed re-added after its origin
-  // recovered is un-gated instead of staying backed off for up to a day (see
-  // server/utils/feedSyncBackoff.ts).
-  it("resets sourceOverride and clears sync failure + backoff on re-add", async () => {
+  // The conflict-update set clause covers two behaviors. First (pre-existing
+  // single-add behavior, unchanged by the OPML work): re-adding a URL without a
+  // sourceOverride resets any existing override to auto-detected — OPML import
+  // calls createFeedForUser without a sourceOverride for every entry, so
+  // re-importing a file containing a feed the user manually overrode elsewhere
+  // resets that override. Second: it un-gates the retry backoff (nextRetryAt
+  // null) and clears the failure display state so a repaired feed re-added
+  // after its origin recovered syncs immediately instead of staying backed off
+  // for up to a day. The explicit source/override are asserted too, pinning the
+  // spread order in feedCreation.ts (shared defaults first, call-site values
+  // last) so they can't be silently overridden by a future addition to the
+  // shared state.
+  it("resets sourceOverride and un-gates backoff on re-add", async () => {
     await createFeedForUser(1, "https://example.com/feed.xml");
     expect(mockOnConflictDoUpdate).toHaveBeenCalledWith(
       expect.objectContaining({
         set: expect.objectContaining({
+          source: "rss",
           sourceOverride: null,
           syncStatus: "ok",
           syncError: null,
           syncFailedAt: null,
-          consecutiveFailures: 0,
           nextRetryAt: null,
         }),
       }),
     );
+  });
+
+  // consecutiveFailures must be preserved on re-add, not zeroed: validation
+  // proves the URL is reachable, but the un-gated retry is what confirms the
+  // feed actually works. Zeroing here would restart the backoff ramp for a
+  // still-broken feed — see UNGATED_SYNC_STATE in feedSyncBackoff.ts.
+  it("preserves consecutiveFailures on re-add", async () => {
+    await createFeedForUser(1, "https://example.com/feed.xml");
+    const { set } = mockOnConflictDoUpdate.mock.calls[0][0];
+    expect(set).not.toHaveProperty("consecutiveFailures");
   });
 });

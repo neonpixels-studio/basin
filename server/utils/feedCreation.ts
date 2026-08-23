@@ -11,7 +11,7 @@ import {
 } from "./feedLimit";
 import { fetchFeedBody, validateFeedContent } from "./feedValidator";
 import { detectFeedSource } from "./feedSourceDetector";
-import { CLEARED_SYNC_FAILURE_STATE } from "./feedSyncStatus";
+import { UNGATED_SYNC_STATE } from "./feedSyncBackoff";
 
 const FEED_VALIDATION_TIMEOUT_MS = 10_000;
 
@@ -130,12 +130,13 @@ async function upsertFeed(
         target: [feeds.userId, feeds.url],
         // Re-adding an existing URL only reaches here after validateWithTimeout
         // has fetched and validated it, which proves the URL is reachable and
-        // serving a valid feed again. Clear any recorded failure and retry
-        // backoff so a repaired feed isn't left gated by nextRetryAt for up to
-        // a day. Spread first so the source/override for this add win over the
-        // shared defaults, not the other way round.
+        // serving a valid feed again. Un-gate any retry backoff so a repaired
+        // feed isn't left gated by nextRetryAt for up to a day (UNGATED_SYNC_STATE
+        // preserves consecutiveFailures — one retry, then back to the cap if it
+        // fails again). Spread first so the source/override for this add win
+        // over the shared defaults, not the other way round.
         set: {
-          ...CLEARED_SYNC_FAILURE_STATE,
+          ...UNGATED_SYNC_STATE,
           source: resolvedSource,
           sourceOverride: sourceOverride ?? null,
         },

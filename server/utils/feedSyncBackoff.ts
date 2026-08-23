@@ -9,6 +9,13 @@
 // doubles the wait, up to MAX_BACKOFF_MS. A successful sync resets the
 // consecutive-failure count (see persistSyncSuccess), so the delay collapses
 // back to nothing.
+//
+// This module is deliberately free of Nuxt-runtime imports (no useDb /
+// useRuntimeConfig) so the Netlify functions in netlify/functions/, which run
+// outside Nitro, can import it. The "cleared state" write-shapes below live
+// here for the same reason.
+import { feeds } from "../db/schema";
+import { SYNC_STATUS } from "./syncStatus";
 
 // Consecutive-failure count for a feed that has never failed, has just
 // succeeded, or has been repaired. Named so every "no backoff" read and write
@@ -32,7 +39,7 @@ const MAX_BACKOFF_EXPONENT = 30;
 // consecutive failures a feed has accumulated. Zero failures means no
 // backoff at all.
 export function computeBackoffDelayMs(consecutiveFailures: number): number {
-  if (consecutiveFailures <= 0) {
+  if (consecutiveFailures <= NO_CONSECUTIVE_FAILURES) {
     return 0;
   }
 
@@ -48,9 +55,36 @@ export function computeNextRetryAt(
   consecutiveFailures: number,
   from: Date,
 ): Date | null {
-  if (consecutiveFailures <= 0) {
+  if (consecutiveFailures <= NO_CONSECUTIVE_FAILURES) {
     return null;
   }
 
   return new Date(from.getTime() + computeBackoffDelayMs(consecutiveFailures));
 }
+
+// Column values for a feed that has just synced successfully: proven healthy,
+// so the failure history is forgiven and the backoff collapses to nothing.
+// `satisfies` ties the shape to the feeds insert type, so a column rename or a
+// value that stops matching its column is caught at compile time.
+export const HEALTHY_SYNC_STATE = {
+  syncStatus: SYNC_STATUS.OK,
+  syncError: null,
+  syncFailedAt: null,
+  consecutiveFailures: NO_CONSECUTIVE_FAILURES,
+  nextRetryAt: null,
+} as const satisfies Partial<typeof feeds.$inferInsert>;
+
+// Column values for a feed whose *cause* may have just been fixed — an account
+// reconnect or a repaired URL re-add — but which hasn't actually synced yet.
+// Clears the "needs attention" display state and un-gates the feed for one
+// retry (nextRetryAt null), but deliberately preserves consecutiveFailures: if
+// the feed is still broken (e.g. a dead channel URL a reconnect can't fix), the
+// next failure feeds the preserved count into computeNextRetryAt and jumps
+// straight back to the cap instead of restarting the 15-minute ramp. So a
+// repaired feed syncs immediately; a still-broken one costs exactly one retry.
+export const UNGATED_SYNC_STATE = {
+  syncStatus: SYNC_STATUS.OK,
+  syncError: null,
+  syncFailedAt: null,
+  nextRetryAt: null,
+} as const satisfies Partial<typeof feeds.$inferInsert>;
