@@ -1,19 +1,24 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const { mockGetOrCreateStripeCustomerId, mockCreateCheckoutSession } =
-  vi.hoisted(() => ({
-    mockGetOrCreateStripeCustomerId: vi.fn(),
-    mockCreateCheckoutSession: vi.fn(),
-  }));
+const {
+  mockGetOrCreateStripeCustomerId,
+  mockCreateCheckoutSession,
+  mockGetConfiguredSiteUrl,
+} = vi.hoisted(() => ({
+  mockGetOrCreateStripeCustomerId: vi.fn(),
+  mockCreateCheckoutSession: vi.fn(),
+  mockGetConfiguredSiteUrl: vi.fn(),
+}));
 vi.mock("../../../../server/utils/subscriptions", () => ({
   getOrCreateStripeCustomerId: mockGetOrCreateStripeCustomerId,
 }));
 vi.mock("../../../../server/utils/stripe", () => ({
   createCheckoutSession: mockCreateCheckoutSession,
 }));
+vi.mock("../../../../server/utils/siteUrl", () => ({
+  getConfiguredSiteUrl: mockGetConfiguredSiteUrl,
+}));
 
-const mockGetRequestURL = vi.fn();
-vi.stubGlobal("getRequestURL", mockGetRequestURL);
 // The shared readBody stub (tests/setup.ts) coerces a missing body to `{}`,
 // which can't exercise the real Nitro behavior of resolving to `undefined`
 // for a genuinely empty request body — override it per-test where needed.
@@ -25,9 +30,7 @@ import handler from "../../../../server/api/billing/checkout.post";
 describe("POST /api/billing/checkout", () => {
   beforeEach(() => {
     vi.resetAllMocks();
-    mockGetRequestURL.mockReturnValue(
-      new URL("https://example.com/api/billing/checkout"),
-    );
+    mockGetConfiguredSiteUrl.mockReturnValue("https://example.com");
     mockReadBody.mockImplementation((event: { body?: unknown }) =>
       Promise.resolve(event.body ?? {}),
     );
@@ -89,10 +92,8 @@ describe("POST /api/billing/checkout", () => {
     );
   });
 
-  it("builds success/cancel URLs from the request origin", async () => {
-    mockGetRequestURL.mockReturnValue(
-      new URL("https://myapp.com/api/billing/checkout"),
-    );
+  it("builds success/cancel URLs from the configured site URL, not the request host", async () => {
+    mockGetConfiguredSiteUrl.mockReturnValue("https://basin.example");
     const event = {
       context: { user: { id: 1 } },
       body: { interval: "year" },
@@ -100,8 +101,8 @@ describe("POST /api/billing/checkout", () => {
     await handler(event);
     expect(mockCreateCheckoutSession).toHaveBeenCalledWith(
       expect.objectContaining({
-        successUrl: "https://myapp.com/settings/account?checkout=success",
-        cancelUrl: "https://myapp.com/pricing?checkout=cancelled",
+        successUrl: "https://basin.example/settings/account?checkout=success",
+        cancelUrl: "https://basin.example/pricing?checkout=cancelled",
       }),
     );
   });

@@ -2,6 +2,7 @@ import {
   createCheckoutSession,
   type BillingInterval,
 } from "../../utils/stripe";
+import { getConfiguredSiteUrl } from "../../utils/siteUrl";
 import { getOrCreateStripeCustomerId } from "../../utils/subscriptions";
 
 const VALID_INTERVALS = new Set<BillingInterval>(["month", "year"]);
@@ -35,13 +36,13 @@ export default defineEventHandler(async (event) => {
   // verifies the customer's email during the session instead.
   const customerId = await getOrCreateStripeCustomerId(user.id, null);
 
-  const { origin } = getRequestURL(event);
+  const baseUrl = getConfiguredSiteUrl();
   const session = await createCheckoutSession({
     customerId,
     interval: body.interval,
     userId: user.id,
-    successUrl: `${origin}/settings/account?checkout=success`,
-    cancelUrl: `${origin}/pricing?checkout=cancelled`,
+    successUrl: `${baseUrl}/settings/account?checkout=success`,
+    cancelUrl: `${baseUrl}/pricing?checkout=cancelled`,
   });
 
   if (!session.url) {
