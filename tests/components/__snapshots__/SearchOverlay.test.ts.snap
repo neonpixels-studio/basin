@@ -48,7 +48,7 @@ exports[`SearchOverlay > matches snapshot (open, search request failed) 1`] = `
     </div>
     <div class="search-results">
       <div class="search-error" role="alert">
-        <p>Search is unavailable right now. Please try again.</p><button class="btn">Retry</button>
+        <p>Search is unavailable right now. Please try again.</p><button class="btn"> Retry </button>
       </div>
       <!--v-if-->
     </div>

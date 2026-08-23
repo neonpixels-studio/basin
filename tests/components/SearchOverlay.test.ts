@@ -149,6 +149,41 @@ describe("SearchOverlay", () => {
     expect(wrapper.text()).toContain("No matches");
   });
 
+  it("re-runs the failed query and clears the error when Retry is clicked", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("network down"))
+      .mockResolvedValueOnce([]);
+    const wrapper = await runSearch(fetchMock);
+    expect(wrapper.find(".search-error").exists()).toBe(true);
+
+    await wrapper.find(".search-error .btn").trigger("click");
+    await vi.runAllTimersAsync();
+    await flushPromises();
+    await wrapper.vm.$nextTick();
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1][0]).toContain(
+      encodeURIComponent(NO_PAGE_MATCH_QUERY),
+    );
+    expect(wrapper.find(".search-error").exists()).toBe(false);
+    expect(wrapper.text()).toContain("No matches");
+  });
+
+  it("keeps the error banner when a retry fails again", async () => {
+    const wrapper = await runSearch(
+      vi.fn().mockRejectedValue(new Error("network down")),
+    );
+    expect(wrapper.find(".search-error").exists()).toBe(true);
+
+    await wrapper.find(".search-error .btn").trigger("click");
+    await vi.runAllTimersAsync();
+    await flushPromises();
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.find(".search-error").exists()).toBe(true);
+  });
+
   it("does not surface an error when a failed request was superseded by a newer one", async () => {
     const firstRequest = deferred();
     const fetchMock = vi

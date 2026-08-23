@@ -208,14 +208,16 @@ onUnmounted(() => {
       </div>
 
       <div class="search-results">
-        <div v-if="searchLoading" class="empty">
+        <div v-if="searchLoading" class="empty" aria-live="polite">
           <p>Searching…</p>
         </div>
 
         <template v-else>
           <div v-if="searchError" class="search-error" role="alert">
             <p>Search is unavailable right now. Please try again.</p>
-            <button class="btn" @click="retrySearch">Retry</button>
+            <button class="btn" @keydown.enter.stop @click="retrySearch">
+              Retry
+            </button>
           </div>
 
           <template v-for="g in searchGroups" :key="g.label">
