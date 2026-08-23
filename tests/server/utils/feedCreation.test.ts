@@ -138,4 +138,23 @@ describe("createFeedForUser", () => {
       }),
     );
   });
+
+  // Re-adding a URL only reaches the upsert after validation proves the feed is
+  // reachable again, so a repaired feed must be un-gated: without clearing
+  // consecutiveFailures/nextRetryAt the scheduler leaves it backed off for up
+  // to a day (see server/utils/feedSyncBackoff.ts).
+  it("clears sync failure state and retry backoff when re-adding a repaired URL", async () => {
+    await createFeedForUser(1, "https://example.com/feed.xml");
+    expect(mockOnConflictDoUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        set: expect.objectContaining({
+          syncStatus: "ok",
+          syncError: null,
+          syncFailedAt: null,
+          consecutiveFailures: 0,
+          nextRetryAt: null,
+        }),
+      }),
+    );
+  });
 });

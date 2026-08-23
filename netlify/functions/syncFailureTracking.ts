@@ -2,6 +2,7 @@ import { ErrorDoNotRetry } from "@netlify/async-workloads";
 import { and, eq } from "drizzle-orm";
 import { feeds, integrations } from "../../server/db/schema";
 import { computeNextRetryAt } from "../../server/utils/feedSyncBackoff";
+import { CLEARED_SYNC_FAILURE_STATE } from "../../server/utils/feedSyncStatus";
 import { SYNC_STATUS } from "../../server/utils/syncStatus";
 import { createDb } from "./db";
 
@@ -108,14 +109,7 @@ async function recordFeedSyncSuccess(
   const db = createDb();
   await db
     .update(feeds)
-    .set({
-      lastFetched: syncedAt,
-      syncStatus: SYNC_STATUS.OK,
-      syncError: null,
-      syncFailedAt: null,
-      consecutiveFailures: NO_CONSECUTIVE_FAILURES,
-      nextRetryAt: null,
-    })
+    .set({ lastFetched: syncedAt, ...CLEARED_SYNC_FAILURE_STATE })
     .where(and(eq(feeds.id, feedId), eq(feeds.userId, userId)));
 }
 

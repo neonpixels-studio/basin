@@ -16,7 +16,7 @@ function makeDb() {
 describe("clearFeedSyncFailures", () => {
   beforeEach(() => vi.resetAllMocks());
 
-  it("clears syncStatus, syncError, and syncFailedAt for the user's feeds of that source", async () => {
+  it("clears the failure state and retry backoff for the user's feeds of that source", async () => {
     const { db, set } = makeDb();
 
     await clearFeedSyncFailures(db, 1, "youtube");
@@ -25,6 +25,8 @@ describe("clearFeedSyncFailures", () => {
       syncStatus: "ok",
       syncError: null,
       syncFailedAt: null,
+      consecutiveFailures: 0,
+      nextRetryAt: null,
     });
   });
 

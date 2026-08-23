@@ -11,6 +11,7 @@ import {
 } from "./feedLimit";
 import { fetchFeedBody, validateFeedContent } from "./feedValidator";
 import { detectFeedSource } from "./feedSourceDetector";
+import { CLEARED_SYNC_FAILURE_STATE } from "./feedSyncStatus";
 
 const FEED_VALIDATION_TIMEOUT_MS = 10_000;
 
@@ -127,7 +128,15 @@ async function upsertFeed(
       })
       .onConflictDoUpdate({
         target: [feeds.userId, feeds.url],
-        set: { source: resolvedSource, sourceOverride: sourceOverride ?? null },
+        // Re-adding an existing URL only reaches here after validateWithTimeout
+        // has fetched and validated it, which proves the feed is reachable
+        // again. Clear any recorded failure and retry backoff so a repaired
+        // feed isn't left gated by nextRetryAt for up to a day.
+        set: {
+          source: resolvedSource,
+          sourceOverride: sourceOverride ?? null,
+          ...CLEARED_SYNC_FAILURE_STATE,
+        },
       })
       .returning();
     return feed;
