@@ -47,6 +47,13 @@ describe("getConfiguredSiteUrl", () => {
     );
   });
 
+  it("throws 500 rather than silently stripping embedded credentials", () => {
+    runtimeConfigValue.value = { siteUrl: "https://ops:secret@basin.example" };
+    expect(() => getConfiguredSiteUrl()).toThrowError(
+      expect.objectContaining({ statusCode: 500 }),
+    );
+  });
+
   it("throws 500 when the site URL is missing", () => {
     runtimeConfigValue.value = { siteUrl: "" };
     // Assert the message so this exercises the explicit missing-value guard and

@@ -107,6 +107,23 @@ describe("POST /api/billing/checkout", () => {
     );
   });
 
+  it("does not create a Stripe customer when the site URL is unconfigured", async () => {
+    // The redirect base is resolved before the customer is created so a
+    // misconfigured site URL can't leave an orphaned Stripe customer behind.
+    mockGetConfiguredSiteUrl.mockImplementation(() => {
+      throw Object.assign(new Error("Site URL is not configured"), {
+        statusCode: 500,
+      });
+    });
+    const event = {
+      context: { user: { id: 1 } },
+      body: { interval: "month" },
+    };
+    await expect(handler(event)).rejects.toMatchObject({ statusCode: 500 });
+    expect(mockGetOrCreateStripeCustomerId).not.toHaveBeenCalled();
+    expect(mockCreateCheckoutSession).not.toHaveBeenCalled();
+  });
+
   it("never forwards a client-supplied email to the customer lookup", async () => {
     const event = {
       context: { user: { id: 1 } },
