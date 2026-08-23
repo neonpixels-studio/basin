@@ -106,17 +106,17 @@ describe("backfillRowReportingFailure", () => {
       throw new Error("connection lost");
     });
 
-    const outcome = await backfillRowReportingFailure(
-      throwingSql as never,
-      { providerId: "user_abc" },
-      0,
-    );
+    const outcome = await backfillRowReportingFailure(throwingSql as never, {
+      providerId: "user_abc",
+    });
 
     expect(outcome).toBe("failed");
     expect(consoleError).toHaveBeenCalled();
-    // The raw provider id must never appear in logs — the whole point of #215.
     const loggedText = consoleError.mock.calls.map(String).join(" ");
+    // The raw provider id must never appear in logs — the whole point of #215 —
+    // but the stable, safe-to-log target hash should, to locate the row.
     expect(loggedText).not.toContain("user_abc");
+    expect(loggedText).toContain(hashProviderId("user_abc"));
     consoleError.mockRestore();
   });
 });

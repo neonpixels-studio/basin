@@ -2,7 +2,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { inArray } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
 import { deletionTombstones } from "../../../server/db/schema";
-import { hashProviderId } from "../../../server/utils/tombstoneHash";
+import {
+  hashProviderId,
+  TombstonePepperError,
+} from "../../../server/utils/tombstoneHash";
 
 // Fixed so hashProviderId is deterministic across the assertions below.
 const TEST_TOMBSTONE_PEPPER = "test-tombstone-pepper-0123456789";
@@ -81,6 +84,15 @@ describe("tombstone", () => {
 
       await expect(isProviderTombstoned("clerk_live")).resolves.toBe(false);
     });
+
+    it("fails closed: throws (never reports 'not tombstoned') when the pepper is unset", async () => {
+      vi.stubEnv("TOMBSTONE_ID_PEPPER", "");
+
+      await expect(isProviderTombstoned("clerk_gone")).rejects.toThrow(
+        TombstonePepperError,
+      );
+      expect(mockTombstoneFindFirst).not.toHaveBeenCalled();
+    });
   });
 
   describe("recordDeletionTombstone", () => {
@@ -92,6 +104,15 @@ describe("tombstone", () => {
       expect(insertedValue).toBe(hashProviderId("clerk_gone"));
       expect(insertedValue).not.toBe("clerk_gone");
       expect(mockOnConflictDoNothing).toHaveBeenCalled();
+    });
+
+    it("fails closed: throws and writes nothing when the pepper is unset", async () => {
+      vi.stubEnv("TOMBSTONE_ID_PEPPER", "");
+
+      await expect(recordDeletionTombstone("clerk_gone")).rejects.toThrow(
+        TombstonePepperError,
+      );
+      expect(mockInsert).not.toHaveBeenCalled();
     });
   });
 });

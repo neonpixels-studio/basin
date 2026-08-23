@@ -90,9 +90,10 @@ verifies JWTs networklessly). The marker is `sha256(provider_id + pepper)`, not
 the raw Clerk id, so the retained value is a one-way equality token rather than
 a re-linkable pseudonymous identifier — see
 [`server/utils/tombstoneHash.ts`](server/utils/tombstoneHash.ts). Requires
-`TOMBSTONE_ID_PEPPER` (see [`.env.example`](.env.example)); lookups tolerate
-legacy raw rows written before hashing was added, but run the one-off backfill
-once per environment to migrate them:
+`TOMBSTONE_ID_PEPPER` (see [`.env.example`](.env.example)); treat it as
+permanent once set, since changing it orphans every existing tombstone. Lookups
+tolerate legacy raw rows written before hashing was added, but run the one-off
+backfill once per environment to migrate them:
 
 ```bash
 npm run tombstones:backfill                  # local (.env)

@@ -14,9 +14,12 @@ import { hashProviderId } from "./tombstoneHash";
 export async function recordDeletionTombstone(
   providerId: string,
 ): Promise<void> {
+  // Hash first so a missing pepper throws before any DB write — the deletion
+  // sweep must never delete account data and then fail to record the tombstone.
+  const providerIdHash = hashProviderId(providerId);
   await useDb()
     .insert(deletionTombstones)
-    .values({ providerId: hashProviderId(providerId) })
+    .values({ providerId: providerIdHash })
     .onConflictDoNothing();
 }
 
@@ -32,6 +35,8 @@ export async function isProviderTombstoned(
   const tombstone = await useDb().query.deletionTombstones.findFirst({
     where: inArray(deletionTombstones.providerId, [
       hashProviderId(providerId),
+      // @todo Drop the raw-id arm once every environment has run
+      // scripts/backfill-hash-tombstones.ts, so no legacy raw rows remain.
       providerId,
     ]),
   });

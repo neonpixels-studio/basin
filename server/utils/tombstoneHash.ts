@@ -7,15 +7,24 @@
 // Isolated in its own module so the peppered hash can be unit-tested without a
 // database, mirroring server/utils/crypto.ts's separation of a secret-keyed
 // primitive from its call sites.
+//
+// The pepper is NOT rotatable once tombstones exist: the raw provider ids are
+// gone (never stored, and the backfill purges legacy ones), so a changed pepper
+// orphans every existing tombstone and silently reopens the resurrection gap
+// for previously-deleted accounts. Same one-way constraint as
+// TOKEN_ENCRYPTION_KEY. Supporting a retired-pepper list is a possible future
+// hardening; today the value must be treated as permanent per environment.
 import { createHash } from "node:crypto";
 
 const HASH_ALGORITHM = "sha256";
 const HASH_OUTPUT_ENCODING = "hex";
 
-// A sha256 hex digest is always 64 hex characters. A raw Clerk provider id
-// ("user_...") never matches this, so the shape doubles as a detector for
-// legacy rows written before hashing existed.
-const HASHED_PROVIDER_ID_PATTERN = /^[0-9a-f]{64}$/i;
+// digest("hex") always emits 64 lowercase hex characters. A raw Clerk provider
+// id ("user_...") never matches this, so the shape doubles as a detector for
+// legacy rows written before hashing existed. Case-sensitive on purpose: our
+// own hashes are always lowercase, so accepting uppercase would only widen the
+// false-positive surface.
+const HASHED_PROVIDER_ID_PATTERN = /^[0-9a-f]{64}$/;
 
 // A pepper shorter than this is almost certainly a placeholder or a typo rather
 // than a real secret; fail loud instead of silently weakening the hash.

@@ -43,10 +43,17 @@ function connectToDatabase(): SqlTag {
   return neon(databaseUrl) as unknown as SqlTag;
 }
 
-async function fetchTombstoneRows(sql: SqlTag): Promise<TombstoneRow[]> {
+// Only legacy raw rows need migrating, so filter server-side rather than
+// pulling the whole (append-only, never-pruned) table across the wire and
+// discarding hashed rows in JS. A stable ORDER BY makes the failure log's row
+// position meaningful across re-runs. backfillRow keeps its own
+// isHashedProviderId guard as defence-in-depth.
+async function fetchLegacyTombstoneRows(sql: SqlTag): Promise<TombstoneRow[]> {
   const rows = await sql`
     SELECT provider_id AS "providerId"
     FROM deletion_tombstones
+    WHERE provider_id !~ '^[0-9a-f]{64}$'
+    ORDER BY provider_id
   `;
   return rows as TombstoneRow[];
 }
@@ -93,15 +100,19 @@ export async function backfillRow(
 export async function backfillRowReportingFailure(
   sql: SqlTag,
   row: TombstoneRow,
-  rowIndex: number,
 ): Promise<BackfillOutcome | "failed"> {
   try {
     return await backfillRow(sql, row);
   } catch (error) {
-    // Never log row.providerId: a legacy raw Clerk id is exactly the value this
-    // change exists to stop retaining, so it must not leak into logs. The index
-    // is enough to locate the row on a re-run.
-    console.error(`tombstone row ${rowIndex} failed to backfill:`, error);
+    // Identify the row by its target hash, never by row.providerId: the raw
+    // Clerk id is exactly the value this change exists to stop retaining, so it
+    // must not leak into logs. The hash is safe to log (it's the value we were
+    // about to persist) and is stable across re-runs. main() has already
+    // verified the pepper, so this hashing cannot itself throw.
+    console.error(
+      `tombstone row (target hash ${hashProviderId(row.providerId)}) failed to backfill:`,
+      error,
+    );
     return "failed";
   }
 }
@@ -112,17 +123,22 @@ async function main(): Promise<void> {
   hashProviderId("pepper-preflight-probe");
 
   const sql = connectToDatabase();
-  const rows = await fetchTombstoneRows(sql);
+  const rows = await fetchLegacyTombstoneRows(sql);
 
   let migratedCount = 0;
+  let alreadyHashedCount = 0;
   let skippedNotFoundCount = 0;
   let failedCount = 0;
 
-  for (const [rowIndex, row] of rows.entries()) {
-    const outcome = await backfillRowReportingFailure(sql, row, rowIndex);
+  for (const row of rows) {
+    const outcome = await backfillRowReportingFailure(sql, row);
 
     if (outcome === "migrated") {
       migratedCount += 1;
+    }
+
+    if (outcome === "already-hashed") {
+      alreadyHashedCount += 1;
     }
 
     if (outcome === "skipped-not-found") {
@@ -134,13 +150,13 @@ async function main(): Promise<void> {
     }
   }
 
+  // Every fetched row lands in exactly one bucket, so the counts sum to
+  // rows.length — an operator can verify coverage by eye.
   console.log(
-    `Scanned ${rows.length} tombstone row(s); removed ${migratedCount} legacy raw provider id(s) (now retained only as a hash).` +
-      (skippedNotFoundCount > 0
-        ? ` Skipped ${skippedNotFoundCount} row(s) already removed concurrently — re-run to confirm.`
-        : "") +
+    `Found ${rows.length} legacy raw provider id(s); removed ${migratedCount} (now retained only as a hash), ` +
+      `${alreadyHashedCount} already hashed, ${skippedNotFoundCount} removed concurrently, ${failedCount} failed.` +
       (failedCount > 0
-        ? ` ${failedCount} row(s) failed — see errors above; re-run to retry them.`
+        ? " Re-run to retry the failures — see errors above."
         : ""),
   );
 
