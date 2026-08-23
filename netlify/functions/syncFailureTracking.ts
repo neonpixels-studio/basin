@@ -1,15 +1,13 @@
 import { ErrorDoNotRetry } from "@netlify/async-workloads";
 import { and, eq } from "drizzle-orm";
 import { feeds, integrations } from "../../server/db/schema";
-import { computeNextRetryAt } from "../../server/utils/feedSyncBackoff";
+import {
+  computeNextRetryAt,
+  NO_CONSECUTIVE_FAILURES,
+} from "../../server/utils/feedSyncBackoff";
 import { CLEARED_SYNC_FAILURE_STATE } from "../../server/utils/feedSyncStatus";
 import { SYNC_STATUS } from "../../server/utils/syncStatus";
 import { createDb } from "./db";
-
-// Consecutive-failure count for a feed that has never failed (or has just
-// succeeded). Kept as a named constant so the "reset on success" write reads
-// intentionally rather than as a bare 0.
-const NO_CONSECUTIVE_FAILURES = 0;
 
 // Maps a feed's sourceType to the integration provider it depends on. RSS
 // and podcast feeds have no backing integration, so they map to null and
@@ -109,7 +107,7 @@ async function recordFeedSyncSuccess(
   const db = createDb();
   await db
     .update(feeds)
-    .set({ lastFetched: syncedAt, ...CLEARED_SYNC_FAILURE_STATE })
+    .set({ ...CLEARED_SYNC_FAILURE_STATE, lastFetched: syncedAt })
     .where(and(eq(feeds.id, feedId), eq(feeds.userId, userId)));
 }
 

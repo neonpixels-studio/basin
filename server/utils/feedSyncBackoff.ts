@@ -10,6 +10,11 @@
 // consecutive-failure count (see persistSyncSuccess), so the delay collapses
 // back to nothing.
 
+// Consecutive-failure count for a feed that has never failed, has just
+// succeeded, or has been repaired. Named so every "no backoff" read and write
+// reads intentionally rather than as a bare 0.
+export const NO_CONSECUTIVE_FAILURES = 0;
+
 // One scheduler tick. The first failure waits a single tick before retrying,
 // matching the cadence a healthy feed already syncs at.
 const BASE_BACKOFF_MS = 15 * 60 * 1000;

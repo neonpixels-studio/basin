@@ -129,13 +129,15 @@ async function upsertFeed(
       .onConflictDoUpdate({
         target: [feeds.userId, feeds.url],
         // Re-adding an existing URL only reaches here after validateWithTimeout
-        // has fetched and validated it, which proves the feed is reachable
-        // again. Clear any recorded failure and retry backoff so a repaired
-        // feed isn't left gated by nextRetryAt for up to a day.
+        // has fetched and validated it, which proves the URL is reachable and
+        // serving a valid feed again. Clear any recorded failure and retry
+        // backoff so a repaired feed isn't left gated by nextRetryAt for up to
+        // a day. Spread first so the source/override for this add win over the
+        // shared defaults, not the other way round.
         set: {
+          ...CLEARED_SYNC_FAILURE_STATE,
           source: resolvedSource,
           sourceOverride: sourceOverride ?? null,
-          ...CLEARED_SYNC_FAILURE_STATE,
         },
       })
       .returning();

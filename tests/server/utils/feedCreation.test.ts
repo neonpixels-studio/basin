@@ -130,24 +130,18 @@ describe("createFeedForUser", () => {
   // the user manually overrode elsewhere will reset that override — this
   // test locks the behavior in so a future change to it is intentional, not
   // silent. See the note on createFeedForUser for the full explanation.
-  it("resets an existing sourceOverride to null when re-adding without one", async () => {
-    await createFeedForUser(1, "https://example.com/feed.xml");
-    expect(mockOnConflictDoUpdate).toHaveBeenCalledWith(
-      expect.objectContaining({
-        set: expect.objectContaining({ sourceOverride: null }),
-      }),
-    );
-  });
-
-  // Re-adding a URL only reaches the upsert after validation proves the feed is
-  // reachable again, so a repaired feed must be un-gated: without clearing
-  // consecutiveFailures/nextRetryAt the scheduler leaves it backed off for up
-  // to a day (see server/utils/feedSyncBackoff.ts).
-  it("clears sync failure state and retry backoff when re-adding a repaired URL", async () => {
+  // The conflict-update set clause covers two behaviors: it resets an existing
+  // sourceOverride to null when re-adding without one (pre-existing single-add
+  // behavior — see the note on createFeedForUser), and it clears any recorded
+  // sync failure and retry backoff so a repaired feed re-added after its origin
+  // recovered is un-gated instead of staying backed off for up to a day (see
+  // server/utils/feedSyncBackoff.ts).
+  it("resets sourceOverride and clears sync failure + backoff on re-add", async () => {
     await createFeedForUser(1, "https://example.com/feed.xml");
     expect(mockOnConflictDoUpdate).toHaveBeenCalledWith(
       expect.objectContaining({
         set: expect.objectContaining({
+          sourceOverride: null,
           syncStatus: "ok",
           syncError: null,
           syncFailedAt: null,
