@@ -46,7 +46,7 @@ exports[`SearchOverlay > matches snapshot (open, search request failed) 1`] = `
       </button>
     </div>
     <div class="search-results">
-      <div class="empty search-error" style="padding: 48px 20px;">
+      <div class="empty search-error" role="alert">
         <h3>Search unavailable</h3>
         <p>Something went wrong running that search. Please try again.</p>
       </div>

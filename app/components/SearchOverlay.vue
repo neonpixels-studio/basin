@@ -146,6 +146,9 @@ watch(
   () => state.query,
   (newQuery) => {
     state.cursor = 0;
+    // Clear the previous failure immediately so a stale "Search unavailable"
+    // never lingers over a query that has not been attempted yet.
+    searchError.value = null;
     clearTimeout(debounceTimer);
     // Cancel any in-flight request immediately so it cannot overwrite results
     // for the new query while the debounce delay is pending.
@@ -194,7 +197,7 @@ onUnmounted(() => {
       </div>
 
       <div class="search-results">
-        <div v-if="searchLoading" class="empty" style="padding: 48px 20px">
+        <div v-if="searchLoading" class="empty">
           <p>Searching…</p>
         </div>
 
@@ -240,19 +243,15 @@ onUnmounted(() => {
           </template>
 
           <div
-            v-if="searchError"
+            v-if="searchError && !searchFlat.length"
             class="empty search-error"
-            style="padding: 48px 20px"
+            role="alert"
           >
             <h3>Search unavailable</h3>
             <p>Something went wrong running that search. Please try again.</p>
           </div>
 
-          <div
-            v-else-if="!searchFlat.length"
-            class="empty"
-            style="padding: 48px 20px"
-          >
+          <div v-else-if="!searchFlat.length" class="empty">
             <h3>No matches</h3>
             <p>Try a different word, source, or tag.</p>
           </div>
@@ -317,6 +316,9 @@ onUnmounted(() => {
   max-height: 56vh;
   overflow-y: auto;
   padding: 8px;
+}
+.search-results .empty {
+  padding: 48px 20px;
 }
 .sr-group {
   font-size: 10px;
