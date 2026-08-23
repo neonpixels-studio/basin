@@ -240,7 +240,16 @@ onUnmounted(() => {
           </template>
 
           <div
-            v-if="!searchLoading && !searchFlat.length"
+            v-if="searchError"
+            class="empty search-error"
+            style="padding: 48px 20px"
+          >
+            <h3>Search unavailable</h3>
+            <p>Something went wrong running that search. Please try again.</p>
+          </div>
+
+          <div
+            v-else-if="!searchFlat.length"
             class="empty"
             style="padding: 48px 20px"
           >
@@ -363,6 +372,9 @@ onUnmounted(() => {
 .sr-arrow {
   color: var(--faint);
   flex: none;
+}
+.search-error h3 {
+  color: var(--danger);
 }
 .search-foot {
   display: flex;

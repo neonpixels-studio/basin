@@ -36,3 +36,22 @@ exports[`SearchOverlay > matches snapshot (open, empty query) 1`] = `
   </div>
 </div>"
 `;
+
+exports[`SearchOverlay > matches snapshot (open, search request failed) 1`] = `
+"<div class="search-scrim">
+  <div class="search-modal">
+    <div class="search-in">
+      <r-icon-stub name="search" size="22"></r-icon-stub><input id="reader-search-input" placeholder="search posts, podcasts, videos, pages…"><span class="kbd">esc</span><button class="icon-btn">
+        <r-icon-stub name="x" size="18"></r-icon-stub>
+      </button>
+    </div>
+    <div class="search-results">
+      <div class="empty search-error" style="padding: 48px 20px;">
+        <h3>Search unavailable</h3>
+        <p>Something went wrong running that search. Please try again.</p>
+      </div>
+    </div>
+    <div class="search-foot"><span class="hint"><span class="kbd">↑↓</span> navigate</span><span class="hint"><span class="kbd">↵</span> open</span><span class="hint"><span class="kbd">esc</span> close</span></div>
+  </div>
+</div>"
+`;
