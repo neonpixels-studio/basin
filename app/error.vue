@@ -32,10 +32,7 @@ function goHome() {
 </script>
 
 <template>
-  <div
-    role="alert"
-    class="grid min-h-screen place-items-center p-10 text-center"
-  >
+  <div class="flex min-h-screen items-center justify-center p-10 text-center">
     <div>
       <div class="mb-7 flex justify-center opacity-90">
         <RLogo :size="74" />

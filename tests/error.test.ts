@@ -1,13 +1,22 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { shallowMount } from "@vue/test-utils";
 import ErrorPage from "~/error.vue";
 
 const sampleError = { statusCode: 500, statusMessage: "Internal Server Error" };
 
 describe("error.vue (fatal error page)", () => {
+  let clearError;
+  let useHead;
+
   beforeEach(() => {
-    globalThis.clearError = vi.fn();
-    globalThis.useHead = vi.fn();
+    clearError = vi.fn();
+    useHead = vi.fn();
+    vi.stubGlobal("clearError", clearError);
+    vi.stubGlobal("useHead", useHead);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it("renders the error status code", () => {
@@ -36,10 +45,17 @@ describe("error.vue (fatal error page)", () => {
     expect(wrapper.text()).toContain("Something threw us off the trail.");
   });
 
+  it("sets the document title to the error message", () => {
+    shallowMount(ErrorPage, { props: { error: sampleError } });
+    expect(useHead).toHaveBeenCalledTimes(1);
+    const [headArg] = useHead.mock.calls[0];
+    expect(headArg.title.value).toBe("Internal Server Error");
+  });
+
   it("re-renders the current route via clearError on Try again", async () => {
     const wrapper = shallowMount(ErrorPage, { props: { error: sampleError } });
     await wrapper.find("button.btn-primary").trigger("click");
-    expect(globalThis.clearError).toHaveBeenCalledWith();
+    expect(clearError).toHaveBeenCalledWith();
   });
 
   it("clears the error and redirects home on Back to your feed", async () => {
@@ -47,8 +63,9 @@ describe("error.vue (fatal error page)", () => {
     const backButton = wrapper
       .findAll("button")
       .find((button) => button.text().includes("Back to your feed"));
+    expect(backButton).toBeDefined();
     await backButton.trigger("click");
-    expect(globalThis.clearError).toHaveBeenCalledWith({
+    expect(clearError).toHaveBeenCalledWith({
       redirect: "/dashboard",
     });
   });
