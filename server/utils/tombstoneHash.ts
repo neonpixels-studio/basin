@@ -39,6 +39,11 @@ function getTombstonePepper(): string {
 
 // Peppered so an attacker who exfiltrates the tombstone table still cannot
 // confirm a guessed provider id by hashing it without also holding the pepper.
+// The construction is sha256(provider_id + pepper) as issue #215 specifies —
+// deliberately the concatenation form, not HMAC: the value is only ever
+// compared for equality (never used as a MAC), and the secret pepper already
+// defeats precomputation, so H(message || secret) is sufficient here. Changing
+// the construction later would invalidate every stored hash, so it is pinned.
 export function hashProviderId(providerId: string): string {
   const pepper = getTombstonePepper();
 

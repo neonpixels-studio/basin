@@ -93,16 +93,24 @@ export async function backfillRow(
 export async function backfillRowReportingFailure(
   sql: SqlTag,
   row: TombstoneRow,
+  rowIndex: number,
 ): Promise<BackfillOutcome | "failed"> {
   try {
     return await backfillRow(sql, row);
   } catch (error) {
-    console.error(`tombstone ${row.providerId} failed to backfill:`, error);
+    // Never log row.providerId: a legacy raw Clerk id is exactly the value this
+    // change exists to stop retaining, so it must not leak into logs. The index
+    // is enough to locate the row on a re-run.
+    console.error(`tombstone row ${rowIndex} failed to backfill:`, error);
     return "failed";
   }
 }
 
 async function main(): Promise<void> {
+  // Fail fast on a missing/short pepper before any DB work, so the operator
+  // gets one clear TombstonePepperError instead of the same failure per row.
+  hashProviderId("pepper-preflight-probe");
+
   const sql = connectToDatabase();
   const rows = await fetchTombstoneRows(sql);
 
@@ -110,8 +118,8 @@ async function main(): Promise<void> {
   let skippedNotFoundCount = 0;
   let failedCount = 0;
 
-  for (const row of rows) {
-    const outcome = await backfillRowReportingFailure(sql, row);
+  for (const [rowIndex, row] of rows.entries()) {
+    const outcome = await backfillRowReportingFailure(sql, row, rowIndex);
 
     if (outcome === "migrated") {
       migratedCount += 1;
@@ -127,7 +135,7 @@ async function main(): Promise<void> {
   }
 
   console.log(
-    `Scanned ${rows.length} tombstone row(s); hashed ${migratedCount} legacy raw provider id(s).` +
+    `Scanned ${rows.length} tombstone row(s); removed ${migratedCount} legacy raw provider id(s) (now retained only as a hash).` +
       (skippedNotFoundCount > 0
         ? ` Skipped ${skippedNotFoundCount} row(s) already removed concurrently — re-run to confirm.`
         : "") +

@@ -10,23 +10,25 @@ import {
 
 const TEST_PEPPER = "test-tombstone-pepper-0123456789";
 
-// A minimal stand-in for neon's tagged-template SQL client: records the
-// interpolated values from each call and returns a canned result, so
-// backfillRow's UPDATE logic can be tested without a real DB connection.
+// A minimal stand-in for neon's tagged-template SQL client: records the query
+// text and interpolated values from each call and returns a canned result, so
+// backfillRow's SQL can be tested without a real DB connection.
 function createFakeSql(results: unknown[][]) {
   const calls: unknown[][] = [];
+  const statements: string[] = [];
   let callIndex = 0;
 
   const fakeSql = vi.fn(
-    async (_strings: TemplateStringsArray, ...values: unknown[]) => {
+    async (strings: TemplateStringsArray, ...values: unknown[]) => {
       calls.push(values);
+      statements.push(strings.join("?"));
       const result = results[callIndex] ?? [];
       callIndex += 1;
       return result;
     },
   );
 
-  return { fakeSql, calls };
+  return { fakeSql, calls, statements };
 }
 
 describe("backfillRow", () => {
@@ -62,6 +64,22 @@ describe("backfillRow", () => {
     ).toBe(true);
   });
 
+  it("deletes the raw row and re-inserts under the hash preserving deleted_at, with a conflict guard", async () => {
+    const { fakeSql, statements } = createFakeSql([
+      [{ provider_id: "user_abc" }],
+    ]);
+
+    await backfillRow(fakeSql, { providerId: "user_abc" });
+
+    const statement = statements[0];
+    expect(statement).toContain("DELETE FROM deletion_tombstones");
+    expect(statement).toContain(
+      "INSERT INTO deletion_tombstones (provider_id, deleted_at)",
+    );
+    expect(statement).toContain("deleted_at FROM deleted");
+    expect(statement).toContain("ON CONFLICT (provider_id) DO NOTHING");
+  });
+
   it("reports skipped-not-found when the raw row was already removed concurrently", async () => {
     const { fakeSql } = createFakeSql([[]]);
 
@@ -88,12 +106,17 @@ describe("backfillRowReportingFailure", () => {
       throw new Error("connection lost");
     });
 
-    const outcome = await backfillRowReportingFailure(throwingSql as never, {
-      providerId: "user_abc",
-    });
+    const outcome = await backfillRowReportingFailure(
+      throwingSql as never,
+      { providerId: "user_abc" },
+      0,
+    );
 
     expect(outcome).toBe("failed");
     expect(consoleError).toHaveBeenCalled();
+    // The raw provider id must never appear in logs — the whole point of #215.
+    const loggedText = consoleError.mock.calls.map(String).join(" ");
+    expect(loggedText).not.toContain("user_abc");
     consoleError.mockRestore();
   });
 });
