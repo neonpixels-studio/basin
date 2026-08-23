@@ -21,7 +21,6 @@ const nuxtGlobals = {
   useState: "readonly",
   navigateTo: "readonly",
   clearError: "readonly",
-  useError: "readonly",
   ref: "readonly",
   computed: "readonly",
   watch: "readonly",

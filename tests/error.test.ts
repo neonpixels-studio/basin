@@ -7,6 +7,7 @@ const sampleError = { statusCode: 500, statusMessage: "Internal Server Error" };
 describe("error.vue (fatal error page)", () => {
   beforeEach(() => {
     globalThis.clearError = vi.fn();
+    globalThis.useHead = vi.fn();
   });
 
   it("renders the error status code", () => {
@@ -25,9 +26,28 @@ describe("error.vue (fatal error page)", () => {
     expect(wrapper.text()).toContain("Something threw us off the trail.");
   });
 
-  it("clears the error and redirects home on Back to your feed", async () => {
+  it("never surfaces raw error.message to the user", () => {
+    const leaky = {
+      statusCode: 500,
+      message: "Cannot read properties of undefined",
+    };
+    const wrapper = shallowMount(ErrorPage, { props: { error: leaky } });
+    expect(wrapper.text()).not.toContain("Cannot read properties");
+    expect(wrapper.text()).toContain("Something threw us off the trail.");
+  });
+
+  it("re-renders the current route via clearError on Try again", async () => {
     const wrapper = shallowMount(ErrorPage, { props: { error: sampleError } });
     await wrapper.find("button.btn-primary").trigger("click");
+    expect(globalThis.clearError).toHaveBeenCalledWith();
+  });
+
+  it("clears the error and redirects home on Back to your feed", async () => {
+    const wrapper = shallowMount(ErrorPage, { props: { error: sampleError } });
+    const backButton = wrapper
+      .findAll("button")
+      .find((button) => button.text().includes("Back to your feed"));
+    await backButton.trigger("click");
     expect(globalThis.clearError).toHaveBeenCalledWith({
       redirect: "/dashboard",
     });

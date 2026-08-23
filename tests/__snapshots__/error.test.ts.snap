@@ -1,7 +1,7 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
 exports[`error.vue (fatal error page) > matches snapshot 1`] = `
-"<div class="grid min-h-screen place-items-center p-10 text-center">
+"<div role="alert" class="grid min-h-screen place-items-center p-10 text-center">
   <div>
     <div class="mb-7 flex justify-center opacity-90">
       <r-logo-stub size="74"></r-logo-stub>
@@ -10,6 +10,8 @@ exports[`error.vue (fatal error page) > matches snapshot 1`] = `
     <div class="text-ink mt-3.5 mb-1.5 text-[16px]">Internal Server Error</div>
     <p class="text-muted m-0 mb-7 text-[13px]"> We hit a snag loading this. Try again, or head back to your feed. </p>
     <div class="flex justify-center gap-2.5"><button class="btn btn-primary">
+        <r-icon-stub name="refresh" size="16"></r-icon-stub> Try again
+      </button><button class="btn">
         <r-icon-stub name="inbox" size="16"></r-icon-stub> Back to your feed
       </button></div>
   </div>

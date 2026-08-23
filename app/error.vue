@@ -16,9 +16,15 @@ const DEFAULT_MESSAGE = "Something threw us off the trail.";
 const statusCode = computed(
   () => props.error?.statusCode ?? DEFAULT_STATUS_CODE,
 );
-const message = computed(
-  () => props.error?.statusMessage || props.error?.message || DEFAULT_MESSAGE,
-);
+// Only surface statusMessage — never error.message, which can carry raw JS
+// throw text, upstream API detail, or DB driver messages to the end user.
+const message = computed(() => props.error?.statusMessage || DEFAULT_MESSAGE);
+
+useHead({ title: message });
+
+function retry() {
+  clearError();
+}
 
 function goHome() {
   clearError({ redirect: HOME_PATH });
@@ -26,7 +32,10 @@ function goHome() {
 </script>
 
 <template>
-  <div class="grid min-h-screen place-items-center p-10 text-center">
+  <div
+    role="alert"
+    class="grid min-h-screen place-items-center p-10 text-center"
+  >
     <div>
       <div class="mb-7 flex justify-center opacity-90">
         <RLogo :size="74" />
@@ -41,7 +50,10 @@ function goHome() {
         We hit a snag loading this. Try again, or head back to your feed.
       </p>
       <div class="flex justify-center gap-2.5">
-        <button class="btn btn-primary" @click="goHome">
+        <button class="btn btn-primary" @click="retry">
+          <RIcon name="refresh" :size="16" /> Try again
+        </button>
+        <button class="btn" @click="goHome">
           <RIcon name="inbox" :size="16" /> Back to your feed
         </button>
       </div>
