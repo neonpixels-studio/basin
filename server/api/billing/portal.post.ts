@@ -31,6 +31,10 @@ export default defineEventHandler(async (event) => {
     throw createError({ statusCode: 401, statusMessage: "Unauthorized" });
   }
 
+  // Resolve the redirect base first so a misconfigured site URL fails fast,
+  // before the customer lookup's database round trip.
+  const baseUrl = getConfiguredSiteUrl();
+
   // Resolve the customer from the authenticated user's own subscription row so
   // the portal is always scoped to their billing, never a client-supplied id.
   const customerId = await getStripeCustomerId(user.id);
@@ -41,7 +45,6 @@ export default defineEventHandler(async (event) => {
     });
   }
 
-  const baseUrl = getConfiguredSiteUrl();
   // The portal call throws on known-reachable states (an unconfigured portal in
   // the Stripe dashboard, or a customer that no longer exists in Stripe). Map
   // those to a 502 with a generic message rather than leaking Stripe's raw

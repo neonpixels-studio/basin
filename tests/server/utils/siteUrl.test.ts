@@ -38,10 +38,22 @@ describe("getConfiguredSiteUrl", () => {
     expect(getConfiguredSiteUrl()).toBe("http://localhost:3000");
   });
 
-  it("throws 500 rather than silently stripping a path, query, or fragment", () => {
-    runtimeConfigValue.value = {
-      siteUrl: "https://basin.example/settings/account?x=1#frag",
-    };
+  it("throws 500 rather than silently stripping a path", () => {
+    runtimeConfigValue.value = { siteUrl: "https://basin.example/app" };
+    expect(() => getConfiguredSiteUrl()).toThrowError(
+      expect.objectContaining({ statusCode: 500 }),
+    );
+  });
+
+  it("throws 500 rather than silently stripping a query", () => {
+    runtimeConfigValue.value = { siteUrl: "https://basin.example?x=1" };
+    expect(() => getConfiguredSiteUrl()).toThrowError(
+      expect.objectContaining({ statusCode: 500 }),
+    );
+  });
+
+  it("throws 500 rather than silently stripping a fragment", () => {
+    runtimeConfigValue.value = { siteUrl: "https://basin.example/#frag" };
     expect(() => getConfiguredSiteUrl()).toThrowError(
       expect.objectContaining({ statusCode: 500 }),
     );
