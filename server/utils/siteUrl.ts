@@ -40,5 +40,21 @@ export function getConfiguredSiteUrl(): string {
       statusMessage: "Site URL must use the http or https protocol",
     });
   }
+  // Reject rather than silently strip a path/query/fragment: callers join their
+  // own redirect paths onto this origin, so a configured base like
+  // https://basin.example/app would drop `/app` and bounce to the wrong place.
+  // Fail loud so the misconfiguration surfaces instead of producing a subtly
+  // broken redirect. A bare origin with a root path ("/") is allowed.
+  const hasExtraneousParts =
+    parsedSiteUrl.pathname !== "/" ||
+    parsedSiteUrl.search !== "" ||
+    parsedSiteUrl.hash !== "";
+  if (hasExtraneousParts) {
+    throw createError({
+      statusCode: 500,
+      statusMessage:
+        "Site URL must be a bare origin with no path, query, or fragment",
+    });
+  }
   return parsedSiteUrl.origin;
 }

@@ -28,10 +28,8 @@ describe("getConfiguredSiteUrl", () => {
     expect(getConfiguredSiteUrl()).toBe("https://basin.example");
   });
 
-  it("strips any path, query, and fragment down to the origin", () => {
-    runtimeConfigValue.value = {
-      siteUrl: "https://basin.example/settings/account?x=1#frag",
-    };
+  it("allows a bare origin with a trailing root slash", () => {
+    runtimeConfigValue.value = { siteUrl: "https://basin.example/" };
     expect(getConfiguredSiteUrl()).toBe("https://basin.example");
   });
 
@@ -40,11 +38,21 @@ describe("getConfiguredSiteUrl", () => {
     expect(getConfiguredSiteUrl()).toBe("http://localhost:3000");
   });
 
-  it("throws 500 when the site URL is missing", () => {
-    runtimeConfigValue.value = { siteUrl: "" };
+  it("throws 500 rather than silently stripping a path, query, or fragment", () => {
+    runtimeConfigValue.value = {
+      siteUrl: "https://basin.example/settings/account?x=1#frag",
+    };
     expect(() => getConfiguredSiteUrl()).toThrowError(
       expect.objectContaining({ statusCode: 500 }),
     );
+  });
+
+  it("throws 500 when the site URL is missing", () => {
+    runtimeConfigValue.value = { siteUrl: "" };
+    // Assert the message so this exercises the explicit missing-value guard and
+    // not merely the downstream URL-parse failure that an empty string also
+    // triggers.
+    expect(() => getConfiguredSiteUrl()).toThrowError(/missing NUXT_SITE_URL/);
   });
 
   it("throws 500 when the site URL is not a valid absolute URL", () => {

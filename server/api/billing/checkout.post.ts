@@ -31,12 +31,16 @@ export default defineEventHandler(async (event) => {
     });
   }
 
+  // Resolve the redirect base before creating a Stripe customer so a
+  // misconfigured site URL fails fast instead of leaving an orphaned customer
+  // behind on the way to a 500.
+  const baseUrl = getConfiguredSiteUrl();
+
   // Email is intentionally not taken from the client (it would be spoofable and
   // attach billing mail to an arbitrary address). Stripe Checkout collects and
   // verifies the customer's email during the session instead.
   const customerId = await getOrCreateStripeCustomerId(user.id, null);
 
-  const baseUrl = getConfiguredSiteUrl();
   const session = await createCheckoutSession({
     customerId,
     interval: body.interval,
