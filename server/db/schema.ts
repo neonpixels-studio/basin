@@ -29,17 +29,20 @@ export const users = pgTable("users", {
   updatedAt: timestamp("updated_at").defaultNow(),
 });
 
-// Records the provider id (Clerk user id) of a deleted account. server/utils/
-// tombstone.ts owns the full rationale (why a still-valid session can otherwise
-// resurrect an empty row). The provider id is the primary key so the deletion
-// write can safely `onConflictDoNothing` if the account is deleted twice.
+// Records a one-way hash of the provider id (Clerk user id) of a deleted
+// account. server/utils/tombstone.ts owns the full rationale (why a still-valid
+// session can otherwise resurrect an empty row); server/utils/tombstoneHash.ts
+// owns why we store sha256(provider_id + pepper) rather than the raw id
+// (issue #215). The hash is the primary key so the deletion write can safely
+// `onConflictDoNothing` if the account is deleted twice.
 //
 // Rows are retained and not pruned here: Clerk never reuses a user id, and a
 // row only ever needs to outlive the deleted account's longest valid session,
 // so pruning risks reopening the resurrection gap if the window undercut a
-// still-valid token's TTL. The stored value is Clerk's opaque provider id (a
-// pseudonymous identifier, not profile data); hashing it or bounding retention
-// past the max session lifetime are reasonable hardening follow-ups.
+// still-valid token's TTL. The column keeps its `provider_id` name (the hash is
+// what a provider id maps to), holding either a hash (rows written since #215)
+// or a legacy raw id until scripts/backfill-hash-tombstones.ts migrates it —
+// the same tolerant storage shape crypto.ts uses for legacy plaintext tokens.
 export const deletionTombstones = pgTable("deletion_tombstones", {
   providerId: text("provider_id").primaryKey(),
   deletedAt: timestamp("deleted_at").notNull().defaultNow(),
