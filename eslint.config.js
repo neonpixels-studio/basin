@@ -20,6 +20,8 @@ const nuxtGlobals = {
   useAsyncData: "readonly",
   useState: "readonly",
   navigateTo: "readonly",
+  clearError: "readonly",
+  useError: "readonly",
   ref: "readonly",
   computed: "readonly",
   watch: "readonly",
@@ -143,7 +145,9 @@ export default [
     },
   },
   {
-    files: ["app/pages/**/*.vue", "app/layouts/**/*.vue"],
+    // Nuxt reserves single-word filenames for pages, layouts, and the root
+    // error page — the multi-word rule can't apply to framework-mandated names.
+    files: ["app/pages/**/*.vue", "app/layouts/**/*.vue", "app/error.vue"],
     rules: {
       "vue/multi-word-component-names": "off",
     },
