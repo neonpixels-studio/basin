@@ -69,17 +69,22 @@ export class ServerConfigError extends ErrorDoNotRetry {
 // count so the backoff is computed from the real new value.
 //
 // nextRetryAt is a second statement, not part of the increment: it derives from
-// the post-increment count, which only exists once the first statement returns,
-// and computing it in SQL would duplicate the backoff schedule that
-// feedSyncBackoff.ts owns and unit-tests. The neon-http driver has no
-// interactive transactions, so the pair can't be wrapped in one. To stop a
-// slow concurrent writer from clobbering a fresher nextRetryAt with a stale
-// (lower) one, the second write is guarded by `consecutiveFailures = <the count
-// this writer just produced>`: once a later failure has bumped the counter
-// past that value, this writer's guard no longer matches and the write is a
-// no-op, leaving the higher count's (longer) backoff in place. The counter
-// advances monotonically within a failure burst, so nextRetryAt always ends up
-// reflecting the final, highest count.
+// the post-increment count RETURNING hands back, and computing it in SQL would
+// duplicate the backoff schedule that feedSyncBackoff.ts owns and unit-tests.
+// The neon-http driver has no interactive transactions, so the pair can't be
+// wrapped in one. The second write is therefore guarded by
+// `syncFailedAt = failedAt` — the exact timestamp this call stamped in the
+// first statement. That value is unique to this failure: a later failure
+// overwrites it and a success nulls it, so once either has happened this
+// write matches no rows and is a no-op. That keeps a slow concurrent (or
+// stalled-then-resumed) writer from clobbering a fresher nextRetryAt with its
+// own stale one, and the no-op is always safe — the row it declined to touch
+// already carries the newer failure's backoff or the success's cleared state.
+// The only unguarded gap is the first statement committing and the second
+// never running (process death, dropped connection): the feed is left counted
+// but with a stale/null nextRetryAt. That surfaces (we never swallow the
+// error) and self-heals — the next scheduler tick re-syncs, re-increments, and
+// re-attempts the gate.
 //
 // Both statements are scoped by (id, userId) — matching every other write here
 // — so a feedId belonging to a different user than the event claims can never
@@ -94,7 +99,7 @@ async function recordFeedSyncFailure(
   const failedAt = new Date();
   const db = createDb();
 
-  const [updated] = await db
+  const [updatedFeed] = await db
     .update(feeds)
     .set({
       syncStatus: SYNC_STATUS.ERROR,
@@ -105,20 +110,23 @@ async function recordFeedSyncFailure(
     .where(and(eq(feeds.id, feedId), eq(feeds.userId, userId)))
     .returning({ consecutiveFailures: feeds.consecutiveFailures });
 
-  if (!updated) {
+  if (!updatedFeed) {
     return;
   }
 
   await db
     .update(feeds)
     .set({
-      nextRetryAt: computeNextRetryAt(updated.consecutiveFailures, failedAt),
+      nextRetryAt: computeNextRetryAt(
+        updatedFeed.consecutiveFailures,
+        failedAt,
+      ),
     })
     .where(
       and(
         eq(feeds.id, feedId),
         eq(feeds.userId, userId),
-        eq(feeds.consecutiveFailures, updated.consecutiveFailures),
+        eq(feeds.syncFailedAt, failedAt),
       ),
     );
 }

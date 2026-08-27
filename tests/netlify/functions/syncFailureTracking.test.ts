@@ -45,10 +45,14 @@ describe("syncFailureTracking", () => {
     mockUpdate.mockReturnValue({ set: mockUpdateSet });
     mockUpdateSet.mockReturnValue({ where: mockUpdateWhere });
     // where() must satisfy two chains: the atomic-increment write ends in
-    // `.returning()`, while every other write is awaited directly. Returning an
-    // object that carries `.returning` covers the first; awaiting that object
-    // resolves to it and the value is ignored, covering the rest.
-    mockUpdateWhere.mockReturnValue({ returning: mockUpdateReturning });
+    // `.returning()`, while every other write is awaited directly. A thenable
+    // that also carries `.returning` covers both — and staying a real thenable
+    // means a dropped `await` would surface rather than silently pass.
+    mockUpdateWhere.mockReturnValue(
+      Object.assign(Promise.resolve(undefined), {
+        returning: mockUpdateReturning,
+      }),
+    );
     // Default: the increment lands and the feed is now at one consecutive
     // failure. Individual tests override the returned count.
     mockUpdateReturning.mockResolvedValue([{ consecutiveFailures: 1 }]);
@@ -136,26 +140,28 @@ describe("syncFailureTracking", () => {
       expect(incrementParams).toEqual([42, 1]);
     });
 
-    it("guards the nextRetryAt write with the RETURNING count so a stale concurrent writer no-ops", async () => {
+    it("guards the nextRetryAt write with this call's syncFailedAt so a stale writer no-ops", async () => {
       // The neon-http driver has no interactive transactions, so a slow
-      // concurrent failure must not clobber a fresher nextRetryAt with a stale,
-      // lower-count value. The second write therefore carries a
-      // `consecutiveFailures = <returned count>` predicate; once a later failure
-      // has bumped the counter past that value, this write matches no rows.
-      mockUpdateReturning.mockResolvedValue([{ consecutiveFailures: 2 }]);
-
+      // concurrent (or stalled-then-resumed) failure must not clobber a fresher
+      // nextRetryAt. The second write carries a `syncFailedAt = <this call's
+      // timestamp>` predicate: a later failure overwrites that timestamp and a
+      // success nulls it, so either way this write then matches no rows. Using
+      // the timestamp (not the count) avoids an ABA where a reset-to-zero then a
+      // fresh failure could resurrect an old count value.
       await persistPermanentSyncFailure(
         1,
         42,
         new ErrorDoNotRetry("Feed unreachable"),
       );
 
+      const stampedFailedAt = mockUpdateSet.mock.calls[0][0].syncFailedAt;
       const { sql, params } = new PgDialect().sqlToQuery(
         mockUpdateWhere.mock.calls[1][0],
       );
-      expect(sql).toContain('"feeds"."consecutive_failures" = ');
-      // (id, userId, guard-count) — the count this writer just produced.
-      expect(params).toEqual([42, 1, 2]);
+      expect(sql).toContain('"feeds"."sync_failed_at" = ');
+      // (id, userId, guard) — the guard is the exact timestamp write 1 stamped
+      // (the dialect renders the Date param as its ISO string).
+      expect(params).toEqual([42, 1, stampedFailedAt.toISOString()]);
     });
 
     it("computes nextRetryAt from the RETURNING count for a first failure", async () => {
@@ -209,6 +215,30 @@ describe("syncFailureTracking", () => {
       // Only the increment ran; no second (nextRetryAt) update.
       expect(mockUpdate).toHaveBeenCalledTimes(1);
       expect(mockUpdateSet).toHaveBeenCalledTimes(1);
+    });
+
+    it("still records the integration failure when the feed row is gone but the error is an IntegrationAuthError", async () => {
+      // A deleted feed skips the feed writes, but a broken connection still
+      // needs flagging on the integration so SettingsConnections can surface it
+      // — the account is broken regardless of whether this one feed survives.
+      mockUpdateReturning.mockResolvedValue([]);
+
+      await persistPermanentSyncFailure(
+        1,
+        42,
+        new IntegrationAuthError("youtube", "Re-connect your YouTube account."),
+      );
+
+      // Feed increment (no-op RETURNING) + the integration write; no feed
+      // nextRetryAt write.
+      expect(mockUpdate).toHaveBeenCalledTimes(2);
+      expect(mockUpdateSet).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({
+          syncStatus: "error",
+          syncError: "Re-connect your YouTube account.",
+        }),
+      );
     });
 
     it("propagates a failure of the nextRetryAt write instead of swallowing it", async () => {
