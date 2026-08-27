@@ -73,6 +73,8 @@ const nitroGlobals = {
   useDb: "readonly",
   getOrCreateUser: "readonly",
   buildYouTubeAuthUrl: "readonly",
+  buildYouTubeCallbackUrl: "readonly",
+  getConfiguredSiteUrl: "readonly",
   exchangeCodeForTokens: "readonly",
   getYouTubeChannelHandle: "readonly",
   createBlueskySession: "readonly",

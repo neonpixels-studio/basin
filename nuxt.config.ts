@@ -68,6 +68,11 @@ export default defineNuxtConfig({
   // resolve to empty in the deployed function unless the vars are set in Netlify.
   runtimeConfig: {
     databaseUrl: process.env.NUXT_DATABASE_URL || "",
+    // Public origin the app is served from, used to build OAuth redirect URIs
+    // from server config instead of the (spoofable) request origin. Required for
+    // the OAuth routes — server/utils/siteUrl.ts throws a 500 if it is unset or
+    // malformed at request time. Must be set per environment in the dotenvx files.
+    siteUrl: process.env.NUXT_SITE_URL || "",
     googleClientId: process.env.NUXT_GOOGLE_CLIENT_ID || "",
     googleClientSecret: process.env.NUXT_GOOGLE_CLIENT_SECRET || "",
     disableSignups: process.env.NUXT_DISABLE_SIGNUPS || "",

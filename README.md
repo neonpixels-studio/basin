@@ -29,9 +29,16 @@ matching file:
 | `.env.e2e`        | e2e tests / CI     | `DOTENV_PRIVATE_KEY_E2E`        |
 | `.env.production` | Netlify production | `DOTENV_PRIVATE_KEY_PRODUCTION` |
 
-Only the database URL differs per environment; the Clerk, Google, and Sentry
-values are identical across all of them. See [`.env.example`](.env.example) for
-the full variable reference and where to obtain each value.
+The database URL, the Stripe keys, and `NUXT_SITE_URL` differ per environment;
+the Clerk, Google, and Sentry values are identical across all of them.
+`NUXT_SITE_URL` is the deployed origin (localhost for local/e2e, the stable
+preview alias for `.env.dev`, the production origin for `.env.production`) —
+OAuth redirect URIs are built from it, so each value must be registered as an
+authorized redirect URI with the provider (Netlify preview deploys get per-deploy
+hostnames, so `.env.dev` must pin a stable alias rather than tracking the request
+host). A missing or malformed `NUXT_SITE_URL` makes the OAuth routes return a
+500 until it is set. See [`.env.example`](.env.example) for the full variable
+reference and where to obtain each value.
 
 **First-time setup:** restore `.env.keys` from your password manager, then point
 local dev at your own Neon branch so it never touches production data:

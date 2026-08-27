@@ -11,6 +11,9 @@ const mockGetCookie = vi.fn();
 const mockDeleteCookie = vi.fn();
 const mockGetRequestURL = vi.fn();
 const mockSendRedirect = vi.fn();
+const CONFIGURED_CALLBACK_URL =
+  "https://basin.example.com/api/auth/youtube/callback";
+const mockBuildYouTubeCallbackUrl = vi.fn(() => CONFIGURED_CALLBACK_URL);
 const mockExchangeCodeForTokens = vi.fn();
 const mockGetYouTubeChannelHandle = vi.fn();
 const mockOnConflictDoUpdate = vi.fn();
@@ -30,6 +33,7 @@ vi.stubGlobal("getCookie", mockGetCookie);
 vi.stubGlobal("deleteCookie", mockDeleteCookie);
 vi.stubGlobal("getRequestURL", mockGetRequestURL);
 vi.stubGlobal("sendRedirect", mockSendRedirect);
+vi.stubGlobal("buildYouTubeCallbackUrl", mockBuildYouTubeCallbackUrl);
 vi.stubGlobal("exchangeCodeForTokens", mockExchangeCodeForTokens);
 vi.stubGlobal("getYouTubeChannelHandle", mockGetYouTubeChannelHandle);
 vi.stubGlobal("useDb", () => ({ insert: mockInsert, update: mockUpdate }));
@@ -62,8 +66,9 @@ describe("GET /api/auth/youtube/callback", () => {
     mockUpdateWhere.mockResolvedValue(undefined);
     mockSendRedirect.mockResolvedValue(undefined);
     mockGetRequestURL.mockReturnValue(
-      new URL("https://example.com/api/auth/youtube/callback"),
+      new URL("https://attacker.example.com/api/auth/youtube/callback"),
     );
+    mockBuildYouTubeCallbackUrl.mockReturnValue(CONFIGURED_CALLBACK_URL);
     mockGetYouTubeChannelHandle.mockResolvedValue("@testchannel");
     mockExchangeCodeForTokens.mockResolvedValue(mockTokens);
   });
@@ -115,7 +120,7 @@ describe("GET /api/auth/youtube/callback", () => {
     await handler(event);
     expect(mockExchangeCodeForTokens).toHaveBeenCalledWith(
       "auth-code",
-      "https://example.com/api/auth/youtube/callback",
+      CONFIGURED_CALLBACK_URL,
     );
     expect(mockInsert).toHaveBeenCalledTimes(1);
     expect(mockValues).toHaveBeenCalledWith(
@@ -125,6 +130,34 @@ describe("GET /api/auth/youtube/callback", () => {
         providerUsername: "@testchannel",
       }),
     );
+  });
+
+  it("exchanges using the configured redirect_uri, never the request origin", async () => {
+    // The token-exchange redirect_uri must byte-match the one sent at
+    // initiation. Both derive from buildYouTubeCallbackUrl, so a forged Host
+    // header on this callback request cannot change it.
+    const event = { context: { user: { id: 1 } } };
+    mockGetQuery.mockReturnValue({ code: "auth-code", state: "state123" });
+    mockGetCookie.mockReturnValue("state123");
+    await handler(event);
+    const [, passedRedirectUri] = mockExchangeCodeForTokens.mock.calls[0];
+    expect(passedRedirectUri).toBe(CONFIGURED_CALLBACK_URL);
+    // Fails loudly if request-origin derivation is ever reintroduced.
+    expect(mockGetRequestURL).not.toHaveBeenCalled();
+  });
+
+  it("propagates the 500 when the site URL is unconfigured, without exchanging the code", async () => {
+    mockBuildYouTubeCallbackUrl.mockImplementation(() => {
+      throw Object.assign(new Error("Server configuration error"), {
+        statusCode: 500,
+      });
+    });
+    const event = { context: { user: { id: 1 } } };
+    mockGetQuery.mockReturnValue({ code: "auth-code", state: "state123" });
+    mockGetCookie.mockReturnValue("state123");
+    await expect(handler(event)).rejects.toMatchObject({ statusCode: 500 });
+    expect(mockExchangeCodeForTokens).not.toHaveBeenCalled();
+    expect(mockInsert).not.toHaveBeenCalled();
   });
 
   it("encrypts the access and refresh tokens before storing them (never stores plaintext)", async () => {

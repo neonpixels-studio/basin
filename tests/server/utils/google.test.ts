@@ -8,8 +8,12 @@ vi.stubGlobal("useRuntimeConfig", () => ({
 const mockFetch = vi.fn();
 vi.stubGlobal("fetch", mockFetch);
 
+const mockGetConfiguredSiteUrl = vi.fn(() => "https://basin.example.com");
+vi.stubGlobal("getConfiguredSiteUrl", mockGetConfiguredSiteUrl);
+
 import {
   buildYouTubeAuthUrl,
+  buildYouTubeCallbackUrl,
   exchangeCodeForTokens,
   getYouTubeChannelHandle,
   revokeGoogleToken,
@@ -164,5 +168,18 @@ describe("revokeGoogleToken", () => {
     await expect(revokeGoogleToken("bad-token")).rejects.toThrow(
       "Google token revocation failed: 400",
     );
+  });
+});
+
+describe("buildYouTubeCallbackUrl", () => {
+  beforeEach(() => {
+    mockGetConfiguredSiteUrl.mockReturnValue("https://basin.example.com");
+  });
+
+  it("appends the callback path to the configured site URL, not the request", () => {
+    expect(buildYouTubeCallbackUrl()).toBe(
+      "https://basin.example.com/api/auth/youtube/callback",
+    );
+    expect(mockGetConfiguredSiteUrl).toHaveBeenCalled();
   });
 });

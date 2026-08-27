@@ -5,15 +5,17 @@ export default defineEventHandler(async (event) => {
     throw createError({ statusCode: 401, statusMessage: "Unauthorized" });
   }
 
+  // Derive the redirect URI before planting the state cookie: if the site URL
+  // is misconfigured this throws, and a 500 should not leave behind a 10-minute
+  // oauth_state cookie the user can never redeem.
+  const redirectUri = buildYouTubeCallbackUrl();
+
   const state = randomBytes(32).toString("hex");
   setCookie(event, "oauth_state_youtube", state, {
     httpOnly: true,
     maxAge: 600,
     sameSite: "lax",
   });
-
-  const { origin } = getRequestURL(event);
-  const redirectUri = `${origin}/api/auth/youtube/callback`;
 
   return sendRedirect(event, buildYouTubeAuthUrl(redirectUri, state));
 });
