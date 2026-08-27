@@ -11,12 +11,11 @@ const item = computed(() => feedStore.state.activeItem);
 
 const timeLabel = computed(() => readerTimeLabel(item.value?.time));
 
-// "Source · 2h ago", or just "Source" when the item carries no time, so the
-// header never trails a dangling middot.
-const articleMeta = computed(() => {
-  const source = item.value?.source ?? "";
-  return timeLabel.value ? `${source} · ${timeLabel.value}` : source;
-});
+// "Source · 2h ago", collapsing to just the parts that exist so the header
+// never trails (or leads with) a dangling middot when source or time is absent.
+const articleMeta = computed(() =>
+  [item.value?.source, timeLabel.value].filter(Boolean).join(" · "),
+);
 
 const EMPTY_ARTICLE_TEXT =
   "No article text was included in this feed. Open the original to read the full piece.";

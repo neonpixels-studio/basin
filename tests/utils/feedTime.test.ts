@@ -75,21 +75,35 @@ describe("readerTimeLabel", () => {
 
 // Binds the parser to the producer so a new relative bucket (e.g. "3w") added
 // to formatRelativeTime without updating RELATIVE_TIME_PATTERN fails here
-// instead of silently dropping " ago" in the reader.
+// instead of silently dropping " ago" in the reader. Sweeps the whole window
+// (not a few samples) so a bucket landing in any gap is exercised.
 describe("formatRelativeTime ↔ isRelativeTime contract", () => {
   const minutesAgo = (minutes: number) =>
     new Date(Date.now() - minutes * 60_000);
 
+  const DAY = 24 * 60;
+  const withinWindowOffsets = [
+    0,
+    1,
+    59,
+    60,
+    DAY - 1,
+    DAY,
+    6 * DAY,
+    7 * DAY - 1,
+  ];
+
   it("classifies every within-window formatter output as relative", () => {
-    expect(isRelativeTime(formatRelativeTime(minutesAgo(30)))).toBe(true);
-    expect(isRelativeTime(formatRelativeTime(minutesAgo(2 * 60)))).toBe(true);
-    expect(isRelativeTime(formatRelativeTime(minutesAgo(3 * 24 * 60)))).toBe(
-      true,
-    );
+    for (const minutes of withinWindowOffsets) {
+      expect(isRelativeTime(formatRelativeTime(minutesAgo(minutes)))).toBe(
+        true,
+      );
+    }
   });
 
-  it("classifies an out-of-window formatter output as absolute", () => {
-    expect(isRelativeTime(formatRelativeTime(minutesAgo(60 * 24 * 60)))).toBe(
+  it("classifies out-of-window formatter output as absolute", () => {
+    expect(isRelativeTime(formatRelativeTime(minutesAgo(7 * DAY)))).toBe(false);
+    expect(isRelativeTime(formatRelativeTime(minutesAgo(60 * DAY)))).toBe(
       false,
     );
   });

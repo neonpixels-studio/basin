@@ -552,5 +552,14 @@ describe("ReaderDetail", () => {
       expect(wrapper.text()).toContain("Solo");
       expect(wrapper.text()).not.toContain("Solo ·");
     });
+
+    it("omits the leading separator when the item has no source", async () => {
+      state.activeItem = makeArticle({ time: "3h", source: "" }) as never;
+      const wrapper = mountDetail();
+      await wrapper.vm.$nextTick();
+
+      expect(wrapper.text()).toContain("3h ago");
+      expect(wrapper.find("article").text().trim().startsWith("·")).toBe(false);
+    });
   });
 });
