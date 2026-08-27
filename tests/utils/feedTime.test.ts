@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   formatRelativeTime,
   isRelativeTime,
@@ -77,18 +77,30 @@ describe("readerTimeLabel", () => {
 // isRelativeTime matches, so every formatRelativeTime output must be either a
 // recognized relative token or an absolute date. A new bucket (e.g. a weeks
 // "3w" tier) added without teaching RELATIVE_TIME_PATTERN about it would be
-// neither, silently dropping " ago" in the reader — this sweep fails loudly on
-// that, spanning well past the current 7-day window to reach any such tier.
+// neither, silently dropping " ago" in the reader — the classifiability sweep
+// fails loudly on that. Clock is frozen so boundary cases are exact, not racing
+// two Date.now() reads. ABSOLUTE_DATE tolerates an optional year so it asserts
+// the shape without pinning the formatter to a year-less format.
 describe("formatRelativeTime ↔ isRelativeTime contract", () => {
-  const minutesAgo = (minutes: number) =>
-    new Date(Date.now() - minutes * 60_000);
+  const NOW = new Date("2026-01-15T12:00:00Z");
+  const HOUR = 3_600_000;
+  const DAY = 24 * HOUR;
+  const ABSOLUTE_DATE = /^[A-Z][a-z]{2} \d{1,2}(, \d{4})?$/;
 
-  const DAY = 24 * 60;
-  const ABSOLUTE_DATE = /^[A-Z][a-z]{2} \d{1,2}$/;
+  const ago = (ms: number) => new Date(NOW.getTime() - ms);
 
-  it("emits only classifiable tokens (relative OR absolute) at every age", () => {
-    for (let hours = 0; hours <= 60 * 24; hours += 1) {
-      const token = formatRelativeTime(minutesAgo(hours * 60));
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("emits only classifiable tokens (relative OR absolute) up to a year out", () => {
+    for (let hours = 0; hours <= 365 * 24; hours += 6) {
+      const token = formatRelativeTime(ago(hours * HOUR));
       const classified = isRelativeTime(token) || ABSOLUTE_DATE.test(token);
       expect(classified, `unclassified token "${token}" at ${hours}h`).toBe(
         true,
@@ -96,12 +108,14 @@ describe("formatRelativeTime ↔ isRelativeTime contract", () => {
     }
   });
 
-  it("uses relative tokens within the window and absolute dates past it", () => {
-    expect(isRelativeTime(formatRelativeTime(minutesAgo(0)))).toBe(true);
-    expect(isRelativeTime(formatRelativeTime(minutesAgo(7 * DAY - 1)))).toBe(
-      true,
-    );
-    expect(formatRelativeTime(minutesAgo(7 * DAY))).toMatch(ABSOLUTE_DATE);
-    expect(formatRelativeTime(minutesAgo(60 * DAY))).toMatch(ABSOLUTE_DATE);
+  it("uses relative tokens up to the boundary and absolute dates past it", () => {
+    expect(formatRelativeTime(ago(0))).toBe("0m");
+    expect(formatRelativeTime(ago(59 * 60_000))).toBe("59m");
+    expect(formatRelativeTime(ago(HOUR))).toBe("1h");
+    expect(formatRelativeTime(ago(24 * HOUR - 60_000))).toBe("23h");
+    expect(formatRelativeTime(ago(DAY))).toBe("1d");
+    expect(formatRelativeTime(ago(7 * DAY - 60_000))).toBe("6d");
+    expect(formatRelativeTime(ago(7 * DAY))).toMatch(ABSOLUTE_DATE);
+    expect(formatRelativeTime(ago(400 * DAY))).toMatch(ABSOLUTE_DATE);
   });
 });

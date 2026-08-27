@@ -182,7 +182,6 @@ function openOriginal() {
             <div
               class="text-muted mb-7 pb-7 text-[12.5px]"
               style="border-bottom: 1px solid var(--border)"
-              data-testid="article-meta"
             >
               {{ articleMeta }}
             </div>

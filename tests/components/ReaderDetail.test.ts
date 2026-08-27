@@ -549,7 +549,7 @@ describe("ReaderDetail", () => {
       const wrapper = mountDetail();
       await wrapper.vm.$nextTick();
 
-      expect(wrapper.get('[data-testid="article-meta"]').text()).toBe(
+      expect(wrapper.find("article").find(".text-muted").text()).toBe(
         "Solo · 3h ago",
       );
     });
@@ -559,7 +559,7 @@ describe("ReaderDetail", () => {
       const wrapper = mountDetail();
       await wrapper.vm.$nextTick();
 
-      expect(wrapper.get('[data-testid="article-meta"]').text()).toBe("Solo");
+      expect(wrapper.find("article").find(".text-muted").text()).toBe("Solo");
     });
 
     it("omits the leading separator when the item has no source", async () => {
@@ -567,7 +567,7 @@ describe("ReaderDetail", () => {
       const wrapper = mountDetail();
       await wrapper.vm.$nextTick();
 
-      expect(wrapper.get('[data-testid="article-meta"]').text()).toBe("3h ago");
+      expect(wrapper.find("article").find(".text-muted").text()).toBe("3h ago");
     });
   });
 });
