@@ -66,16 +66,26 @@ export class ServerConfigError extends ErrorDoNotRetry {
 // a read-then-write would let both read the same N and both write N+1, stalling
 // the counter and — because backoff is derived from it — keeping the scheduler
 // hammering a dead feed. RETURNING hands back the committed post-increment
-// count so the backoff is computed from the real new value. nextRetryAt can't
-// be set in the same statement: it derives from that post-increment count,
-// which only exists once the statement returns, and computing it in SQL would
-// duplicate the backoff schedule that feedSyncBackoff.ts owns and unit-tests.
+// count so the backoff is computed from the real new value.
+//
+// nextRetryAt is a second statement, not part of the increment: it derives from
+// the post-increment count, which only exists once the first statement returns,
+// and computing it in SQL would duplicate the backoff schedule that
+// feedSyncBackoff.ts owns and unit-tests. The neon-http driver has no
+// interactive transactions, so the pair can't be wrapped in one. To stop a
+// slow concurrent writer from clobbering a fresher nextRetryAt with a stale
+// (lower) one, the second write is guarded by `consecutiveFailures = <the count
+// this writer just produced>`: once a later failure has bumped the counter
+// past that value, this writer's guard no longer matches and the write is a
+// no-op, leaving the higher count's (longer) backoff in place. The counter
+// advances monotonically within a failure burst, so nextRetryAt always ends up
+// reflecting the final, highest count.
 //
 // Both statements are scoped by (id, userId) — matching every other write here
 // — so a feedId belonging to a different user than the event claims can never
 // be written. A row deleted between the sync attempt and this write matches no
-// rows, RETURNING yields nothing, and both writes are a no-op — the correct
-// outcome for a feed that no longer exists.
+// rows, RETURNING yields nothing, and the nextRetryAt write is skipped — the
+// correct outcome for a feed that no longer exists.
 async function recordFeedSyncFailure(
   feedId: number,
   userId: number,
@@ -104,7 +114,13 @@ async function recordFeedSyncFailure(
     .set({
       nextRetryAt: computeNextRetryAt(updated.consecutiveFailures, failedAt),
     })
-    .where(and(eq(feeds.id, feedId), eq(feeds.userId, userId)));
+    .where(
+      and(
+        eq(feeds.id, feedId),
+        eq(feeds.userId, userId),
+        eq(feeds.consecutiveFailures, updated.consecutiveFailures),
+      ),
+    );
 }
 
 async function recordFeedSyncSuccess(

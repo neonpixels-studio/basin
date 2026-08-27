@@ -124,11 +124,38 @@ describe("syncFailureTracking", () => {
 
       expect(mockUpdateWhere).toHaveBeenCalledTimes(2);
       for (const [whereClause] of mockUpdateWhere.mock.calls) {
-        const { sql, params } = new PgDialect().sqlToQuery(whereClause);
+        const { sql } = new PgDialect().sqlToQuery(whereClause);
         expect(sql).toContain('"feeds"."id" = ');
         expect(sql).toContain('"feeds"."user_id" = ');
-        expect(params).toEqual([42, 1]);
       }
+
+      // The increment is scoped by exactly (id, userId).
+      const { params: incrementParams } = new PgDialect().sqlToQuery(
+        mockUpdateWhere.mock.calls[0][0],
+      );
+      expect(incrementParams).toEqual([42, 1]);
+    });
+
+    it("guards the nextRetryAt write with the RETURNING count so a stale concurrent writer no-ops", async () => {
+      // The neon-http driver has no interactive transactions, so a slow
+      // concurrent failure must not clobber a fresher nextRetryAt with a stale,
+      // lower-count value. The second write therefore carries a
+      // `consecutiveFailures = <returned count>` predicate; once a later failure
+      // has bumped the counter past that value, this write matches no rows.
+      mockUpdateReturning.mockResolvedValue([{ consecutiveFailures: 2 }]);
+
+      await persistPermanentSyncFailure(
+        1,
+        42,
+        new ErrorDoNotRetry("Feed unreachable"),
+      );
+
+      const { sql, params } = new PgDialect().sqlToQuery(
+        mockUpdateWhere.mock.calls[1][0],
+      );
+      expect(sql).toContain('"feeds"."consecutive_failures" = ');
+      // (id, userId, guard-count) — the count this writer just produced.
+      expect(params).toEqual([42, 1, 2]);
     });
 
     it("computes nextRetryAt from the RETURNING count for a first failure", async () => {
@@ -182,6 +209,23 @@ describe("syncFailureTracking", () => {
       // Only the increment ran; no second (nextRetryAt) update.
       expect(mockUpdate).toHaveBeenCalledTimes(1);
       expect(mockUpdateSet).toHaveBeenCalledTimes(1);
+    });
+
+    it("propagates a failure of the nextRetryAt write instead of swallowing it", async () => {
+      // Without an interactive transaction the two writes can't be atomic, so a
+      // failed nextRetryAt write must surface (fail loud) rather than be
+      // swallowed into a half-written, silently-ungated row.
+      mockUpdateWhere
+        .mockReturnValueOnce({ returning: mockUpdateReturning })
+        .mockRejectedValueOnce(new Error("connection reset"));
+
+      await expect(
+        persistPermanentSyncFailure(
+          1,
+          42,
+          new ErrorDoNotRetry("Feed unreachable"),
+        ),
+      ).rejects.toThrow("connection reset");
     });
 
     it("does not touch integrations for a feed-only failure (not IntegrationAuthError)", async () => {
