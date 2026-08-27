@@ -1,5 +1,5 @@
 import { ErrorDoNotRetry } from "@netlify/async-workloads";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { feeds, integrations } from "../../server/db/schema";
 import { computeNextRetryAt } from "../../server/utils/feedSyncBackoff";
 import { SYNC_STATUS } from "../../server/utils/syncStatus";
@@ -55,47 +55,54 @@ export class ServerConfigError extends ErrorDoNotRetry {
   }
 }
 
-// Current consecutive-failure count for a feed. Scoped by (id, userId) —
-// matching fetchFeedRecord's read scope and every other write here — so a
-// feedId belonging to a different user than the event claims can never be
-// read or written. A missing row (deleted between the sync attempt and this
-// write) yields zero here; the scoped UPDATE below then matches no rows and is
-// a no-op, which is the correct outcome for a feed that no longer exists.
-async function readConsecutiveFailures(
-  feedId: number,
-  userId: number,
-): Promise<number> {
-  const db = createDb();
-  const feed = await db.query.feeds.findFirst({
-    where: and(eq(feeds.id, feedId), eq(feeds.userId, userId)),
-    columns: { consecutiveFailures: true },
-  });
-
-  return feed?.consecutiveFailures ?? NO_CONSECUTIVE_FAILURES;
-}
-
 // Records a permanent failure and advances the backoff: increments the
 // consecutive-failure count and pushes nextRetryAt out by the schedule in
 // feedSyncBackoff.ts. Advancing nextRetryAt is what stops the scheduler from
 // re-emitting a sync for this feed on every 15-minute tick.
+//
+// The increment is a single atomic `consecutive_failures + 1` SQL expression
+// rather than a read-then-write. Two concurrent permanent failures for the same
+// feed therefore serialize on the row and advance the counter N -> N+1 -> N+2;
+// a read-then-write would let both read the same N and both write N+1, stalling
+// the counter and — because backoff is derived from it — keeping the scheduler
+// hammering a dead feed. RETURNING hands back the committed post-increment
+// count so the backoff is computed from the real new value. nextRetryAt can't
+// be set in the same statement: it derives from that post-increment count,
+// which only exists once the statement returns, and computing it in SQL would
+// duplicate the backoff schedule that feedSyncBackoff.ts owns and unit-tests.
+//
+// Both statements are scoped by (id, userId) — matching every other write here
+// — so a feedId belonging to a different user than the event claims can never
+// be written. A row deleted between the sync attempt and this write matches no
+// rows, RETURNING yields nothing, and both writes are a no-op — the correct
+// outcome for a feed that no longer exists.
 async function recordFeedSyncFailure(
   feedId: number,
   userId: number,
   message: string,
 ): Promise<void> {
-  const consecutiveFailures =
-    (await readConsecutiveFailures(feedId, userId)) + 1;
   const failedAt = new Date();
-
   const db = createDb();
-  await db
+
+  const [updated] = await db
     .update(feeds)
     .set({
       syncStatus: SYNC_STATUS.ERROR,
       syncError: message,
       syncFailedAt: failedAt,
-      consecutiveFailures,
-      nextRetryAt: computeNextRetryAt(consecutiveFailures, failedAt),
+      consecutiveFailures: sql`${feeds.consecutiveFailures} + 1`,
+    })
+    .where(and(eq(feeds.id, feedId), eq(feeds.userId, userId)))
+    .returning({ consecutiveFailures: feeds.consecutiveFailures });
+
+  if (!updated) {
+    return;
+  }
+
+  await db
+    .update(feeds)
+    .set({
+      nextRetryAt: computeNextRetryAt(updated.consecutiveFailures, failedAt),
     })
     .where(and(eq(feeds.id, feedId), eq(feeds.userId, userId)));
 }
