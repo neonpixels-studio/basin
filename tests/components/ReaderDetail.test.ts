@@ -544,13 +544,22 @@ describe("ReaderDetail", () => {
       expect(wrapper.text()).not.toContain("Aug 5 ago");
     });
 
-    it("omits the header separator when the item has no time", async () => {
+    it("renders 'source · time ago' in the article header", async () => {
+      state.activeItem = makeArticle({ time: "3h", source: "Solo" }) as never;
+      const wrapper = mountDetail();
+      await wrapper.vm.$nextTick();
+
+      expect(wrapper.get('[data-testid="article-meta"]').text()).toBe(
+        "Solo · 3h ago",
+      );
+    });
+
+    it("omits the separator when the item has no time", async () => {
       state.activeItem = makeArticle({ time: "", source: "Solo" }) as never;
       const wrapper = mountDetail();
       await wrapper.vm.$nextTick();
 
-      expect(wrapper.text()).toContain("Solo");
-      expect(wrapper.text()).not.toContain("Solo ·");
+      expect(wrapper.get('[data-testid="article-meta"]').text()).toBe("Solo");
     });
 
     it("omits the leading separator when the item has no source", async () => {
@@ -558,8 +567,7 @@ describe("ReaderDetail", () => {
       const wrapper = mountDetail();
       await wrapper.vm.$nextTick();
 
-      expect(wrapper.text()).toContain("3h ago");
-      expect(wrapper.find("article").text().trim().startsWith("·")).toBe(false);
+      expect(wrapper.get('[data-testid="article-meta"]').text()).toBe("3h ago");
     });
   });
 });

@@ -25,7 +25,7 @@ exports[`ReaderDetail > matches snapshot (with active article) 1`] = `
       <article class="p-7 sm:p-9">
         <div class="mb-4 flex flex-wrap items-center gap-2"><span class="chip">#design</span><span class="chip">#web</span></div>
         <h1 class="detail-title mb-4">Test Article Title</h1>
-        <div class="text-muted mb-7 pb-7 text-[12.5px]" style="border-bottom-width: var(--border); border-bottom-style: var(--border); border-bottom-color: var(--border);">Test Source · 2h ago</div>
+        <div class="text-muted mb-7 pb-7 text-[12.5px]" style="border-bottom-width: var(--border); border-bottom-style: var(--border); border-bottom-color: var(--border);" data-testid="article-meta">Test Source · 2h ago</div>
         <detail-prose-stub paragraphs="First paragraph.,Second paragraph." emptytext="No article text was included in this feed. Open the original to read the full piece." sanitizedhtml=""></detail-prose-stub><a href="https://test.example.com/article-1" target="_blank" rel="noopener noreferrer" class="btn mt-8">
           <r-icon-stub name="external" size="15"></r-icon-stub> Open original
         </a>

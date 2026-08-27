@@ -73,38 +73,35 @@ describe("readerTimeLabel", () => {
   });
 });
 
-// Binds the parser to the producer so a new relative bucket (e.g. "3w") added
-// to formatRelativeTime without updating RELATIVE_TIME_PATTERN fails here
-// instead of silently dropping " ago" in the reader. Sweeps the whole window
-// (not a few samples) so a bucket landing in any gap is exercised.
+// Binds the parser to the producer. readerTimeLabel only appends " ago" when
+// isRelativeTime matches, so every formatRelativeTime output must be either a
+// recognized relative token or an absolute date. A new bucket (e.g. a weeks
+// "3w" tier) added without teaching RELATIVE_TIME_PATTERN about it would be
+// neither, silently dropping " ago" in the reader — this sweep fails loudly on
+// that, spanning well past the current 7-day window to reach any such tier.
 describe("formatRelativeTime ↔ isRelativeTime contract", () => {
   const minutesAgo = (minutes: number) =>
     new Date(Date.now() - minutes * 60_000);
 
   const DAY = 24 * 60;
-  const withinWindowOffsets = [
-    0,
-    1,
-    59,
-    60,
-    DAY - 1,
-    DAY,
-    6 * DAY,
-    7 * DAY - 1,
-  ];
+  const ABSOLUTE_DATE = /^[A-Z][a-z]{2} \d{1,2}$/;
 
-  it("classifies every within-window formatter output as relative", () => {
-    for (const minutes of withinWindowOffsets) {
-      expect(isRelativeTime(formatRelativeTime(minutesAgo(minutes)))).toBe(
+  it("emits only classifiable tokens (relative OR absolute) at every age", () => {
+    for (let hours = 0; hours <= 60 * 24; hours += 1) {
+      const token = formatRelativeTime(minutesAgo(hours * 60));
+      const classified = isRelativeTime(token) || ABSOLUTE_DATE.test(token);
+      expect(classified, `unclassified token "${token}" at ${hours}h`).toBe(
         true,
       );
     }
   });
 
-  it("classifies out-of-window formatter output as absolute", () => {
-    expect(isRelativeTime(formatRelativeTime(minutesAgo(7 * DAY)))).toBe(false);
-    expect(isRelativeTime(formatRelativeTime(minutesAgo(60 * DAY)))).toBe(
-      false,
+  it("uses relative tokens within the window and absolute dates past it", () => {
+    expect(isRelativeTime(formatRelativeTime(minutesAgo(0)))).toBe(true);
+    expect(isRelativeTime(formatRelativeTime(minutesAgo(7 * DAY - 1)))).toBe(
+      true,
     );
+    expect(formatRelativeTime(minutesAgo(7 * DAY))).toMatch(ABSOLUTE_DATE);
+    expect(formatRelativeTime(minutesAgo(60 * DAY))).toMatch(ABSOLUTE_DATE);
   });
 });
