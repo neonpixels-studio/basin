@@ -540,6 +540,7 @@ describe("ReaderDetail", () => {
       const wrapper = mountDetail();
       await wrapper.vm.$nextTick();
 
+      expect(wrapper.text()).toContain("Aug 5");
       expect(wrapper.text()).not.toContain("Aug 5 ago");
     });
 
