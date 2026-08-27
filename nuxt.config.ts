@@ -68,6 +68,12 @@ export default defineNuxtConfig({
   // resolve to empty in the deployed function unless the vars are set in Netlify.
   runtimeConfig: {
     databaseUrl: process.env.NUXT_DATABASE_URL || "",
+    // basin's own public base URL. Billing redirect targets are anchored to
+    // this trusted origin instead of the request Host header (see
+    // server/utils/siteUrl.ts), so a forged Host can't hijack the post-billing
+    // bounce. Read INLINE like the values below so dotenvx-decrypted values
+    // bake into the server bundle at build time.
+    siteUrl: process.env.NUXT_SITE_URL || "",
     googleClientId: process.env.NUXT_GOOGLE_CLIENT_ID || "",
     googleClientSecret: process.env.NUXT_GOOGLE_CLIENT_SECRET || "",
     disableSignups: process.env.NUXT_DISABLE_SIGNUPS || "",
