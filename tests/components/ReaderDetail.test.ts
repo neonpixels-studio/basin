@@ -542,5 +542,14 @@ describe("ReaderDetail", () => {
 
       expect(wrapper.text()).not.toContain("Aug 5 ago");
     });
+
+    it("omits the header separator when the item has no time", async () => {
+      state.activeItem = makeArticle({ time: "", source: "Solo" }) as never;
+      const wrapper = mountDetail();
+      await wrapper.vm.$nextTick();
+
+      expect(wrapper.text()).toContain("Solo");
+      expect(wrapper.text()).not.toContain("Solo ·");
+    });
   });
 });

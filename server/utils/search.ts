@@ -10,7 +10,11 @@ export function formatRelativeTime(date: Date | null): string {
   if (!date) return "";
 
   const now = Date.now();
-  const diffMs = now - date.getTime();
+  // Clamp to 0 so a future-dated item (timezone-skewed RSS pubDates,
+  // publish-ahead scheduling) floors at "0m" instead of a negative token
+  // like "-125m", which the relative-time pattern would misread as an
+  // absolute date.
+  const diffMs = Math.max(0, now - date.getTime());
   const diffMinutes = Math.floor(diffMs / 60_000);
   const diffHours = Math.floor(diffMs / 3_600_000);
   const diffDays = Math.floor(diffMs / 86_400_000);

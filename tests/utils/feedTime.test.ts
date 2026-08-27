@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { isRelativeTime, readerTimeLabel } from "~/utils/feedTime";
+import { formatRelativeTime } from "../../server/utils/search";
 
 describe("isRelativeTime", () => {
   it("recognizes minute/hour/day tokens as relative", () => {
@@ -29,5 +30,27 @@ describe("readerTimeLabel", () => {
     expect(readerTimeLabel(null)).toBe("");
     expect(readerTimeLabel(undefined)).toBe("");
     expect(readerTimeLabel("")).toBe("");
+  });
+});
+
+// Binds the client-side detection to the server formatter so a new relative
+// bucket (e.g. "3w") added to formatRelativeTime without updating the pattern
+// fails here instead of silently dropping " ago" in the reader.
+describe("formatRelativeTime ↔ isRelativeTime contract", () => {
+  const minutesAgo = (minutes: number) =>
+    new Date(Date.now() - minutes * 60_000);
+
+  it("classifies every within-window formatter output as relative", () => {
+    expect(isRelativeTime(formatRelativeTime(minutesAgo(30)))).toBe(true);
+    expect(isRelativeTime(formatRelativeTime(minutesAgo(2 * 60)))).toBe(true);
+    expect(isRelativeTime(formatRelativeTime(minutesAgo(3 * 24 * 60)))).toBe(
+      true,
+    );
+  });
+
+  it("classifies an out-of-window formatter output as absolute", () => {
+    expect(isRelativeTime(formatRelativeTime(minutesAgo(60 * 24 * 60)))).toBe(
+      false,
+    );
   });
 });

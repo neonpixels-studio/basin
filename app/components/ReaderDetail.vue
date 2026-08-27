@@ -11,6 +11,13 @@ const item = computed(() => feedStore.state.activeItem);
 
 const timeLabel = computed(() => readerTimeLabel(item.value?.time));
 
+// "Source · 2h ago", or just "Source" when the item carries no time, so the
+// header never trails a dangling middot.
+const articleMeta = computed(() => {
+  const source = item.value?.source ?? "";
+  return timeLabel.value ? `${source} · ${timeLabel.value}` : source;
+});
+
 const EMPTY_ARTICLE_TEXT =
   "No article text was included in this feed. Open the original to read the full piece.";
 const EMPTY_PODCAST_TEXT = "No show notes were included for this episode.";
@@ -177,7 +184,7 @@ function openOriginal() {
               class="text-muted mb-7 pb-7 text-[12.5px]"
               style="border-bottom: 1px solid var(--border)"
             >
-              {{ item.source }} · {{ timeLabel }}
+              {{ articleMeta }}
             </div>
             <DetailProse
               :paragraphs="paragraphs"

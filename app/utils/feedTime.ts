@@ -9,6 +9,8 @@ export function isRelativeTime(time: string): boolean {
 // Appends " ago" only to relative tokens, so "2h" reads "2h ago" while an
 // absolute date like "Aug 5" renders unchanged (never "Aug 5 ago").
 export function readerTimeLabel(time: string | null | undefined): string {
-  if (!time) return "";
+  if (!time) {
+    return "";
+  }
   return isRelativeTime(time) ? `${time} ago` : time;
 }
