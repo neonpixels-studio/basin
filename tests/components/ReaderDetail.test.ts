@@ -516,4 +516,31 @@ describe("ReaderDetail", () => {
       expect(saveButton!.classes()).toContain("on");
     });
   });
+
+  describe("relative time label", () => {
+    it("appends ' ago' to a relative time in the article header", async () => {
+      state.activeItem = makeArticle({ time: "3h" }) as never;
+      const wrapper = mountDetail();
+      await wrapper.vm.$nextTick();
+
+      expect(wrapper.text()).toContain("3h ago");
+    });
+
+    it("renders an absolute date without ' ago' for older items", async () => {
+      state.activeItem = makeArticle({ time: "Aug 5" }) as never;
+      const wrapper = mountDetail();
+      await wrapper.vm.$nextTick();
+
+      expect(wrapper.text()).toContain("Aug 5");
+      expect(wrapper.text()).not.toContain("Aug 5 ago");
+    });
+
+    it("renders the tweet footer date without ' ago' for older items", async () => {
+      state.activeItem = makeTweet({ time: "Aug 5" }) as never;
+      const wrapper = mountDetail();
+      await wrapper.vm.$nextTick();
+
+      expect(wrapper.text()).not.toContain("Aug 5 ago");
+    });
+  });
 });

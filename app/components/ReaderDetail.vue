@@ -1,12 +1,15 @@
 <script setup>
 import { computed, ref, watch } from "vue";
 import { durationLabel } from "~/utils/duration";
+import { readerTimeLabel } from "~/utils/feedTime";
 import { VIDEO_PLACEHOLDER_LABEL } from "~/utils/itemContent";
 
 const feedStore = useFeedStore();
 const player = usePodcastPlayer();
 
 const item = computed(() => feedStore.state.activeItem);
+
+const timeLabel = computed(() => readerTimeLabel(item.value?.time));
 
 const EMPTY_ARTICLE_TEXT =
   "No article text was included in this feed. Open the original to read the full piece.";
@@ -174,7 +177,7 @@ function openOriginal() {
               class="text-muted mb-7 pb-7 text-[12.5px]"
               style="border-bottom: 1px solid var(--border)"
             >
-              {{ item.source }} · {{ item.time }} ago
+              {{ item.source }} · {{ timeLabel }}
             </div>
             <DetailProse
               :paragraphs="paragraphs"
@@ -355,7 +358,7 @@ function openOriginal() {
             <p v-else class="detail-tweet text-muted mb-5">
               {{ EMPTY_POST_TEXT }}
             </p>
-            <div class="text-muted text-[12px]">{{ item.time }} ago</div>
+            <div class="text-muted text-[12px]">{{ timeLabel }}</div>
           </div>
         </template>
       </div>
