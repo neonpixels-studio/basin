@@ -140,14 +140,15 @@ describe("syncFailureTracking", () => {
       expect(incrementParams).toEqual([42, 1]);
     });
 
-    it("guards the nextRetryAt write with this call's syncFailedAt so a stale writer no-ops", async () => {
+    it("guards the nextRetryAt write with this call's (syncFailedAt, consecutiveFailures) so a stale writer no-ops", async () => {
       // The neon-http driver has no interactive transactions, so a slow
       // concurrent (or stalled-then-resumed) failure must not clobber a fresher
-      // nextRetryAt. The second write carries a `syncFailedAt = <this call's
-      // timestamp>` predicate: a later failure overwrites that timestamp and a
-      // success nulls it, so either way this write then matches no rows. Using
-      // the timestamp (not the count) avoids an ABA where a reset-to-zero then a
-      // fresh failure could resurrect an old count value.
+      // nextRetryAt. The second write carries BOTH predicates: the RETURNING
+      // count distinguishes two failures that stamped the same millisecond
+      // (timestamp alone can't), and the timestamp rules out an ABA where a
+      // reset-to-zero then a fresh failure resurrects an old count value.
+      mockUpdateReturning.mockResolvedValue([{ consecutiveFailures: 2 }]);
+
       await persistPermanentSyncFailure(
         1,
         42,
@@ -159,9 +160,10 @@ describe("syncFailureTracking", () => {
         mockUpdateWhere.mock.calls[1][0],
       );
       expect(sql).toContain('"feeds"."sync_failed_at" = ');
-      // (id, userId, guard) — the guard is the exact timestamp write 1 stamped
-      // (the dialect renders the Date param as its ISO string).
-      expect(params).toEqual([42, 1, stampedFailedAt.toISOString()]);
+      expect(sql).toContain('"feeds"."consecutive_failures" = ');
+      // (id, userId, timestamp guard, count guard) — the exact pair write 1
+      // wrote (the dialect renders the Date param as its ISO string).
+      expect(params).toEqual([42, 1, stampedFailedAt.toISOString(), 2]);
     });
 
     it("computes nextRetryAt from the RETURNING count for a first failure", async () => {
