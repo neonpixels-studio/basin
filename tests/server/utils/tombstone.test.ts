@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
 import { deletionTombstones } from "../../../server/db/schema";
@@ -16,6 +16,7 @@ vi.stubGlobal("useDb", () => ({
 import {
   isProviderTombstoned,
   recordDeletionTombstone,
+  MAX_CLERK_SESSION_LIFETIME_MS,
 } from "../../../server/utils/tombstone";
 
 const dialect = new PgDialect();
@@ -42,10 +43,66 @@ describe("tombstone", () => {
   });
 
   describe("isProviderTombstoned", () => {
-    it("is true when a tombstone row exists for the provider id", async () => {
+    // Freeze the clock so window-boundary assertions compare against the exact
+    // instant the test builds deletedAt from, rather than a few ms later.
+    beforeEach(() => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("is true when a recent tombstone row exists for the provider id", async () => {
+      mockTombstoneFindFirst.mockResolvedValue({
+        providerId: "clerk_gone",
+        deletedAt: new Date(),
+      });
+
+      await expect(isProviderTombstoned("clerk_gone")).resolves.toBe(true);
+    });
+
+    it("is true when a tombstone has no deletedAt (fails closed)", async () => {
       mockTombstoneFindFirst.mockResolvedValue({
         providerId: "clerk_gone",
         deletedAt: null,
+      });
+
+      await expect(isProviderTombstoned("clerk_gone")).resolves.toBe(true);
+    });
+
+    it("ignores a tombstone older than the maximum Clerk session lifetime", async () => {
+      const justPastWindow = new Date(
+        Date.now() - MAX_CLERK_SESSION_LIFETIME_MS - 1000,
+      );
+      mockTombstoneFindFirst.mockResolvedValue({
+        providerId: "clerk_gone",
+        deletedAt: justPastWindow,
+      });
+
+      await expect(isProviderTombstoned("clerk_gone")).resolves.toBe(false);
+    });
+
+    it("ignores a tombstone exactly at the window boundary (strict comparison)", async () => {
+      const exactlyAtWindow = new Date(
+        Date.now() - MAX_CLERK_SESSION_LIFETIME_MS,
+      );
+      mockTombstoneFindFirst.mockResolvedValue({
+        providerId: "clerk_gone",
+        deletedAt: exactlyAtWindow,
+      });
+
+      await expect(isProviderTombstoned("clerk_gone")).resolves.toBe(false);
+    });
+
+    it("still blocks a tombstone right at the edge of the window", async () => {
+      const justInsideWindow = new Date(
+        Date.now() - MAX_CLERK_SESSION_LIFETIME_MS + 60 * 1000,
+      );
+      mockTombstoneFindFirst.mockResolvedValue({
+        providerId: "clerk_gone",
+        deletedAt: justInsideWindow,
       });
 
       await expect(isProviderTombstoned("clerk_gone")).resolves.toBe(true);

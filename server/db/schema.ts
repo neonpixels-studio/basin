@@ -34,15 +34,19 @@ export const users = pgTable("users", {
 // resurrect an empty row). The provider id is the primary key so the deletion
 // write can safely `onConflictDoNothing` if the account is deleted twice.
 //
-// Rows are retained and not pruned here: Clerk never reuses a user id, and a
-// row only ever needs to outlive the deleted account's longest valid session,
-// so pruning risks reopening the resurrection gap if the window undercut a
-// still-valid token's TTL. The stored value is Clerk's opaque provider id (a
-// pseudonymous identifier, not profile data); hashing it or bounding retention
-// past the max session lifetime are reasonable hardening follow-ups.
+// A row only ever needs to outlive the deleted account's longest valid session,
+// so tombstone.ts ignores any row older than the maximum Clerk session lifetime
+// (measured against deletedAt) rather than pruning here: reads self-heal the
+// window without a scheduled job, and the row stays for audit. deletedAt is
+// stored with a time zone so that age comparison against the app clock is
+// unaffected by the server's local time zone. The stored value is Clerk's opaque
+// provider id (a pseudonymous identifier, not profile data); hashing it is a
+// reasonable hardening follow-up.
 export const deletionTombstones = pgTable("deletion_tombstones", {
   providerId: text("provider_id").primaryKey(),
-  deletedAt: timestamp("deleted_at").notNull().defaultNow(),
+  deletedAt: timestamp("deleted_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
 });
 
 export const feeds = pgTable(

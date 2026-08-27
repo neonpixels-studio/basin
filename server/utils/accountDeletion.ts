@@ -80,11 +80,12 @@ export async function deleteUserAccount(
     await deleteClerkUser(event, user.providerId);
   } catch (caughtError) {
     // The identity is now tombstoned, so this provider id is 403'd from
-    // re-creating a user. If reconciliation keeps the Clerk identity alive,
-    // the deletion_tombstones row for it must be removed too, or the account
-    // stays permanently locked out.
+    // re-creating a user. The lockout is bounded: isProviderTombstoned ignores
+    // tombstones older than the maximum Clerk session lifetime, so a kept
+    // identity self-heals once that window passes. Reconcile before then (delete
+    // the deletion_tombstones row) if the identity must stay usable sooner.
     console.error(
-      `Account data deleted for user ${user.id}, but removing the Clerk identity ${user.providerId} failed; reconcile manually (also delete its deletion_tombstones row if the identity is kept):`,
+      `Account data deleted for user ${user.id}, but removing the Clerk identity ${user.providerId} failed; reconcile manually (delete its deletion_tombstones row if the identity is kept, else it stays locked out until the session-lifetime window elapses):`,
       caughtError,
     );
   }
