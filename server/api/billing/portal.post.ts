@@ -1,16 +1,17 @@
 import type Stripe from "stripe";
 import { createBillingPortalSession } from "../../utils/stripe";
+import { getConfiguredSiteUrl } from "../../utils/siteUrl";
 import { getStripeCustomerId } from "../../utils/subscriptions";
 
 async function createPortalSessionOrThrow(
   customerId: string,
-  origin: string,
+  baseUrl: string,
   userId: number,
 ): Promise<Stripe.BillingPortal.Session> {
   try {
     return await createBillingPortalSession({
       customerId,
-      returnUrl: `${origin}/settings/account`,
+      returnUrl: `${baseUrl}/settings/account`,
     });
   } catch (caughtError) {
     console.error(
@@ -30,6 +31,10 @@ export default defineEventHandler(async (event) => {
     throw createError({ statusCode: 401, statusMessage: "Unauthorized" });
   }
 
+  // Resolve the redirect base first so a misconfigured site URL fails fast,
+  // before the customer lookup's database round trip.
+  const baseUrl = getConfiguredSiteUrl();
+
   // Resolve the customer from the authenticated user's own subscription row so
   // the portal is always scoped to their billing, never a client-supplied id.
   const customerId = await getStripeCustomerId(user.id);
@@ -40,12 +45,15 @@ export default defineEventHandler(async (event) => {
     });
   }
 
-  const { origin } = getRequestURL(event);
   // The portal call throws on known-reachable states (an unconfigured portal in
   // the Stripe dashboard, or a customer that no longer exists in Stripe). Map
   // those to a 502 with a generic message rather than leaking Stripe's raw
   // error text out of an unhandled 500.
-  const session = await createPortalSessionOrThrow(customerId, origin, user.id);
+  const session = await createPortalSessionOrThrow(
+    customerId,
+    baseUrl,
+    user.id,
+  );
 
   if (!session.url) {
     throw createError({

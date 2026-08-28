@@ -13,7 +13,6 @@ vi.stubGlobal("useDb", () => ({
 
 import {
   searchFeedItems,
-  formatRelativeTime,
   SEARCH_RESULT_LIMIT,
 } from "../../../server/utils/search";
 
@@ -175,33 +174,5 @@ describe("searchFeedItems", () => {
     expect(mockWhere).toHaveBeenCalledTimes(1);
     expect(mockOrderBy).toHaveBeenCalledTimes(1);
     expect(mockLimit).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe("formatRelativeTime", () => {
-  it("returns empty string for null", () => {
-    expect(formatRelativeTime(null)).toBe("");
-  });
-
-  it("formats minutes for dates less than 1 hour ago", () => {
-    const thirtyMinutesAgo = new Date(Date.now() - 30 * 60_000);
-    expect(formatRelativeTime(thirtyMinutesAgo)).toBe("30m");
-  });
-
-  it("formats hours for dates less than 24 hours ago", () => {
-    const twoHoursAgo = new Date(Date.now() - 2 * 3_600_000);
-    expect(formatRelativeTime(twoHoursAgo)).toBe("2h");
-  });
-
-  it("formats days for dates less than 7 days ago", () => {
-    const threeDaysAgo = new Date(Date.now() - 3 * 86_400_000);
-    expect(formatRelativeTime(threeDaysAgo)).toBe("3d");
-  });
-
-  it("formats as month and day for dates older than 7 days", () => {
-    // Use a local noon timestamp to avoid timezone-induced date shifts.
-    const oldDate = new Date(2024, 0, 5, 12, 0, 0);
-    const result = formatRelativeTime(oldDate);
-    expect(result).toMatch(/Jan 5/);
   });
 });

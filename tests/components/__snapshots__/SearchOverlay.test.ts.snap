@@ -11,6 +11,7 @@ exports[`SearchOverlay > matches snapshot (open, empty query) 1`] = `
       </button>
     </div>
     <div class="search-results">
+      <!--v-if-->
       <div class="sr-group">Pages</div>
       <div class="sr-item cursor"><span class="sr-pill" style="--c: var(--accent-soft-ink);">PAGE</span>
         <div class="sr-main">
@@ -29,6 +30,25 @@ exports[`SearchOverlay > matches snapshot (open, empty query) 1`] = `
           <div class="sr-title">Sign in</div>
           <div class="sr-sub">Account &amp; session</div>
         </div><span class="sr-arrow"><r-icon-stub name="arrowRight" size="16"></r-icon-stub></span>
+      </div>
+      <!--v-if-->
+    </div>
+    <div class="search-foot"><span class="hint"><span class="kbd">↑↓</span> navigate</span><span class="hint"><span class="kbd">↵</span> open</span><span class="hint"><span class="kbd">esc</span> close</span></div>
+  </div>
+</div>"
+`;
+
+exports[`SearchOverlay > matches snapshot (open, search request failed) 1`] = `
+"<div class="search-scrim">
+  <div class="search-modal">
+    <div class="search-in">
+      <r-icon-stub name="search" size="22"></r-icon-stub><input id="reader-search-input" placeholder="search posts, podcasts, videos, pages…"><span class="kbd">esc</span><button class="icon-btn">
+        <r-icon-stub name="x" size="18"></r-icon-stub>
+      </button>
+    </div>
+    <div class="search-results">
+      <div class="search-error" role="alert">
+        <p>Search is unavailable right now. Please try again.</p><button class="btn"> Retry </button>
       </div>
       <!--v-if-->
     </div>

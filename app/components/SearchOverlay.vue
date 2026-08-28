@@ -91,12 +91,19 @@ async function fetchSearchResults(query) {
       signal: controller.signal,
     });
 
+    // Treat a non-array body as a failure so a malformed 2xx response surfaces
+    // the error state instead of crashing the searchGroups computed on .map.
+    if (!Array.isArray(results)) {
+      throw new Error("Malformed search response");
+    }
+
     // Only commit if this controller is still the active one (i.e. not superseded).
     if (activeAbortController === controller) {
       serverResults.value = results;
     }
   } catch (error) {
     if (activeAbortController === controller) {
+      console.error("Search request failed", error);
       searchError.value = error;
       serverResults.value = [];
     }
@@ -106,6 +113,10 @@ async function fetchSearchResults(query) {
       activeAbortController = null;
     }
   }
+}
+
+function retrySearch() {
+  fetchSearchResults(state.query.trim());
 }
 
 function chooseRow(row) {
@@ -146,6 +157,9 @@ watch(
   () => state.query,
   (newQuery) => {
     state.cursor = 0;
+    // Clear the previous failure immediately so a stale "Search unavailable"
+    // never lingers over a query that has not been attempted yet.
+    searchError.value = null;
     clearTimeout(debounceTimer);
     // Cancel any in-flight request immediately so it cannot overwrite results
     // for the new query while the debounce delay is pending.
@@ -194,11 +208,18 @@ onUnmounted(() => {
       </div>
 
       <div class="search-results">
-        <div v-if="searchLoading" class="empty" style="padding: 48px 20px">
+        <div v-if="searchLoading" class="empty" aria-live="polite">
           <p>Searching…</p>
         </div>
 
         <template v-else>
+          <div v-if="searchError" class="search-error" role="alert">
+            <p>Search is unavailable right now. Please try again.</p>
+            <button class="btn" @keydown.enter.stop @click="retrySearch">
+              Retry
+            </button>
+          </div>
+
           <template v-for="g in searchGroups" :key="g.label">
             <div class="sr-group">{{ g.label }}</div>
             <div
@@ -239,11 +260,7 @@ onUnmounted(() => {
             </div>
           </template>
 
-          <div
-            v-if="!searchLoading && !searchFlat.length"
-            class="empty"
-            style="padding: 48px 20px"
-          >
+          <div v-if="!searchError && !searchFlat.length" class="empty">
             <h3>No matches</h3>
             <p>Try a different word, source, or tag.</p>
           </div>
@@ -309,6 +326,9 @@ onUnmounted(() => {
   overflow-y: auto;
   padding: 8px;
 }
+.search-results .empty {
+  padding: 48px 20px;
+}
 .sr-group {
   font-size: 10px;
   letter-spacing: 0.14em;
@@ -362,6 +382,21 @@ onUnmounted(() => {
 }
 .sr-arrow {
   color: var(--faint);
+  flex: none;
+}
+.search-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 8px 4px;
+  padding: 12px 14px;
+  border: 1px solid var(--danger);
+  border-radius: 10px;
+  color: var(--danger);
+  font-size: 13px;
+}
+.search-error .btn {
   flex: none;
 }
 .search-foot {
