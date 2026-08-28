@@ -33,12 +33,13 @@ The database URL, the Stripe keys, and `NUXT_SITE_URL` differ per environment;
 the Clerk, Google, and Sentry values are identical across all of them.
 `NUXT_SITE_URL` is the deployed origin (localhost for local/e2e, the stable
 preview alias for `.env.dev`, the production origin for `.env.production`) —
-OAuth redirect URIs are built from it, so each value must be registered as an
-authorized redirect URI with the provider (Netlify preview deploys get per-deploy
-hostnames, so `.env.dev` must pin a stable alias rather than tracking the request
-host). A missing or malformed `NUXT_SITE_URL` makes the OAuth routes return a
-500 until it is set. See [`.env.example`](.env.example) for the full variable
-reference and where to obtain each value.
+OAuth redirect URIs and billing redirect targets are built from it, so each
+value must be registered as an authorized redirect URI with the provider
+(Netlify preview deploys get per-deploy hostnames, so `.env.dev` must pin a
+stable alias rather than tracking the request host). A missing or malformed
+`NUXT_SITE_URL` makes the OAuth routes return a 500 until it is set. See
+[`.env.example`](.env.example) for the full variable reference and where to
+obtain each value.
 
 **First-time setup:** restore `.env.keys` from your password manager, then point
 local dev at your own Neon branch so it never touches production data:
@@ -193,6 +194,13 @@ The paid Pro plan (monthly or yearly, both with a 14-day free trial) is handled 
    | `NUXT_STRIPE_WEBHOOK_SECRET`    | Verifies webhook requests are really from Stripe |
    | `NUXT_STRIPE_PRICE_PRO_MONTHLY` | Price ID for the monthly Pro plan                |
    | `NUXT_STRIPE_PRICE_PRO_YEARLY`  | Price ID for the yearly Pro plan                 |
+   | `NUXT_SITE_URL`                 | basin's public base URL for billing redirects    |
+
+Checkout and billing-portal redirect targets (success, cancel, and return URLs)
+are built from `NUXT_SITE_URL` — basin's own public base URL — rather than the
+request's `Host` header, so a forged `Host` can't hijack the post-billing
+redirect. Set `NUXT_SITE_URL` per environment (e.g. `http://localhost:3000`
+locally, the real domain in production).
 
 Local Stripe CLI users can forward webhooks during development with `stripe listen --forward-to localhost:3000/api/billing/webhook`, which prints a temporary signing secret to use for `NUXT_STRIPE_WEBHOOK_SECRET`.
 

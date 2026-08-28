@@ -1,49 +1,63 @@
-// The app's public origin, anchored in server config (NUXT_SITE_URL) rather
-// than derived from the incoming request. Deriving OAuth redirect URIs from the
-// request origin trusts a client-controllable Host/X-Forwarded-Host header, so a
-// forged header can point an OAuth callback at an attacker-controlled origin.
-// Callbacks must be built from a value only the server controls.
+// Resolves basin's own public base URL from server config, isolated here as a
+// small seam so the resolution + validation is unit-testable without an HTTP
+// layer (mirrors server/utils/stripe.ts reading useRuntimeConfig).
+//
+// SECURITY: billing redirect targets (Stripe return_url / success_url /
+// cancel_url) must be anchored to a trusted origin. Deriving them from the
+// request's Host header lets a forged Host steer the post-billing bounce to an
+// attacker's domain, so we read a configured value instead and never trust the
+// request.
 
-const SITE_URL_MISCONFIGURED_MESSAGE = "Server configuration error";
+const ALLOWED_SITE_URL_PROTOCOLS = new Set(["http:", "https:"]);
 
-function parseSiteUrl(value: string): URL | null {
+function parseAbsoluteSiteUrl(rawUrl: string): URL {
   try {
-    return new URL(value);
+    return new URL(rawUrl);
   } catch {
-    return null;
+    throw createError({
+      statusCode: 500,
+      statusMessage: "Site URL is not configured as a valid absolute URL",
+    });
   }
 }
 
-function siteUrlConfigError(detail: string) {
-  // Log the specific misconfiguration server-side, but return a generic message
-  // so the branded error page never echoes internal env-var details to the user.
-  console.error(`Site URL misconfigured: ${detail}`);
-  return createError({
-    statusCode: 500,
-    statusMessage: SITE_URL_MISCONFIGURED_MESSAGE,
-  });
-}
-
+// Returns the configured site origin (scheme://host[:port], no trailing path)
+// so callers can join redirect paths onto a trusted base. Throws a 500 when the
+// value is missing or malformed rather than silently falling back to the
+// request host.
 export function getConfiguredSiteUrl(): string {
   const { siteUrl } = useRuntimeConfig();
-  const configuredValue = typeof siteUrl === "string" ? siteUrl.trim() : "";
-  if (!configuredValue) {
-    throw siteUrlConfigError("NUXT_SITE_URL is not set");
+  if (!siteUrl) {
+    throw createError({
+      statusCode: 500,
+      statusMessage: "Site URL is not configured: missing NUXT_SITE_URL",
+    });
   }
-
-  const parsedUrl = parseSiteUrl(configuredValue);
-  if (!parsedUrl) {
-    throw siteUrlConfigError(
-      `NUXT_SITE_URL is not a valid absolute URL: ${configuredValue}`,
-    );
+  const parsedSiteUrl = parseAbsoluteSiteUrl(siteUrl);
+  if (!ALLOWED_SITE_URL_PROTOCOLS.has(parsedSiteUrl.protocol)) {
+    throw createError({
+      statusCode: 500,
+      statusMessage: "Site URL must use the http or https protocol",
+    });
   }
-  if (parsedUrl.protocol !== "https:" && parsedUrl.protocol !== "http:") {
-    throw siteUrlConfigError(
-      `NUXT_SITE_URL must be an http(s) URL: ${configuredValue}`,
-    );
+  // Reject rather than silently strip anything beyond the origin: callers join
+  // their own redirect paths onto this origin, so a configured base like
+  // https://basin.example/app would drop `/app` and bounce to the wrong place,
+  // and embedded credentials (user:pass@host) would likewise vanish. Fail loud
+  // so the misconfiguration surfaces instead of producing a subtly broken
+  // redirect. A bare origin with a root path ("/") is allowed.
+  const hasExtraneousParts =
+    parsedSiteUrl.pathname !== "/" ||
+    parsedSiteUrl.search !== "" ||
+    parsedSiteUrl.hash !== "" ||
+    parsedSiteUrl.username !== "" ||
+    parsedSiteUrl.password !== "";
+  if (hasExtraneousParts) {
+    throw createError({
+      statusCode: 500,
+      statusMessage:
+        "Site URL must be a bare origin with no path, query, fragment, or credentials",
+    });
   }
-
-  // `origin` drops any trailing slash, path, or query so callers can join a
-  // leading-slash path without producing a double slash.
-  return parsedUrl.origin;
+  return parsedSiteUrl.origin;
 }
