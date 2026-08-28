@@ -120,28 +120,6 @@ async function advanceNextRetryAt(
     );
 }
 
-// Records a permanent failure and advances the backoff. The atomic increment
-// and the guarded nextRetryAt write are separate statements — see each helper.
-async function recordFeedSyncFailure(
-  feedId: number,
-  userId: number,
-  message: string,
-): Promise<void> {
-  const failedAt = new Date();
-  const consecutiveFailures = await incrementConsecutiveFailures(
-    feedId,
-    userId,
-    message,
-    failedAt,
-  );
-
-  if (consecutiveFailures === null) {
-    return;
-  }
-
-  await advanceNextRetryAt(feedId, userId, consecutiveFailures, failedAt);
-}
-
 async function recordFeedSyncSuccess(
   feedId: number,
   userId: number,
@@ -204,13 +182,28 @@ export async function persistPermanentSyncFailure(
     return;
   }
 
-  await recordFeedSyncFailure(feedId, userId, error.message);
+  // Order matters: the atomic increment (the feed's error status) and the
+  // integration's reconnect flag are the user-visible signals, so they land
+  // first. The nextRetryAt write is a scheduling optimization the guard makes
+  // safe to lose, so it runs last — a transient failure on it still throws
+  // (fail loud, self-heals next tick) but can no longer preempt the flags.
+  const failedAt = new Date();
+  const consecutiveFailures = await incrementConsecutiveFailures(
+    feedId,
+    userId,
+    error.message,
+    failedAt,
+  );
 
-  if (!(error instanceof IntegrationAuthError)) {
+  if (error instanceof IntegrationAuthError) {
+    await recordIntegrationSyncFailure(userId, error.provider, error.message);
+  }
+
+  if (consecutiveFailures === null) {
     return;
   }
 
-  await recordIntegrationSyncFailure(userId, error.provider, error.message);
+  await advanceNextRetryAt(feedId, userId, consecutiveFailures, failedAt);
 }
 
 // Marks a feed sync as successful and clears any previously-recorded failure

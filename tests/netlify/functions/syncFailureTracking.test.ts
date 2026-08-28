@@ -113,13 +113,14 @@ describe("syncFailureTracking", () => {
 
       // nextRetryAt must NOT ride along on the increment: computing it here would
       // need a pre-read count — the exact read-then-write this change removes. It
-      // belongs on the second, guarded write only. Pin the key set so re-adding
-      // it regresses this test.
-      expect(Object.keys(incrementSet)).toEqual([
-        "syncStatus",
+      // belongs on the second, guarded write only. Assert membership (not key
+      // order, which has no behavioral meaning) so re-adding it regresses this.
+      expect(incrementSet).not.toHaveProperty("nextRetryAt");
+      expect(Object.keys(incrementSet).sort()).toEqual([
+        "consecutiveFailures",
         "syncError",
         "syncFailedAt",
-        "consecutiveFailures",
+        "syncStatus",
       ]);
 
       // No SELECT: the count is read back via RETURNING, never a prior query.
@@ -276,6 +277,39 @@ describe("syncFailureTracking", () => {
       ).rejects.toThrow("connection reset");
     });
 
+    it("writes the integration reconnect flag before the backoff, so a failed nextRetryAt write can't suppress it", async () => {
+      // The nextRetryAt write is a separate statement that can fail on its own.
+      // It runs last, so an IntegrationAuthError still marks the connection as
+      // needing reconnect even when the backoff write dies — the flag is the
+      // user-visible signal and must not ride on the scheduling optimization.
+      mockUpdateWhere
+        .mockReturnValueOnce(
+          Object.assign(Promise.resolve(undefined), {
+            returning: mockUpdateReturning,
+          }),
+        )
+        .mockReturnValueOnce(Promise.resolve(undefined))
+        .mockRejectedValueOnce(new Error("connection reset"));
+
+      await expect(
+        persistPermanentSyncFailure(
+          1,
+          42,
+          new IntegrationAuthError(
+            "youtube",
+            "Re-connect your YouTube account.",
+          ),
+        ),
+      ).rejects.toThrow("connection reset");
+
+      expect(mockUpdateSet).toHaveBeenCalledWith(
+        expect.objectContaining({
+          syncStatus: "error",
+          syncError: "Re-connect your YouTube account.",
+        }),
+      );
+    });
+
     it("does not touch integrations for a feed-only failure (not IntegrationAuthError)", async () => {
       await persistPermanentSyncFailure(
         1,
@@ -297,10 +331,12 @@ describe("syncFailureTracking", () => {
         new IntegrationAuthError("youtube", "Re-connect your YouTube account."),
       );
 
-      // Two feed writes (increment + nextRetryAt) then the integration write.
+      // Three writes: the atomic increment, then the integration reconnect flag,
+      // then the backoff. The integration write is second — the user-visible
+      // signals land before the scheduling optimization that can fail on its own.
       expect(mockUpdate).toHaveBeenCalledTimes(3);
       expect(mockUpdateSet).toHaveBeenNthCalledWith(
-        3,
+        2,
         expect.objectContaining({
           syncStatus: "error",
           syncError: "Re-connect your YouTube account.",
