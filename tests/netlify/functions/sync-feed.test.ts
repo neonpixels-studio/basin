@@ -199,6 +199,22 @@ function makeVideoItem() {
   };
 }
 
+// Stubs the drizzle update chain used by every describe block here. where()
+// carries `.returning()` for the atomic-increment failure write; other writes
+// await it directly. Keeping it a real thenable means a dropped `await`
+// surfaces rather than silently passing. The default RETURNING row stands in
+// for a feed now at one consecutive failure.
+function stubFeedUpdateChain() {
+  mockUpdate.mockReturnValue({ set: mockUpdateSet });
+  mockUpdateSet.mockReturnValue({ where: mockUpdateWhere });
+  mockUpdateWhere.mockReturnValue(
+    Object.assign(Promise.resolve(undefined), {
+      returning: mockUpdateReturning,
+    }),
+  );
+  mockUpdateReturning.mockResolvedValue([{ consecutiveFailures: 1 }]);
+}
+
 describe("sync-feed workload", () => {
   beforeEach(() => {
     vi.resetAllMocks();
@@ -208,18 +224,7 @@ describe("sync-feed workload", () => {
     vi.spyOn(console, "log").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
 
-    mockUpdate.mockReturnValue({ set: mockUpdateSet });
-    mockUpdateSet.mockReturnValue({ where: mockUpdateWhere });
-    // where() carries `.returning()` for the atomic-increment failure write;
-    // other writes await it directly. Keeping it a real thenable means a dropped
-    // `await` surfaces rather than silently passing. The default RETURNING row
-    // stands in for a feed now at one consecutive failure.
-    mockUpdateWhere.mockReturnValue(
-      Object.assign(Promise.resolve(undefined), {
-        returning: mockUpdateReturning,
-      }),
-    );
-    mockUpdateReturning.mockResolvedValue([{ consecutiveFailures: 1 }]);
+    stubFeedUpdateChain();
 
     mockInsert.mockReturnValue({ values: mockInsertValues });
     mockInsertValues.mockReturnValue({
@@ -494,18 +499,7 @@ describe("sync-feed workload — YouTube source", () => {
     vi.spyOn(console, "log").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
 
-    mockUpdate.mockReturnValue({ set: mockUpdateSet });
-    mockUpdateSet.mockReturnValue({ where: mockUpdateWhere });
-    // where() carries `.returning()` for the atomic-increment failure write;
-    // other writes await it directly. Keeping it a real thenable means a dropped
-    // `await` surfaces rather than silently passing. The default RETURNING row
-    // stands in for a feed now at one consecutive failure.
-    mockUpdateWhere.mockReturnValue(
-      Object.assign(Promise.resolve(undefined), {
-        returning: mockUpdateReturning,
-      }),
-    );
-    mockUpdateReturning.mockResolvedValue([{ consecutiveFailures: 1 }]);
+    stubFeedUpdateChain();
 
     mockInsert.mockReturnValue({ values: mockInsertValues });
     mockInsertValues.mockReturnValue({
@@ -810,18 +804,7 @@ describe("sync-feed workload — permanent failure persistence", () => {
     vi.spyOn(console, "log").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
 
-    mockUpdate.mockReturnValue({ set: mockUpdateSet });
-    mockUpdateSet.mockReturnValue({ where: mockUpdateWhere });
-    // where() carries `.returning()` for the atomic-increment failure write;
-    // other writes await it directly. Keeping it a real thenable means a dropped
-    // `await` surfaces rather than silently passing. The default RETURNING row
-    // stands in for a feed now at one consecutive failure.
-    mockUpdateWhere.mockReturnValue(
-      Object.assign(Promise.resolve(undefined), {
-        returning: mockUpdateReturning,
-      }),
-    );
-    mockUpdateReturning.mockResolvedValue([{ consecutiveFailures: 1 }]);
+    stubFeedUpdateChain();
 
     mockInsert.mockReturnValue({ values: mockInsertValues });
     mockInsertValues.mockReturnValue({
@@ -1007,18 +990,7 @@ describe("sync-feed workload — Bluesky source", () => {
     vi.spyOn(console, "log").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
 
-    mockUpdate.mockReturnValue({ set: mockUpdateSet });
-    mockUpdateSet.mockReturnValue({ where: mockUpdateWhere });
-    // where() carries `.returning()` for the atomic-increment failure write;
-    // other writes await it directly. Keeping it a real thenable means a dropped
-    // `await` surfaces rather than silently passing. The default RETURNING row
-    // stands in for a feed now at one consecutive failure.
-    mockUpdateWhere.mockReturnValue(
-      Object.assign(Promise.resolve(undefined), {
-        returning: mockUpdateReturning,
-      }),
-    );
-    mockUpdateReturning.mockResolvedValue([{ consecutiveFailures: 1 }]);
+    stubFeedUpdateChain();
 
     mockInsert.mockReturnValue({ values: mockInsertValues });
     mockInsertValues.mockReturnValue({

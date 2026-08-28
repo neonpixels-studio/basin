@@ -111,9 +111,22 @@ describe("syncFailureTracking", () => {
         '"feeds"."consecutive_failures" + 1',
       );
 
+      // nextRetryAt must NOT ride along on the increment: computing it here would
+      // need a pre-read count — the exact read-then-write this change removes. It
+      // belongs on the second, guarded write only. Pin the key set so re-adding
+      // it regresses this test.
+      expect(Object.keys(incrementSet)).toEqual([
+        "syncStatus",
+        "syncError",
+        "syncFailedAt",
+        "consecutiveFailures",
+      ]);
+
       // No SELECT: the count is read back via RETURNING, never a prior query.
+      // Both writes use RETURNING — the increment reads the post-bump count, the
+      // guarded write reads whether it matched a row — so it's called twice.
       expect(mockFindFirst).not.toHaveBeenCalled();
-      expect(mockUpdateReturning).toHaveBeenCalledTimes(1);
+      expect(mockUpdateReturning).toHaveBeenCalledTimes(2);
     });
 
     it("scopes both failure writes to the feed's (id, userId)", async () => {
@@ -246,9 +259,11 @@ describe("syncFailureTracking", () => {
     it("propagates a failure of the nextRetryAt write instead of swallowing it", async () => {
       // Without an interactive transaction the two writes can't be atomic, so a
       // failed nextRetryAt write must surface (fail loud) rather than be
-      // swallowed into a half-written, silently-ungated row.
-      mockUpdateWhere
-        .mockReturnValueOnce({ returning: mockUpdateReturning })
+      // swallowed into a half-written, silently-ungated row. Both writes end in
+      // RETURNING: the increment lands, then the guarded write's RETURNING
+      // rejects.
+      mockUpdateReturning
+        .mockResolvedValueOnce([{ consecutiveFailures: 1 }])
         .mockRejectedValueOnce(new Error("connection reset"));
 
       await expect(
@@ -258,6 +273,31 @@ describe("syncFailureTracking", () => {
           new ErrorDoNotRetry("Feed unreachable"),
         ),
       ).rejects.toThrow("connection reset");
+    });
+
+    it("warns without throwing when the guarded nextRetryAt write matches no rows", async () => {
+      // The increment landed (a count came back), but a fresher concurrent write
+      // moved the row on before the guarded second write, so it matches nothing.
+      // That lost race is safe and must not throw; it is logged so a steady
+      // stream of these surfaces a backoff that has stopped engaging.
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      mockUpdateReturning
+        .mockResolvedValueOnce([{ consecutiveFailures: 3 }])
+        .mockResolvedValueOnce([]);
+
+      await expect(
+        persistPermanentSyncFailure(
+          1,
+          42,
+          new ErrorDoNotRetry("Feed unreachable"),
+        ),
+      ).resolves.toBeUndefined();
+
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(warnSpy.mock.calls[0][0]).toContain(
+        "sync-feed.next-retry-not-advanced",
+      );
+      warnSpy.mockRestore();
     });
 
     it("does not touch integrations for a feed-only failure (not IntegrationAuthError)", async () => {
