@@ -233,8 +233,11 @@ export async function persistPermanentSyncFailure(
     return;
   }
 
-  for (const extra of rejections.slice(1)) {
-    console.error("sync failure write failed:", extra.reason);
+  for (const extraRejection of rejections.slice(1)) {
+    console.error(
+      `sync failure write failed for feed ${feedId} (user ${userId}):`,
+      extraRejection.reason,
+    );
   }
   throw rejections[0].reason;
 }

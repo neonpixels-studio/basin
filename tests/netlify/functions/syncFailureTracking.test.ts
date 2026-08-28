@@ -39,12 +39,22 @@ function renderSql(fragment: SQL): { sql: string; params: unknown[] } {
   return new PgDialect().sqlToQuery(fragment);
 }
 
-// Finds the UPDATE that targeted the integrations table by its where clause,
-// rather than by dispatch index. The feed increment and the integration write
-// carry an identical `set` shape, and the two independent writes are dispatched
-// concurrently, so index-based assertions are brittle — select by table.
-function integrationWhereCall() {
-  return mockUpdateWhere.mock.calls.find(([whereClause]) =>
+// A where() result that is both awaitable (writes that await it directly) and
+// carries `.returning()` (the atomic-increment write), so one stub satisfies
+// every update chain.
+function updateChainResult() {
+  return Object.assign(Promise.resolve(undefined), {
+    returning: mockUpdateReturning,
+  });
+}
+
+// Locates the UPDATE that targeted the integrations table by its where clause,
+// not by dispatch index. The feed increment and the integration write carry an
+// identical `set` shape and are dispatched concurrently, so index-based
+// selection is brittle. set() and where() are called synchronously in one
+// chain, so the returned index aligns the two mocks for a payload assertion.
+function integrationCallIndex() {
+  return mockUpdateWhere.mock.calls.findIndex(([whereClause]) =>
     renderSql(whereClause).sql.includes('"integrations"."provider"'),
   );
 }
@@ -55,14 +65,9 @@ describe("syncFailureTracking", () => {
     mockUpdate.mockReturnValue({ set: mockUpdateSet });
     mockUpdateSet.mockReturnValue({ where: mockUpdateWhere });
     // where() must satisfy two chains: the atomic-increment write ends in
-    // `.returning()`, while every other write is awaited directly. A thenable
-    // that also carries `.returning` covers both — and staying a real thenable
-    // means a dropped `await` would surface rather than silently pass.
-    mockUpdateWhere.mockReturnValue(
-      Object.assign(Promise.resolve(undefined), {
-        returning: mockUpdateReturning,
-      }),
-    );
+    // `.returning()`, while every other write is awaited directly. One thenable
+    // that also carries `.returning` covers both.
+    mockUpdateWhere.mockReturnValue(updateChainResult());
     // Default: the increment lands and the feed is now at one consecutive
     // failure. Individual tests override the returned count.
     mockUpdateReturning.mockResolvedValue([{ consecutiveFailures: 1 }]);
@@ -267,14 +272,12 @@ describe("syncFailureTracking", () => {
       // Without an interactive transaction the two writes can't be atomic, so a
       // failed nextRetryAt write must surface (fail loud) rather than be
       // swallowed into a half-written, silently-ungated row. The increment write
-      // (a thenable carrying .returning()) lands; the second write rejects.
-      mockUpdateWhere
-        .mockReturnValueOnce(
-          Object.assign(Promise.resolve(undefined), {
-            returning: mockUpdateReturning,
-          }),
-        )
-        .mockRejectedValueOnce(new Error("connection reset"));
+      // lands; the backoff write (the only one carrying the count guard) rejects.
+      mockUpdateWhere.mockImplementation((whereClause) =>
+        renderSql(whereClause).sql.includes('"feeds"."consecutive_failures" = ')
+          ? Promise.reject(new Error("connection reset"))
+          : updateChainResult(),
+      );
 
       await expect(
         persistPermanentSyncFailure(
@@ -290,17 +293,14 @@ describe("syncFailureTracking", () => {
       // dispatched independently of the integration write, so an
       // IntegrationAuthError still marks the connection as needing reconnect even
       // when the backoff dies — the flag is the user-visible signal and must not
-      // ride on the scheduling optimization. The synchronous prefixes run in
-      // dispatch order (increment, then integration), with the backoff write
-      // reaching the DB last, so the third where() is the one that rejects.
-      mockUpdateWhere
-        .mockReturnValueOnce(
-          Object.assign(Promise.resolve(undefined), {
-            returning: mockUpdateReturning,
-          }),
-        )
-        .mockReturnValueOnce(Promise.resolve(undefined))
-        .mockRejectedValueOnce(new Error("connection reset"));
+      // ride on the scheduling optimization. Reject the backoff write by its
+      // clause (the only one carrying the count guard), so the test holds
+      // regardless of dispatch order.
+      mockUpdateWhere.mockImplementation((whereClause) =>
+        renderSql(whereClause).sql.includes('"feeds"."consecutive_failures" = ')
+          ? Promise.reject(new Error("connection reset"))
+          : updateChainResult(),
+      );
 
       await expect(
         persistPermanentSyncFailure(
@@ -313,11 +313,12 @@ describe("syncFailureTracking", () => {
         ),
       ).rejects.toThrow("connection reset");
 
-      // Select the integration write by its target table, not by dispatch index:
-      // the increment carries the same set shape, so the where clause is what
-      // proves the integrations row was written despite the backoff failure.
-      expect(integrationWhereCall()).toBeDefined();
-      expect(mockUpdateSet).toHaveBeenCalledWith(
+      // Assert the integration write's payload, not just that it dispatched:
+      // select it by target table, then read the aligned set() call — the
+      // increment carries the same set shape, so an unindexed match is vacuous.
+      const index = integrationCallIndex();
+      expect(index).toBeGreaterThanOrEqual(0);
+      expect(mockUpdateSet.mock.calls[index][0]).toEqual(
         expect.objectContaining({
           syncStatus: "error",
           syncError: "Re-connect your YouTube account.",
@@ -342,7 +343,38 @@ describe("syncFailureTracking", () => {
         ),
       ).rejects.toThrow("connection reset");
 
-      expect(integrationWhereCall()).toBeDefined();
+      expect(integrationCallIndex()).toBeGreaterThanOrEqual(0);
+    });
+
+    it("throws the first rejection and logs the rest when both writes fail", async () => {
+      // Both independent writes fail. The thrown error must surface one failure
+      // (fail loud), and the other must be logged with the feed/user, not
+      // silently swallowed — that log is its only record.
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      // Feed write (the increment's RETURNING) fails; integration write fails too.
+      mockUpdateReturning.mockRejectedValueOnce(new Error("feed write down"));
+      mockUpdateWhere.mockImplementation((whereClause) =>
+        renderSql(whereClause).sql.includes('"integrations"."provider"')
+          ? Promise.reject(new Error("integration write down"))
+          : updateChainResult(),
+      );
+
+      await expect(
+        persistPermanentSyncFailure(
+          1,
+          42,
+          new IntegrationAuthError(
+            "youtube",
+            "Re-connect your YouTube account.",
+          ),
+        ),
+      ).rejects.toThrow("feed write down");
+
+      expect(errorSpy).toHaveBeenCalledWith(
+        expect.stringContaining("feed 42 (user 1)"),
+        expect.objectContaining({ message: "integration write down" }),
+      );
+      errorSpy.mockRestore();
     });
 
     it("does not touch integrations for a feed-only failure (not IntegrationAuthError)", async () => {
@@ -372,8 +404,9 @@ describe("syncFailureTracking", () => {
       // identical set shape, so the where clause is what proves the integrations
       // row was written.
       expect(mockUpdate).toHaveBeenCalledTimes(3);
-      expect(integrationWhereCall()).toBeDefined();
-      expect(mockUpdateSet).toHaveBeenCalledWith(
+      const index = integrationCallIndex();
+      expect(index).toBeGreaterThanOrEqual(0);
+      expect(mockUpdateSet.mock.calls[index][0]).toEqual(
         expect.objectContaining({
           syncStatus: "error",
           syncError: "Re-connect your YouTube account.",
