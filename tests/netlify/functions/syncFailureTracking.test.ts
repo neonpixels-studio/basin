@@ -39,6 +39,12 @@ function renderSql(fragment: SQL): { sql: string; params: unknown[] } {
   return new PgDialect().sqlToQuery(fragment);
 }
 
+// Rendered-where fragments that identify a specific write regardless of dispatch
+// order: the integration update is the only one scoped by provider, the backoff
+// update the only one carrying the count guard.
+const INTEGRATION_PROVIDER_CLAUSE = '"integrations"."provider"';
+const BACKOFF_GUARD_CLAUSE = '"feeds"."consecutive_failures" = ';
+
 // A where() result that is both awaitable (writes that await it directly) and
 // carries `.returning()` (the atomic-increment write), so one stub satisfies
 // every update chain.
@@ -55,7 +61,18 @@ function updateChainResult() {
 // chain, so the returned index aligns the two mocks for a payload assertion.
 function integrationCallIndex() {
   return mockUpdateWhere.mock.calls.findIndex(([whereClause]) =>
-    renderSql(whereClause).sql.includes('"integrations"."provider"'),
+    renderSql(whereClause).sql.includes(INTEGRATION_PROVIDER_CLAUSE),
+  );
+}
+
+// Rejects only the update whose rendered where clause contains `clauseFragment`;
+// every other write resolves normally. Selecting by clause rather than call
+// index keeps these tests valid regardless of dispatch order.
+function rejectWriteMatching(clauseFragment: string, error: Error) {
+  mockUpdateWhere.mockImplementation((whereClause) =>
+    renderSql(whereClause).sql.includes(clauseFragment)
+      ? Promise.reject(error)
+      : updateChainResult(),
   );
 }
 
@@ -278,11 +295,7 @@ describe("syncFailureTracking", () => {
       // swallowed into a half-written, silently-ungated row. The increment write
       // lands; the backoff write (the only one carrying the count guard) rejects.
       const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-      mockUpdateWhere.mockImplementation((whereClause) =>
-        renderSql(whereClause).sql.includes('"feeds"."consecutive_failures" = ')
-          ? Promise.reject(new Error("connection reset"))
-          : updateChainResult(),
-      );
+      rejectWriteMatching(BACKOFF_GUARD_CLAUSE, new Error("connection reset"));
 
       await expect(
         persistPermanentSyncFailure(
@@ -304,11 +317,7 @@ describe("syncFailureTracking", () => {
       // ride on the scheduling optimization. Reject the backoff write by its
       // clause (the only one carrying the count guard), so the test holds
       // regardless of dispatch order.
-      mockUpdateWhere.mockImplementation((whereClause) =>
-        renderSql(whereClause).sql.includes('"feeds"."consecutive_failures" = ')
-          ? Promise.reject(new Error("connection reset"))
-          : updateChainResult(),
-      );
+      rejectWriteMatching(BACKOFF_GUARD_CLAUSE, new Error("connection reset"));
 
       await expect(
         persistPermanentSyncFailure(
@@ -351,7 +360,14 @@ describe("syncFailureTracking", () => {
         ),
       ).rejects.toThrow("connection reset");
 
-      expect(integrationCallIndex()).toBeGreaterThanOrEqual(0);
+      const index = integrationCallIndex();
+      expect(index).toBeGreaterThanOrEqual(0);
+      expect(mockUpdateSet.mock.calls[index][0]).toEqual(
+        expect.objectContaining({
+          syncStatus: "error",
+          syncError: "Re-connect your YouTube account.",
+        }),
+      );
     });
 
     it("throws the first rejection and logs the rest when both writes fail", async () => {
@@ -361,10 +377,9 @@ describe("syncFailureTracking", () => {
       const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
       // Feed write (the increment's RETURNING) fails; integration write fails too.
       mockUpdateReturning.mockRejectedValueOnce(new Error("feed write down"));
-      mockUpdateWhere.mockImplementation((whereClause) =>
-        renderSql(whereClause).sql.includes('"integrations"."provider"')
-          ? Promise.reject(new Error("integration write down"))
-          : updateChainResult(),
+      rejectWriteMatching(
+        INTEGRATION_PROVIDER_CLAUSE,
+        new Error("integration write down"),
       );
 
       await expect(
