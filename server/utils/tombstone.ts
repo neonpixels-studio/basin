@@ -42,24 +42,31 @@ export async function isProviderTombstoned(
   if (!tombstone) {
     return false;
   }
-  return isTombstoneActive(tombstone.deletedAt);
+  return isTombstoneActive(providerId, tombstone.deletedAt);
 }
 
 // A tombstone still blocks resurrection until the maximum Clerk session lifetime
 // has elapsed since the deletion. A missing deletedAt fails closed (keep
 // blocking): we cannot prove the window has passed, and a false negative here
 // would resurrect a deleted account.
-function isTombstoneActive(deletedAt: Date | null): boolean {
+function isTombstoneActive(
+  providerId: string,
+  deletedAt: Date | null,
+): boolean {
   if (!deletedAt) {
     // The column is NOT NULL, so this only fires on a malformed row. Fail loud
     // and closed: keep blocking (matching readClerkAuthContext's fail-closed
-    // stance) but surface the impossible row so it can be reconciled rather than
-    // silently locking an identity out.
+    // stance) but surface the impossible row — including its provider id — so it
+    // can be reconciled rather than silently locking an identity out.
     console.error(
-      "deletion_tombstones row is missing deleted_at; blocking re-creation until reconciled",
+      `deletion_tombstones row for provider id ${providerId} is missing deleted_at; blocking re-creation until reconciled`,
     );
     return true;
   }
+  // The window is measured against the app server's clock while deletedAt is
+  // written by the database (defaultNow()). Any skew between the two clocks
+  // shifts the boundary by that offset; both run on NTP-synced infrastructure,
+  // so the skew is far smaller than the multi-day window and is accepted here.
   const tombstoneAgeMs = Date.now() - deletedAt.getTime();
   return tombstoneAgeMs < MAX_CLERK_SESSION_LIFETIME_MS;
 }

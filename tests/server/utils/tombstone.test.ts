@@ -42,6 +42,13 @@ describe("tombstone", () => {
     mockOnConflictDoNothing.mockResolvedValue(undefined);
   });
 
+  // Pin the retention window to the literal policy value independently of the
+  // export, so shrinking or growing the constant fails the suite instead of
+  // silently sliding every window-relative assertion below with it.
+  it("retains tombstones for the seven-day Clerk session window", () => {
+    expect(MAX_CLERK_SESSION_LIFETIME_MS).toBe(7 * 24 * 60 * 60 * 1000);
+  });
+
   describe("isProviderTombstoned", () => {
     // Freeze the clock so window-boundary assertions compare against the exact
     // instant the test builds deletedAt from, rather than a few ms later.
@@ -63,13 +70,18 @@ describe("tombstone", () => {
       await expect(isProviderTombstoned("clerk_gone")).resolves.toBe(true);
     });
 
-    it("is true when a tombstone has no deletedAt (fails closed)", async () => {
+    it("is true when a tombstone has no deletedAt (fails closed) and logs the provider id", async () => {
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
       mockTombstoneFindFirst.mockResolvedValue({
         providerId: "clerk_gone",
         deletedAt: null,
       });
 
       await expect(isProviderTombstoned("clerk_gone")).resolves.toBe(true);
+      expect(errorSpy).toHaveBeenCalledWith(
+        expect.stringContaining("clerk_gone"),
+      );
+      errorSpy.mockRestore();
     });
 
     it("ignores a tombstone older than the maximum Clerk session lifetime", async () => {
