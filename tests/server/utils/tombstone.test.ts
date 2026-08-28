@@ -4,7 +4,7 @@ import { PgDialect } from "drizzle-orm/pg-core";
 import { deletionTombstones } from "../../../server/db/schema";
 
 const mockTombstoneFindFirst = vi.fn();
-const mockOnConflictDoNothing = vi.fn();
+const mockOnConflictDoUpdate = vi.fn();
 const mockValues = vi.fn();
 const mockInsert = vi.fn();
 
@@ -37,9 +37,9 @@ describe("tombstone", () => {
     vi.resetAllMocks();
     mockInsert.mockReturnValue({ values: mockValues });
     mockValues.mockReturnValue({
-      onConflictDoNothing: mockOnConflictDoNothing,
+      onConflictDoUpdate: mockOnConflictDoUpdate,
     });
-    mockOnConflictDoNothing.mockResolvedValue(undefined);
+    mockOnConflictDoUpdate.mockResolvedValue(undefined);
   });
 
   // Pin the retention window to the literal policy value independently of the
@@ -141,12 +141,19 @@ describe("tombstone", () => {
   });
 
   describe("recordDeletionTombstone", () => {
-    it("inserts the provider id with onConflictDoNothing so a repeat deletion is a no-op", async () => {
+    it("re-stamps deletedAt on conflict so re-deleting restarts the retention window", async () => {
       await recordDeletionTombstone("clerk_gone");
 
       expect(mockInsert).toHaveBeenCalledWith(deletionTombstones);
       expect(mockValues).toHaveBeenCalledWith({ providerId: "clerk_gone" });
-      expect(mockOnConflictDoNothing).toHaveBeenCalled();
+
+      // A bare onConflictDoNothing would leave an expired row in place, so a
+      // second deletion after the window would go untombstoned. Assert the
+      // conflict path targets the provider id and refreshes deletedAt.
+      const upsertArgs = mockOnConflictDoUpdate.mock.calls[0][0];
+      expect(upsertArgs.target).toBe(deletionTombstones.providerId);
+      const renderedSet = dialect.sqlToQuery(upsertArgs.set.deletedAt);
+      expect(renderedSet.sql).toContain("now()");
     });
   });
 });

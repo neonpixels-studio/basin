@@ -2,7 +2,7 @@
 // account-deletion sweep and getOrCreateUser can be unit-tested without a live
 // database. A tombstone records the provider id (Clerk user id) of a deleted
 // account so a still-valid session cannot resurrect an empty `users` row.
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { deletionTombstones } from "../db/schema";
 
 // A tombstone only needs to outlive any session token that was minted just
@@ -17,15 +17,23 @@ import { deletionTombstones } from "../db/schema";
 // (Clerk's default maximum is 7 days).
 export const MAX_CLERK_SESSION_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
 
-// Records that this provider id's account was deleted. Idempotent: deleting an
-// already-tombstoned account is a no-op rather than a unique-violation error.
+// Records that this provider id's account was deleted. Idempotent on the primary
+// key: re-deleting restarts the retention window rather than raising a
+// unique-violation. Because retention is now bounded, the window must anchor to
+// the *latest* deletion — a stale row from an earlier, already-expired deletion
+// would leave a second deletion unprotected — so the conflict path re-stamps
+// deletedAt with the DB clock (matching defaultNow). Webhook retries for the same
+// deletion just re-stamp now() seconds later, which is harmless.
 export async function recordDeletionTombstone(
   providerId: string,
 ): Promise<void> {
   await useDb()
     .insert(deletionTombstones)
     .values({ providerId })
-    .onConflictDoNothing();
+    .onConflictDoUpdate({
+      target: deletionTombstones.providerId,
+      set: { deletedAt: sql`now()` },
+    });
 }
 
 // True when this provider id belongs to a deleted account whose tombstone is

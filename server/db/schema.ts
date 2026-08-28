@@ -31,13 +31,14 @@ export const users = pgTable("users", {
 
 // Records the provider id (Clerk user id) of a deleted account. server/utils/
 // tombstone.ts owns the full rationale (why a still-valid session can otherwise
-// resurrect an empty row). The provider id is the primary key so the deletion
-// write can safely `onConflictDoNothing` if the account is deleted twice.
+// resurrect an empty row). The provider id is the primary key so re-deleting an
+// account re-stamps deletedAt via upsert (restarting the window) instead of
+// raising a unique violation.
 //
 // A row only ever needs to outlive the deleted account's longest valid session,
 // so tombstone.ts ignores any row older than the maximum Clerk session lifetime
 // (measured against deletedAt) rather than pruning here: reads self-heal the
-// window without a scheduled job, and the row stays for audit. deletedAt is
+// window without a scheduled job. deletedAt tracks the latest deletion and is
 // stored with a time zone so that age comparison against the app clock is
 // unaffected by the server's local time zone. The stored value is Clerk's opaque
 // provider id (a pseudonymous identifier, not profile data); hashing it is a

@@ -99,8 +99,8 @@ export async function deleteUserAccount(
 // deletion stays valid (Clerk verifies JWTs networklessly), so without it the
 // auth middleware could resurrect an empty users row on that token's next
 // request. Idempotent — Clerk retries webhooks, and re-running on an
-// already-deleted account is a no-op (findUserByProviderId returns undefined,
-// recordDeletionTombstone is onConflictDoNothing).
+// already-deleted account only re-stamps the tombstone (findUserByProviderId
+// returns undefined, recordDeletionTombstone upserts deletedAt to now()).
 export async function deleteAccountByProviderId(
   providerId: string,
 ): Promise<void> {
