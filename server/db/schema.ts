@@ -73,7 +73,12 @@ export const feeds = pgTable(
     // earliest time the scheduler is allowed to re-sync it. Both grow with
     // each failure (exponential, capped — see server/utils/feedSyncBackoff.ts)
     // and reset to 0 / null on the next successful sync, so a healthy feed is
-    // never gated.
+    // never gated. nextRetryAt is additionally cleared to null — without
+    // touching consecutiveFailures — when the failure's cause may have been
+    // repaired (an account reconnect or a feed-URL re-add; see UNGATED_SYNC_STATE
+    // in feedSyncBackoff.ts) to let the feed retry once. So syncStatus = "ok"
+    // does not imply consecutiveFailures = 0: a still-broken feed carries its
+    // count between that un-gated retry and its next failure.
     consecutiveFailures: integer("consecutive_failures").notNull().default(0),
     nextRetryAt: timestamp("next_retry_at"),
     // Paused sources are kept (not removed) but excluded from scheduled sync,

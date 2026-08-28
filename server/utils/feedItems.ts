@@ -1,7 +1,7 @@
 import { desc, eq, and, sql, inArray, type SQL } from "drizzle-orm";
 import { feedItems, feeds } from "../db/schema";
 import { FEED_SOURCE_TO_ITEM_TYPE } from "../../app/utils/feedSources";
-import { formatRelativeTime } from "./search";
+import { formatRelativeTime } from "../../app/utils/feedTime";
 import {
   SAVED_FILTER,
   STARRED_FILTER,
