@@ -182,11 +182,8 @@ export async function persistPermanentSyncFailure(
     return;
   }
 
-  // Order matters: the atomic increment (the feed's error status) and the
-  // integration's reconnect flag are the user-visible signals, so they land
-  // first. The nextRetryAt write is a scheduling optimization the guard makes
-  // safe to lose, so it runs last — a transient failure on it still throws
-  // (fail loud, self-heals next tick) but can no longer preempt the flags.
+  // The atomic increment (the feed's error status) runs first: it's the
+  // baseline signal and yields the post-increment count the backoff needs.
   const failedAt = new Date();
   const consecutiveFailures = await incrementConsecutiveFailures(
     feedId,
@@ -195,15 +192,31 @@ export async function persistPermanentSyncFailure(
     failedAt,
   );
 
+  // The integration reconnect flag and the backoff advance are independent
+  // (different rows, each own-scoped/guarded), so neither may short-circuit the
+  // other by ordering: with a plain await sequence a failing first write would
+  // skip the second, either suppressing the user-visible reconnect flag or —
+  // worse — dropping the backoff gate and re-dispatching the feed every tick.
+  // Run them together and still fail loud on the first rejection.
+  const pendingWrites: Promise<void>[] = [];
+
   if (error instanceof IntegrationAuthError) {
-    await recordIntegrationSyncFailure(userId, error.provider, error.message);
+    pendingWrites.push(
+      recordIntegrationSyncFailure(userId, error.provider, error.message),
+    );
   }
 
-  if (consecutiveFailures === null) {
-    return;
+  if (consecutiveFailures !== null) {
+    pendingWrites.push(
+      advanceNextRetryAt(feedId, userId, consecutiveFailures, failedAt),
+    );
   }
 
-  await advanceNextRetryAt(feedId, userId, consecutiveFailures, failedAt);
+  const settled = await Promise.allSettled(pendingWrites);
+  const rejected = settled.find((result) => result.status === "rejected");
+  if (rejected) {
+    throw rejected.reason;
+  }
 }
 
 // Marks a feed sync as successful and clears any previously-recorded failure

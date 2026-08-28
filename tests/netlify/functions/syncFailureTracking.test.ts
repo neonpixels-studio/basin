@@ -32,11 +32,11 @@ import {
   persistSyncSuccess,
 } from "../../../netlify/functions/syncFailureTracking";
 
-// Renders a drizzle SQL fragment to its parameterised text so a test can assert
-// the actual SQL emitted (e.g. an atomic `+ 1` increment) rather than trusting
-// an opaque object.
-function renderSql(fragment: SQL): string {
-  return new PgDialect().sqlToQuery(fragment).sql;
+// Renders a drizzle SQL fragment to its parameterised text and params so a test
+// can assert the actual SQL emitted (e.g. an atomic `+ 1` increment) or the
+// bound values, rather than trusting an opaque object.
+function renderSql(fragment: SQL): { sql: string; params: unknown[] } {
+  return new PgDialect().sqlToQuery(fragment);
 }
 
 describe("syncFailureTracking", () => {
@@ -107,7 +107,7 @@ describe("syncFailureTracking", () => {
 
       const [incrementSet] = mockUpdateSet.mock.calls[0];
       expect(incrementSet.consecutiveFailures).toBeInstanceOf(SQL);
-      expect(renderSql(incrementSet.consecutiveFailures)).toContain(
+      expect(renderSql(incrementSet.consecutiveFailures).sql).toContain(
         '"feeds"."consecutive_failures" + 1',
       );
 
@@ -140,13 +140,13 @@ describe("syncFailureTracking", () => {
 
       expect(mockUpdateWhere).toHaveBeenCalledTimes(2);
       for (const [whereClause] of mockUpdateWhere.mock.calls) {
-        const { sql } = new PgDialect().sqlToQuery(whereClause);
+        const { sql } = renderSql(whereClause);
         expect(sql).toContain('"feeds"."id" = ');
         expect(sql).toContain('"feeds"."user_id" = ');
       }
 
       // The increment is scoped by exactly (id, userId).
-      const { params: incrementParams } = new PgDialect().sqlToQuery(
+      const { params: incrementParams } = renderSql(
         mockUpdateWhere.mock.calls[0][0],
       );
       expect(incrementParams).toEqual([42, 1]);
@@ -168,9 +168,7 @@ describe("syncFailureTracking", () => {
       );
 
       const stampedFailedAt = mockUpdateSet.mock.calls[0][0].syncFailedAt;
-      const { sql, params } = new PgDialect().sqlToQuery(
-        mockUpdateWhere.mock.calls[1][0],
-      );
+      const { sql, params } = renderSql(mockUpdateWhere.mock.calls[1][0]);
       expect(sql).toContain('"feeds"."sync_failed_at" = ');
       expect(sql).toContain('"feeds"."consecutive_failures" = ');
       // (id, userId, timestamp guard, count guard) — the exact pair write 1
@@ -302,12 +300,21 @@ describe("syncFailureTracking", () => {
         ),
       ).rejects.toThrow("connection reset");
 
-      expect(mockUpdateSet).toHaveBeenCalledWith(
+      // Pin the integration write specifically (call 2): the increment (call 1)
+      // sets the same syncStatus/syncError shape on the feed, so a non-indexed
+      // match would pass even if the integration write never ran. The where
+      // clause proves it targeted the integrations table, not the feed.
+      expect(mockUpdateSet).toHaveBeenNthCalledWith(
+        2,
         expect.objectContaining({
           syncStatus: "error",
           syncError: "Re-connect your YouTube account.",
         }),
       );
+      const { sql: integrationWhere } = renderSql(
+        mockUpdateWhere.mock.calls[1][0],
+      );
+      expect(integrationWhere).toContain('"integrations"."provider" = ');
     });
 
     it("does not touch integrations for a feed-only failure (not IntegrationAuthError)", async () => {
@@ -331,9 +338,10 @@ describe("syncFailureTracking", () => {
         new IntegrationAuthError("youtube", "Re-connect your YouTube account."),
       );
 
-      // Three writes: the atomic increment, then the integration reconnect flag,
-      // then the backoff. The integration write is second — the user-visible
-      // signals land before the scheduling optimization that can fail on its own.
+      // Three writes: the atomic increment (feed), then the integration reconnect
+      // flag and the backoff, dispatched together. The integration write is
+      // dispatched first of the two (call 2); its where clause proves it hit the
+      // integrations table rather than matching the feed's identical set shape.
       expect(mockUpdate).toHaveBeenCalledTimes(3);
       expect(mockUpdateSet).toHaveBeenNthCalledWith(
         2,
@@ -343,6 +351,10 @@ describe("syncFailureTracking", () => {
           syncFailedAt: expect.any(Date),
         }),
       );
+      const { sql: integrationWhere } = renderSql(
+        mockUpdateWhere.mock.calls[1][0],
+      );
+      expect(integrationWhere).toContain('"integrations"."provider" = ');
     });
 
     it("uses the provider carried on the IntegrationAuthError, not the source type", async () => {
