@@ -73,10 +73,12 @@ describe("syncFailureTracking", () => {
     mockUpdateReturning.mockResolvedValue([{ consecutiveFailures: 1 }]);
   });
 
-  // Restore real timers even when an assertion throws, so a single failure in a
-  // fake-timer test can't cascade into every later test running on a frozen clock.
+  // Restore real timers and any console spies even when an assertion throws, so
+  // a single failure can't cascade into every later test (a frozen clock or a
+  // still-stubbed console).
   afterEach(() => {
     vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
   describe("providerForSourceType()", () => {
@@ -257,10 +259,12 @@ describe("syncFailureTracking", () => {
       );
 
       // Feed increment (no-op RETURNING) + the integration write; no feed
-      // nextRetryAt write.
+      // nextRetryAt write. Select the integration write by table so a regressed
+      // scope or target still fails the assertion.
       expect(mockUpdate).toHaveBeenCalledTimes(2);
-      expect(mockUpdateSet).toHaveBeenNthCalledWith(
-        2,
+      const index = integrationCallIndex();
+      expect(index).toBeGreaterThanOrEqual(0);
+      expect(mockUpdateSet.mock.calls[index][0]).toEqual(
         expect.objectContaining({
           syncStatus: "error",
           syncError: "Re-connect your YouTube account.",
@@ -273,6 +277,7 @@ describe("syncFailureTracking", () => {
       // failed nextRetryAt write must surface (fail loud) rather than be
       // swallowed into a half-written, silently-ungated row. The increment write
       // lands; the backoff write (the only one carrying the count guard) rejects.
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
       mockUpdateWhere.mockImplementation((whereClause) =>
         renderSql(whereClause).sql.includes('"feeds"."consecutive_failures" = ')
           ? Promise.reject(new Error("connection reset"))
@@ -286,6 +291,9 @@ describe("syncFailureTracking", () => {
           new ErrorDoNotRetry("Feed unreachable"),
         ),
       ).rejects.toThrow("connection reset");
+
+      // A single rejection is thrown, not also logged — nothing to slice(1).
+      expect(errorSpy).not.toHaveBeenCalled();
     });
 
     it("records the integration flag even when the backoff write fails", async () => {
@@ -370,11 +378,13 @@ describe("syncFailureTracking", () => {
         ),
       ).rejects.toThrow("feed write down");
 
+      // Exactly the rest (slice(1)) are logged — the thrown one is not
+      // double-reported here as well as by the caller.
+      expect(errorSpy).toHaveBeenCalledTimes(1);
       expect(errorSpy).toHaveBeenCalledWith(
         expect.stringContaining("feed 42 (user 1)"),
         expect.objectContaining({ message: "integration write down" }),
       );
-      errorSpy.mockRestore();
     });
 
     it("does not touch integrations for a feed-only failure (not IntegrationAuthError)", async () => {
