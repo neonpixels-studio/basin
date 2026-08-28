@@ -105,16 +105,21 @@ export async function backfillRowReportingFailure(
   sql: SqlTag,
   row: TombstoneRow,
 ): Promise<BackfillOutcome | "failed"> {
+  // Hash up front so the failure log never re-hashes inside catch: hashProviderId
+  // throws on a blank provider id (a legacy row could carry one — the column is
+  // plain text with no CHECK), and a throw from the catch would escape this
+  // function and abort the whole run, losing the partial-progress report this
+  // wrapper exists to guarantee. Identify the row by its target hash, never by
+  // row.providerId: the raw Clerk id is exactly the value this change exists to
+  // stop retaining, so it must not leak into logs. If hashing itself is what
+  // fails, fall back to a placeholder and still count the row as failed.
+  let targetHash = "<unhashable provider id>";
   try {
+    targetHash = hashProviderId(row.providerId);
     return await backfillRow(sql, row);
   } catch (error) {
-    // Identify the row by its target hash, never by row.providerId: the raw
-    // Clerk id is exactly the value this change exists to stop retaining, so it
-    // must not leak into logs. The hash is safe to log (it's the value we were
-    // about to persist) and is stable across re-runs. main() has already
-    // verified the pepper, so this hashing cannot itself throw.
     console.error(
-      `tombstone row (target hash ${hashProviderId(row.providerId)}) failed to backfill:`,
+      `tombstone row (target hash ${targetHash}) failed to backfill:`,
       error,
     );
     return "failed";
@@ -131,6 +136,7 @@ async function main(): Promise<void> {
 
   let migratedCount = 0;
   let skippedNotFoundCount = 0;
+  let alreadyHashedCount = 0;
   let failedCount = 0;
 
   for (const row of rows) {
@@ -144,17 +150,28 @@ async function main(): Promise<void> {
       skippedNotFoundCount += 1;
     }
 
+    if (outcome === "already-hashed") {
+      alreadyHashedCount += 1;
+    }
+
     if (outcome === "failed") {
       failedCount += 1;
     }
   }
 
-  // fetchLegacyTombstoneRows already excludes hashed rows, so every fetched row
-  // is migrated, removed-concurrently, or failed — the three counts sum to
-  // rows.length and an operator can verify coverage by eye.
+  // fetchLegacyTombstoneRows already excludes hashed rows via the server-side
+  // filter, so every fetched row should be migrated, removed-concurrently, or
+  // failed. already-hashed is only reachable if backfillRow's defence-in-depth
+  // isHashedProviderId guard disagreed with that filter — count it so a nonzero
+  // value surfaces the drift loudly instead of silently vanishing from the sum.
+  const alreadyHashedNote =
+    alreadyHashedCount > 0
+      ? ` WARNING: ${alreadyHashedCount} already-hashed row(s) slipped past the server-side filter — the JS guard and the Postgres filter disagree; investigate.`
+      : "";
   console.log(
     `Found ${rows.length} legacy raw provider id(s); removed ${migratedCount} (now retained only as a hash), ` +
       `${skippedNotFoundCount} removed concurrently, ${failedCount} failed.` +
+      alreadyHashedNote +
       (failedCount > 0
         ? " Re-run to retry the failures — see errors above."
         : ""),

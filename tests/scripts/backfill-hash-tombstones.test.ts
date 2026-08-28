@@ -140,4 +140,24 @@ describe("backfillRowReportingFailure", () => {
     expect(loggedText).toContain(hashProviderId("user_abc"));
     consoleError.mockRestore();
   });
+
+  it("returns 'failed' without throwing when the provider id is unhashable (blank)", async () => {
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    // A legacy row with a blank provider id makes hashProviderId throw. The catch
+    // must not re-hash it (that would throw again and abort the whole run), so the
+    // outcome is a contained 'failed' with a safe placeholder in the log.
+    const { fakeSql } = createFakeSql([]);
+
+    const outcome = await backfillRowReportingFailure(fakeSql, {
+      providerId: "",
+    });
+
+    expect(outcome).toBe("failed");
+    expect(consoleError).toHaveBeenCalled();
+    const loggedText = consoleError.mock.calls.map(String).join(" ");
+    expect(loggedText).toContain("<unhashable provider id>");
+    consoleError.mockRestore();
+  });
 });
