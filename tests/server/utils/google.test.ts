@@ -8,8 +8,12 @@ vi.stubGlobal("useRuntimeConfig", () => ({
 const mockFetch = vi.fn();
 vi.stubGlobal("fetch", mockFetch);
 
-const mockGetConfiguredSiteUrl = vi.fn(() => "https://basin.example.com");
-vi.stubGlobal("getConfiguredSiteUrl", mockGetConfiguredSiteUrl);
+const { mockGetConfiguredSiteUrl } = vi.hoisted(() => ({
+  mockGetConfiguredSiteUrl: vi.fn(() => "https://basin.example.com"),
+}));
+vi.mock("../../../server/utils/siteUrl", () => ({
+  getConfiguredSiteUrl: mockGetConfiguredSiteUrl,
+}));
 
 import {
   buildYouTubeAuthUrl,
@@ -181,5 +185,15 @@ describe("buildYouTubeCallbackUrl", () => {
       "https://basin.example.com/api/auth/youtube/callback",
     );
     expect(mockGetConfiguredSiteUrl).toHaveBeenCalled();
+  });
+
+  it("propagates a misconfigured-site-URL error instead of building a relative URI", () => {
+    mockGetConfiguredSiteUrl.mockImplementationOnce(() => {
+      throw Object.assign(
+        new Error("Site URL is not configured: missing NUXT_SITE_URL"),
+        { statusCode: 500 },
+      );
+    });
+    expect(() => buildYouTubeCallbackUrl()).toThrow();
   });
 });
