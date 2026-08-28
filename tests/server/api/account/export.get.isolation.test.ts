@@ -155,6 +155,18 @@ const TENANT_B: Tenant = {
   theme: "light",
 };
 
+// A tenant that owns nothing — no feeds, items, integrations, or settings — used
+// to prove the empty-account export path returns empty collections and null
+// settings rather than leaking another tenant's rows (the settings findFirst has
+// no ownership fallback, so an unscoped lookup would hand this user someone
+// else's row).
+const EMPTY_PROVIDER_ID = "user_empty_export_isolation";
+
+// Token columns the handler must never include in the export (excluded via
+// drizzle `columns: false` in server/api/account/export.get.ts). Seeded as real
+// values here so their absence is proven against a real row, not a mock.
+const EXCLUDED_TOKEN_COLUMNS = ["accessToken", "refreshToken", "tokenSecret"];
+
 interface SeededTenant {
   user: typeof schema.users.$inferSelect;
   // The expected saved items in export order: the published item first (DESC
@@ -223,7 +235,9 @@ async function seedTenant(
   await database.insert(schema.integrations).values({
     userId: user.id,
     provider: INTEGRATION_PROVIDER,
-    accessToken: `token-${tenant.guidPrefix}`,
+    accessToken: `access-token-${tenant.guidPrefix}`,
+    refreshToken: `refresh-token-${tenant.guidPrefix}`,
+    tokenSecret: `token-secret-${tenant.guidPrefix}`,
     providerAccountId: tenant.providerId,
   });
   await database
@@ -256,6 +270,7 @@ vi.stubGlobal("setHeader", vi.fn());
 describe("GET /api/account/export cross-tenant isolation (real PGlite)", () => {
   let tenantA: SeededTenant;
   let tenantB: SeededTenant;
+  let emptyUser: typeof schema.users.$inferSelect;
 
   beforeEach(async () => {
     client = new PGlite();
@@ -263,10 +278,19 @@ describe("GET /api/account/export cross-tenant isolation (real PGlite)", () => {
     database = drizzle(client, { schema });
     tenantA = await seedTenant(database, TENANT_A);
     tenantB = await seedTenant(database, TENANT_B);
+    [emptyUser] = await database
+      .insert(schema.users)
+      .values({ providerId: EMPTY_PROVIDER_ID })
+      .returning();
+    // Seeding uses the raw drizzle instance, not the useDb() global, so clearing
+    // here keeps the 401 test's "never queried" assertion order-independent.
+    useDbSpy.mockClear();
   });
 
   afterEach(async () => {
-    await client.close();
+    // Optional chaining so a failed beforeEach doesn't mask the real error with
+    // a close() on an undefined/already-closed client.
+    await client?.close();
   });
 
   afterAll(() => {
@@ -274,9 +298,8 @@ describe("GET /api/account/export cross-tenant isolation (real PGlite)", () => {
   });
 
   it("rejects an unauthenticated request before touching the database", async () => {
-    // Seeding uses the drizzle instance directly, not the useDb() global, so a
-    // clean spy here means the handler never queried before throwing 401.
-    useDbSpy.mockClear();
+    // The spy is cleared in beforeEach, so a clean spy here means the handler
+    // never queried before throwing 401.
     await expect(handler(eventFor(null))).rejects.toMatchObject({
       statusCode: 401,
     });
@@ -314,6 +337,37 @@ describe("GET /api/account/export cross-tenant isolation (real PGlite)", () => {
     // order-less findFirst, so an unscoped lookup returns one arbitrary row for
     // both requests — only asserting both distinct values reliably catches it.
     expect(result.settings?.theme).toBe(TENANT_A.theme);
+    // Real secrets were seeded above, so this pins the observable security
+    // property — the export output carries no token columns — enforced by the
+    // handler's drizzle `columns: false` and the accountExport serializer
+    // whitelist as defense in depth. Assert each column absent individually
+    // (an `arrayContaining` check would pass on a single-column leak).
+    const integrationKeys = new Set(
+      result.integrations.flatMap((integration) => Object.keys(integration)),
+    );
+    expect(
+      EXCLUDED_TOKEN_COLUMNS.filter((column) => integrationKeys.has(column)),
+    ).toEqual([]);
+    // Value-level guard too: no seeded secret string appears anywhere in the
+    // serialized export, catching a token copied into some other field rather
+    // than only its own (excluded) column.
+    const serialized = JSON.stringify(result);
+    expect(serialized).not.toContain(`access-token-${TENANT_A.guidPrefix}`);
+    expect(serialized).not.toContain(`refresh-token-${TENANT_A.guidPrefix}`);
+    expect(serialized).not.toContain(`token-secret-${TENANT_A.guidPrefix}`);
+  });
+
+  it("returns empty collections and null settings for a tenant that owns nothing", async () => {
+    // The empty-account path (a new user exporting before adding anything) must
+    // yield empty sets and null settings — never another tenant's rows via an
+    // unscoped query — even though two fully-seeded tenants share this database.
+    const result = await handler(eventFor(emptyUser));
+
+    expect(result.savedItems).toEqual([]);
+    expect(result.sources).toEqual([]);
+    expect(result.integrations).toEqual([]);
+    expect(result.settings).toBeNull();
+    expect(result.account.providerId).toBe(EMPTY_PROVIDER_ID);
   });
 
   it("excludes another tenant's rows and settings, proving the filter (not empty data) does the work", async () => {
