@@ -200,10 +200,10 @@ function makeVideoItem() {
 }
 
 // Stubs the drizzle update chain used by every describe block here. where()
-// carries `.returning()` for the atomic-increment failure write; other writes
-// await it directly. Keeping it a real thenable means a dropped `await`
-// surfaces rather than silently passing. The default RETURNING row stands in
-// for a feed now at one consecutive failure.
+// returns a thenable that also carries `.returning()`, so it satisfies both the
+// atomic-increment failure write (which ends in `.returning()`) and every other
+// write (awaited directly). The default RETURNING row stands in for a feed now
+// at one consecutive failure.
 function stubFeedUpdateChain() {
   mockUpdate.mockReturnValue({ set: mockUpdateSet });
   mockUpdateSet.mockReturnValue({ where: mockUpdateWhere });

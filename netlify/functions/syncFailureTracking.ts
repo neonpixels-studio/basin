@@ -107,7 +107,7 @@ async function advanceNextRetryAt(
   failedAt: Date,
 ): Promise<void> {
   const db = createDb();
-  const [gated] = await db
+  await db
     .update(feeds)
     .set({ nextRetryAt: computeNextRetryAt(consecutiveFailures, failedAt) })
     .where(
@@ -117,28 +117,7 @@ async function advanceNextRetryAt(
         eq(feeds.syncFailedAt, failedAt),
         eq(feeds.consecutiveFailures, consecutiveFailures),
       ),
-    )
-    .returning({ id: feeds.id });
-
-  if (gated) {
-    return;
-  }
-
-  // A no-op here is a legitimate lost race (a fresher failure or a success
-  // already moved the row on) and is safe. But the guard can also miss for
-  // reasons that aren't self-healing — a future predicate change, a
-  // sync_failed_at precision drift — leaving the feed on the prior failure's
-  // now-past nextRetryAt and re-syncing every tick. Warn (don't throw) so a
-  // steady stream of these surfaces that the backoff stopped engaging, while a
-  // one-off lost race stays quiet.
-  console.warn(
-    JSON.stringify({
-      event: "sync-feed.next-retry-not-advanced",
-      feedId,
-      userId,
-      consecutiveFailures,
-    }),
-  );
+    );
 }
 
 // Records a permanent failure and advances the backoff. The atomic increment
