@@ -1,29 +1,30 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const { mockGetStripeCustomerId, mockCreateBillingPortalSession } = vi.hoisted(
-  () => ({
-    mockGetStripeCustomerId: vi.fn(),
-    mockCreateBillingPortalSession: vi.fn(),
-  }),
-);
+const {
+  mockGetStripeCustomerId,
+  mockCreateBillingPortalSession,
+  mockGetConfiguredSiteUrl,
+} = vi.hoisted(() => ({
+  mockGetStripeCustomerId: vi.fn(),
+  mockCreateBillingPortalSession: vi.fn(),
+  mockGetConfiguredSiteUrl: vi.fn(),
+}));
 vi.mock("../../../../server/utils/subscriptions", () => ({
   getStripeCustomerId: mockGetStripeCustomerId,
 }));
 vi.mock("../../../../server/utils/stripe", () => ({
   createBillingPortalSession: mockCreateBillingPortalSession,
 }));
-
-const mockGetRequestURL = vi.fn();
-vi.stubGlobal("getRequestURL", mockGetRequestURL);
+vi.mock("../../../../server/utils/siteUrl", () => ({
+  getConfiguredSiteUrl: mockGetConfiguredSiteUrl,
+}));
 
 import handler from "../../../../server/api/billing/portal.post";
 
 describe("POST /api/billing/portal", () => {
   beforeEach(() => {
     vi.resetAllMocks();
-    mockGetRequestURL.mockReturnValue(
-      new URL("https://example.com/api/billing/portal"),
-    );
+    mockGetConfiguredSiteUrl.mockReturnValue("https://example.com");
     mockGetStripeCustomerId.mockResolvedValue("cus_123");
     mockCreateBillingPortalSession.mockResolvedValue({
       url: "https://billing.stripe.com/session_123",
@@ -60,15 +61,13 @@ describe("POST /api/billing/portal", () => {
     );
   });
 
-  it("builds the return URL from the request origin", async () => {
-    mockGetRequestURL.mockReturnValue(
-      new URL("https://myapp.com/api/billing/portal"),
-    );
+  it("builds the return URL from the configured site URL, not the request host", async () => {
+    mockGetConfiguredSiteUrl.mockReturnValue("https://basin.example");
     const event = { context: { user: { id: 1 } } };
     await handler(event);
     expect(mockCreateBillingPortalSession).toHaveBeenCalledWith(
       expect.objectContaining({
-        returnUrl: "https://myapp.com/settings/account",
+        returnUrl: "https://basin.example/settings/account",
       }),
     );
   });
