@@ -143,6 +143,15 @@ describe("tombstone", () => {
   });
 
   describe("recordDeletionTombstone", () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
     it("re-stamps deletedAt on conflict so re-deleting restarts the retention window", async () => {
       await recordDeletionTombstone("clerk_gone");
 
@@ -163,8 +172,6 @@ describe("tombstone", () => {
       // stored row: first deletion blocks, the window elapses and self-heals,
       // then a second deletion re-stamps deletedAt and blocks again. A regression
       // to onConflictDoNothing leaves the stale row and fails the final assertion.
-      vi.useFakeTimers();
-      vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
       let storedDeletedAt = new Date();
       mockTombstoneFindFirst.mockImplementation(async () => ({
         providerId: "clerk_gone",
@@ -182,8 +189,6 @@ describe("tombstone", () => {
 
       await recordDeletionTombstone("clerk_gone");
       await expect(isProviderTombstoned("clerk_gone")).resolves.toBe(true);
-
-      vi.useRealTimers();
     });
   });
 });

@@ -39,9 +39,10 @@ export const users = pgTable("users", {
 // Only *enforcement* is windowed, not storage: tombstone.ts ignores any row older
 // than the maximum Clerk session lifetime (measured against deletedAt) so the
 // lockout self-heals without a scheduled job, but rows are retained indefinitely
-// as a deletion audit trail rather than pruned. deletedAt tracks the latest
-// deletion and is stored with a time zone so that age comparison against the app
-// clock is unaffected by the server's local time zone. The stored value is Clerk's opaque
+// as a record that the provider id was deleted rather than pruned. deletedAt
+// tracks the latest deletion (a re-deletion re-stamps it), not the first, so it is
+// not a full deletion history. It is stored with a time zone so that age comparison
+// against the app clock is unaffected by the server's local time zone. The stored value is Clerk's opaque
 // provider id (a pseudonymous identifier, not profile data); hashing it is a
 // reasonable hardening follow-up.
 export const deletionTombstones = pgTable("deletion_tombstones", {
