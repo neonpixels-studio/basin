@@ -120,6 +120,31 @@ async function advanceNextRetryAt(
     );
 }
 
+// The feed's failure record as one logical unit: atomically bump the count,
+// then — unless the row vanished between the two statements — advance the
+// backoff off that post-increment count. The backoff is the only write with a
+// data dependency on the count, which is why it's sequenced here rather than
+// dispatched alongside the independent integration write.
+async function recordFeedSyncFailure(
+  feedId: number,
+  userId: number,
+  message: string,
+): Promise<void> {
+  const failedAt = new Date();
+  const consecutiveFailures = await incrementConsecutiveFailures(
+    feedId,
+    userId,
+    message,
+    failedAt,
+  );
+
+  if (consecutiveFailures === null) {
+    return;
+  }
+
+  await advanceNextRetryAt(feedId, userId, consecutiveFailures, failedAt);
+}
+
 async function recordFeedSyncSuccess(
   feedId: number,
   userId: number,
@@ -182,23 +207,15 @@ export async function persistPermanentSyncFailure(
     return;
   }
 
-  // The atomic increment (the feed's error status) runs first: it's the
-  // baseline signal and yields the post-increment count the backoff needs.
-  const failedAt = new Date();
-  const consecutiveFailures = await incrementConsecutiveFailures(
-    feedId,
-    userId,
-    error.message,
-    failedAt,
-  );
-
-  // The integration reconnect flag and the backoff advance are independent
-  // (different rows, each own-scoped/guarded), so neither may short-circuit the
-  // other by ordering: with a plain await sequence a failing first write would
-  // skip the second, either suppressing the user-visible reconnect flag or —
-  // worse — dropping the backoff gate and re-dispatching the feed every tick.
-  // Run them together and still fail loud on the first rejection.
-  const pendingWrites: Promise<void>[] = [];
+  // The feed's failure record and the integration's reconnect flag are
+  // independent rows; neither may be suppressed by the other failing. A plain
+  // await sequence lets the first write's failure skip the rest — dropping
+  // either the backoff gate (unbounded per-tick re-dispatch) or the
+  // user-visible reconnect flag. Dispatch both together instead; each write is
+  // own-scoped/guarded, so unordered dispatch is safe.
+  const pendingWrites: Promise<void>[] = [
+    recordFeedSyncFailure(feedId, userId, error.message),
+  ];
 
   if (error instanceof IntegrationAuthError) {
     pendingWrites.push(
@@ -206,17 +223,20 @@ export async function persistPermanentSyncFailure(
     );
   }
 
-  if (consecutiveFailures !== null) {
-    pendingWrites.push(
-      advanceNextRetryAt(feedId, userId, consecutiveFailures, failedAt),
-    );
+  // Fail loud: surface the first rejection, but log the rest so a second
+  // concurrent failure isn't silently swallowed.
+  const settled = await Promise.allSettled(pendingWrites);
+  const rejections = settled.filter(
+    (result): result is PromiseRejectedResult => result.status === "rejected",
+  );
+  if (rejections.length === 0) {
+    return;
   }
 
-  const settled = await Promise.allSettled(pendingWrites);
-  const rejected = settled.find((result) => result.status === "rejected");
-  if (rejected) {
-    throw rejected.reason;
+  for (const extra of rejections.slice(1)) {
+    console.error("sync failure write failed:", extra.reason);
   }
+  throw rejections[0].reason;
 }
 
 // Marks a feed sync as successful and clears any previously-recorded failure

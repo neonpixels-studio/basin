@@ -39,6 +39,16 @@ function renderSql(fragment: SQL): { sql: string; params: unknown[] } {
   return new PgDialect().sqlToQuery(fragment);
 }
 
+// Finds the UPDATE that targeted the integrations table by its where clause,
+// rather than by dispatch index. The feed increment and the integration write
+// carry an identical `set` shape, and the two independent writes are dispatched
+// concurrently, so index-based assertions are brittle — select by table.
+function integrationWhereCall() {
+  return mockUpdateWhere.mock.calls.find(([whereClause]) =>
+    renderSql(whereClause).sql.includes('"integrations"."provider"'),
+  );
+}
+
 describe("syncFailureTracking", () => {
   beforeEach(() => {
     vi.resetAllMocks();
@@ -275,11 +285,14 @@ describe("syncFailureTracking", () => {
       ).rejects.toThrow("connection reset");
     });
 
-    it("writes the integration reconnect flag before the backoff, so a failed nextRetryAt write can't suppress it", async () => {
-      // The nextRetryAt write is a separate statement that can fail on its own.
-      // It runs last, so an IntegrationAuthError still marks the connection as
-      // needing reconnect even when the backoff write dies — the flag is the
-      // user-visible signal and must not ride on the scheduling optimization.
+    it("records the integration flag even when the backoff write fails", async () => {
+      // The backoff write is a separate statement that can fail on its own. It's
+      // dispatched independently of the integration write, so an
+      // IntegrationAuthError still marks the connection as needing reconnect even
+      // when the backoff dies — the flag is the user-visible signal and must not
+      // ride on the scheduling optimization. The synchronous prefixes run in
+      // dispatch order (increment, then integration), with the backoff write
+      // reaching the DB last, so the third where() is the one that rejects.
       mockUpdateWhere
         .mockReturnValueOnce(
           Object.assign(Promise.resolve(undefined), {
@@ -300,21 +313,36 @@ describe("syncFailureTracking", () => {
         ),
       ).rejects.toThrow("connection reset");
 
-      // Pin the integration write specifically (call 2): the increment (call 1)
-      // sets the same syncStatus/syncError shape on the feed, so a non-indexed
-      // match would pass even if the integration write never ran. The where
-      // clause proves it targeted the integrations table, not the feed.
-      expect(mockUpdateSet).toHaveBeenNthCalledWith(
-        2,
+      // Select the integration write by its target table, not by dispatch index:
+      // the increment carries the same set shape, so the where clause is what
+      // proves the integrations row was written despite the backoff failure.
+      expect(integrationWhereCall()).toBeDefined();
+      expect(mockUpdateSet).toHaveBeenCalledWith(
         expect.objectContaining({
           syncStatus: "error",
           syncError: "Re-connect your YouTube account.",
         }),
       );
-      const { sql: integrationWhere } = renderSql(
-        mockUpdateWhere.mock.calls[1][0],
-      );
-      expect(integrationWhere).toContain('"integrations"."provider" = ');
+    });
+
+    it("still flags the integration when the failure increment write rejects", async () => {
+      // The increment is the feed's own write; the integration reconnect flag is
+      // an independent row and must not be suppressed by the increment failing.
+      // Dispatched together, so a rejected increment still lets the flag land.
+      mockUpdateReturning.mockRejectedValueOnce(new Error("connection reset"));
+
+      await expect(
+        persistPermanentSyncFailure(
+          1,
+          42,
+          new IntegrationAuthError(
+            "youtube",
+            "Re-connect your YouTube account.",
+          ),
+        ),
+      ).rejects.toThrow("connection reset");
+
+      expect(integrationWhereCall()).toBeDefined();
     });
 
     it("does not touch integrations for a feed-only failure (not IntegrationAuthError)", async () => {
@@ -338,23 +366,20 @@ describe("syncFailureTracking", () => {
         new IntegrationAuthError("youtube", "Re-connect your YouTube account."),
       );
 
-      // Three writes: the atomic increment (feed), then the integration reconnect
-      // flag and the backoff, dispatched together. The integration write is
-      // dispatched first of the two (call 2); its where clause proves it hit the
-      // integrations table rather than matching the feed's identical set shape.
+      // Three writes: the atomic increment (feed), plus the integration reconnect
+      // flag and the backoff dispatched together. Select the integration write by
+      // its target table rather than dispatch index — the increment carries an
+      // identical set shape, so the where clause is what proves the integrations
+      // row was written.
       expect(mockUpdate).toHaveBeenCalledTimes(3);
-      expect(mockUpdateSet).toHaveBeenNthCalledWith(
-        2,
+      expect(integrationWhereCall()).toBeDefined();
+      expect(mockUpdateSet).toHaveBeenCalledWith(
         expect.objectContaining({
           syncStatus: "error",
           syncError: "Re-connect your YouTube account.",
           syncFailedAt: expect.any(Date),
         }),
       );
-      const { sql: integrationWhere } = renderSql(
-        mockUpdateWhere.mock.calls[1][0],
-      );
-      expect(integrationWhere).toContain('"integrations"."provider" = ');
     });
 
     it("uses the provider carried on the IntegrationAuthError, not the source type", async () => {
