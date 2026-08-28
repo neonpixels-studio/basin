@@ -108,13 +108,15 @@ describe("tombstone", () => {
       await expect(isProviderTombstoned("clerk_gone")).resolves.toBe(false);
     });
 
-    it("still blocks a tombstone right at the edge of the window", async () => {
-      const justInsideWindow = new Date(
-        Date.now() - MAX_CLERK_SESSION_LIFETIME_MS + 60 * 1000,
+    it("still blocks a tombstone one millisecond inside the window boundary", async () => {
+      // The true inside edge: age === MAX - 1. Catches an off-by-one that flips
+      // the strict `<` to `<=` on the inside, which a minute of slack would miss.
+      const oneMsInsideWindow = new Date(
+        Date.now() - (MAX_CLERK_SESSION_LIFETIME_MS - 1),
       );
       mockTombstoneFindFirst.mockResolvedValue({
         providerId: "clerk_gone",
-        deletedAt: justInsideWindow,
+        deletedAt: oneMsInsideWindow,
       });
 
       await expect(isProviderTombstoned("clerk_gone")).resolves.toBe(true);
@@ -154,6 +156,34 @@ describe("tombstone", () => {
       expect(upsertArgs.target).toBe(deletionTombstones.providerId);
       const renderedSet = dialect.sqlToQuery(upsertArgs.set.deletedAt);
       expect(renderedSet.sql).toContain("now()");
+    });
+
+    it("re-arms an expired tombstone so a second deletion blocks again", async () => {
+      // The scenario the upsert exists for, driven end-to-end through a shared
+      // stored row: first deletion blocks, the window elapses and self-heals,
+      // then a second deletion re-stamps deletedAt and blocks again. A regression
+      // to onConflictDoNothing leaves the stale row and fails the final assertion.
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+      let storedDeletedAt = new Date();
+      mockTombstoneFindFirst.mockImplementation(async () => ({
+        providerId: "clerk_gone",
+        deletedAt: storedDeletedAt,
+      }));
+      mockOnConflictDoUpdate.mockImplementation(async () => {
+        storedDeletedAt = new Date();
+      });
+
+      await recordDeletionTombstone("clerk_gone");
+      await expect(isProviderTombstoned("clerk_gone")).resolves.toBe(true);
+
+      vi.advanceTimersByTime(MAX_CLERK_SESSION_LIFETIME_MS + 1000);
+      await expect(isProviderTombstoned("clerk_gone")).resolves.toBe(false);
+
+      await recordDeletionTombstone("clerk_gone");
+      await expect(isProviderTombstoned("clerk_gone")).resolves.toBe(true);
+
+      vi.useRealTimers();
     });
   });
 });

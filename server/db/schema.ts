@@ -35,12 +35,13 @@ export const users = pgTable("users", {
 // account re-stamps deletedAt via upsert (restarting the window) instead of
 // raising a unique violation.
 //
-// A row only ever needs to outlive the deleted account's longest valid session,
-// so tombstone.ts ignores any row older than the maximum Clerk session lifetime
-// (measured against deletedAt) rather than pruning here: reads self-heal the
-// window without a scheduled job. deletedAt tracks the latest deletion and is
-// stored with a time zone so that age comparison against the app clock is
-// unaffected by the server's local time zone. The stored value is Clerk's opaque
+// A row only ever needs to outlive the deleted account's longest valid session.
+// Only *enforcement* is windowed, not storage: tombstone.ts ignores any row older
+// than the maximum Clerk session lifetime (measured against deletedAt) so the
+// lockout self-heals without a scheduled job, but rows are retained indefinitely
+// as a deletion audit trail rather than pruned. deletedAt tracks the latest
+// deletion and is stored with a time zone so that age comparison against the app
+// clock is unaffected by the server's local time zone. The stored value is Clerk's opaque
 // provider id (a pseudonymous identifier, not profile data); hashing it is a
 // reasonable hardening follow-up.
 export const deletionTombstones = pgTable("deletion_tombstones", {
