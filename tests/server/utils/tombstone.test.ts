@@ -11,7 +11,7 @@ import {
 const TEST_TOMBSTONE_PEPPER = "test-tombstone-pepper-0123456789";
 
 const mockTombstoneFindFirst = vi.fn();
-const mockOnConflictDoNothing = vi.fn();
+const mockOnConflictDoUpdate = vi.fn();
 const mockValues = vi.fn();
 const mockInsert = vi.fn();
 
@@ -23,6 +23,7 @@ vi.stubGlobal("useDb", () => ({
 import {
   isProviderTombstoned,
   recordDeletionTombstone,
+  MAX_CLERK_SESSION_LIFETIME_MS,
 } from "../../../server/utils/tombstone";
 
 const dialect = new PgDialect();
@@ -44,9 +45,16 @@ describe("tombstone", () => {
     vi.stubEnv("TOMBSTONE_ID_PEPPER", TEST_TOMBSTONE_PEPPER);
     mockInsert.mockReturnValue({ values: mockValues });
     mockValues.mockReturnValue({
-      onConflictDoNothing: mockOnConflictDoNothing,
+      onConflictDoUpdate: mockOnConflictDoUpdate,
     });
-    mockOnConflictDoNothing.mockResolvedValue(undefined);
+    mockOnConflictDoUpdate.mockResolvedValue(undefined);
+  });
+
+  // Pin the retention window to the literal policy value independently of the
+  // export, so shrinking or growing the constant fails the suite instead of
+  // silently sliding every window-relative assertion below with it.
+  it("retains tombstones for the seven-day Clerk session window", () => {
+    expect(MAX_CLERK_SESSION_LIFETIME_MS).toBe(7 * 24 * 60 * 60 * 1000);
   });
 
   afterEach(() => {
@@ -54,10 +62,73 @@ describe("tombstone", () => {
   });
 
   describe("isProviderTombstoned", () => {
-    it("is true when a tombstone row exists for the provider id", async () => {
+    // Freeze the clock so window-boundary assertions compare against the exact
+    // instant the test builds deletedAt from, rather than a few ms later.
+    beforeEach(() => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("is true when a recent tombstone row exists for the provider id", async () => {
+      mockTombstoneFindFirst.mockResolvedValue({
+        providerId: "clerk_gone",
+        deletedAt: new Date(),
+      });
+
+      await expect(isProviderTombstoned("clerk_gone")).resolves.toBe(true);
+    });
+
+    it("is true when a tombstone has no deletedAt (fails closed) and logs the provider id", async () => {
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
       mockTombstoneFindFirst.mockResolvedValue({
         providerId: hashProviderId("clerk_gone"),
         deletedAt: null,
+      });
+
+      await expect(isProviderTombstoned("clerk_gone")).resolves.toBe(true);
+      expect(errorSpy).toHaveBeenCalledWith(
+        expect.stringContaining("clerk_gone"),
+      );
+      errorSpy.mockRestore();
+    });
+
+    it("ignores a tombstone older than the maximum Clerk session lifetime", async () => {
+      const justPastWindow = new Date(
+        Date.now() - MAX_CLERK_SESSION_LIFETIME_MS - 1000,
+      );
+      mockTombstoneFindFirst.mockResolvedValue({
+        providerId: "clerk_gone",
+        deletedAt: justPastWindow,
+      });
+
+      await expect(isProviderTombstoned("clerk_gone")).resolves.toBe(false);
+    });
+
+    it("ignores a tombstone exactly at the window boundary (strict comparison)", async () => {
+      const exactlyAtWindow = new Date(
+        Date.now() - MAX_CLERK_SESSION_LIFETIME_MS,
+      );
+      mockTombstoneFindFirst.mockResolvedValue({
+        providerId: "clerk_gone",
+        deletedAt: exactlyAtWindow,
+      });
+
+      await expect(isProviderTombstoned("clerk_gone")).resolves.toBe(false);
+    });
+
+    it("still blocks a tombstone one millisecond inside the window boundary", async () => {
+      // The true inside edge: age === MAX - 1. Catches an off-by-one that flips
+      // the strict `<` to `<=` on the inside, which a minute of slack would miss.
+      const oneMsInsideWindow = new Date(
+        Date.now() - (MAX_CLERK_SESSION_LIFETIME_MS - 1),
+      );
+      mockTombstoneFindFirst.mockResolvedValue({
+        providerId: "clerk_gone",
+        deletedAt: oneMsInsideWindow,
       });
 
       await expect(isProviderTombstoned("clerk_gone")).resolves.toBe(true);
@@ -96,14 +167,54 @@ describe("tombstone", () => {
   });
 
   describe("recordDeletionTombstone", () => {
-    it("inserts the peppered hash (never the raw id) with onConflictDoNothing so a repeat deletion is a no-op", async () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("stores the peppered hash (never the raw id) and re-stamps deletedAt on conflict so re-deleting restarts the retention window", async () => {
       await recordDeletionTombstone("clerk_gone");
 
       const insertedValue = mockValues.mock.calls[0][0].providerId;
       expect(mockInsert).toHaveBeenCalledWith(deletionTombstones);
       expect(insertedValue).toBe(hashProviderId("clerk_gone"));
       expect(insertedValue).not.toBe("clerk_gone");
-      expect(mockOnConflictDoNothing).toHaveBeenCalled();
+
+      // A bare onConflictDoNothing would leave an expired row in place, so a
+      // second deletion after the window would go untombstoned. Assert the
+      // conflict path targets the provider id and refreshes deletedAt.
+      const upsertArgs = mockOnConflictDoUpdate.mock.calls[0][0];
+      expect(upsertArgs.target).toBe(deletionTombstones.providerId);
+      const renderedSet = dialect.sqlToQuery(upsertArgs.set.deletedAt);
+      expect(renderedSet.sql).toContain("now()");
+    });
+
+    it("re-arms an expired tombstone so a second deletion blocks again", async () => {
+      // The scenario the upsert exists for, driven end-to-end through a shared
+      // stored row: first deletion blocks, the window elapses and self-heals,
+      // then a second deletion re-stamps deletedAt and blocks again. A regression
+      // to onConflictDoNothing leaves the stale row and fails the final assertion.
+      let storedDeletedAt = new Date();
+      mockTombstoneFindFirst.mockImplementation(async () => ({
+        providerId: "clerk_gone",
+        deletedAt: storedDeletedAt,
+      }));
+      mockOnConflictDoUpdate.mockImplementation(async () => {
+        storedDeletedAt = new Date();
+      });
+
+      await recordDeletionTombstone("clerk_gone");
+      await expect(isProviderTombstoned("clerk_gone")).resolves.toBe(true);
+
+      vi.advanceTimersByTime(MAX_CLERK_SESSION_LIFETIME_MS + 1000);
+      await expect(isProviderTombstoned("clerk_gone")).resolves.toBe(false);
+
+      await recordDeletionTombstone("clerk_gone");
+      await expect(isProviderTombstoned("clerk_gone")).resolves.toBe(true);
     });
 
     it("fails closed: throws and writes nothing when the pepper is unset", async () => {
