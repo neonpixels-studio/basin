@@ -1,7 +1,8 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
 import { users } from "../../../server/db/schema";
+import { TombstonePepperError } from "../../../server/utils/tombstoneHash";
 
 const {
   mockDeleteBillingRecords,
@@ -58,6 +59,13 @@ describe("deleteUserAccount", () => {
     vi.resetAllMocks();
     mockDelete.mockReturnValue({ where: mockWhere });
     mockWhere.mockResolvedValue(undefined);
+  });
+
+  // Unconditionally clear env stubs so a failing assertion in the pepper test
+  // can't leak an empty TOMBSTONE_ID_PEPPER into later tests (which now hit the
+  // real hashProviderId preflight in purgeAccountData).
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   it("purges billing, tombstones and deletes the db row for the right user, then deletes the clerk user", async () => {
@@ -118,6 +126,19 @@ describe("deleteUserAccount", () => {
     expect(mockRecordDeletionTombstone).not.toHaveBeenCalled();
     expect(mockDelete).not.toHaveBeenCalled();
     expect(mockDeleteClerkUser).not.toHaveBeenCalled();
+  });
+
+  it("throws before purging billing when the tombstone pepper is misconfigured", async () => {
+    // A missing/short pepper makes hashProviderId throw. The preflight probe must
+    // run before deleteBillingRecords so a config error never leaves billing
+    // irreversibly purged with the tombstone unrecorded.
+    vi.stubEnv("TOMBSTONE_ID_PEPPER", "");
+    await expect(
+      deleteUserAccount({ context: { user } } as never, user),
+    ).rejects.toThrow(TombstonePepperError);
+    expect(mockDeleteBillingRecords).not.toHaveBeenCalled();
+    expect(mockRecordDeletionTombstone).not.toHaveBeenCalled();
+    expect(mockDelete).not.toHaveBeenCalled();
   });
 
   it("logs the half-deleted state and rethrows when the db delete fails after billing was purged", async () => {

@@ -1,9 +1,12 @@
 // Isolates the deletion-tombstone table behind two small functions so the
 // account-deletion sweep and getOrCreateUser can be unit-tested without a live
-// database. A tombstone records the provider id (Clerk user id) of a deleted
-// account so a still-valid session cannot resurrect an empty `users` row.
-import { eq, sql } from "drizzle-orm";
+// database. A tombstone records a one-way hash of the provider id (Clerk user
+// id) of a deleted account so a still-valid session cannot resurrect an empty
+// `users` row. The raw provider id is never stored — see server/utils/
+// tombstoneHash.ts for why (issue #215).
+import { inArray, sql } from "drizzle-orm";
 import { deletionTombstones } from "../db/schema";
+import { hashProviderId } from "./tombstoneHash";
 
 // A tombstone only needs to outlive any session token that was minted just
 // before the account was deleted: Clerk verifies JWTs networklessly, so such a
@@ -17,19 +20,22 @@ import { deletionTombstones } from "../db/schema";
 // (Clerk's default maximum is 7 days).
 export const MAX_CLERK_SESSION_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
 
-// Records that this provider id's account was deleted. Idempotent on the primary
-// key: re-deleting restarts the retention window rather than raising a
-// unique-violation. Because retention is now bounded, the window must anchor to
+// Records that this provider id's account was deleted, storing only the peppered
+// hash (see tombstoneHash.ts, issue #215). Idempotent on the primary key, but
+// because retention is now bounded the conflict path re-stamps deletedAt with the
+// DB clock (matching defaultNow) rather than no-oping: the window must anchor to
 // the *latest* deletion — a stale row from an earlier, already-expired deletion
-// would leave a second deletion unprotected — so the conflict path re-stamps
-// deletedAt with the DB clock (matching defaultNow). Webhook retries for the same
-// deletion just re-stamp now() seconds later, which is harmless.
+// would leave a second deletion unprotected. Webhook retries for the same deletion
+// just re-stamp now() seconds later, which is harmless.
 export async function recordDeletionTombstone(
   providerId: string,
 ): Promise<void> {
+  // Hash first so a missing pepper throws before any DB write — the deletion
+  // sweep must never delete account data and then fail to record the tombstone.
+  const providerIdHash = hashProviderId(providerId);
   await useDb()
     .insert(deletionTombstones)
-    .values({ providerId })
+    .values({ providerId: providerIdHash })
     .onConflictDoUpdate({
       target: deletionTombstones.providerId,
       set: { deletedAt: sql`now()` },
@@ -38,14 +44,22 @@ export async function recordDeletionTombstone(
 
 // True when this provider id belongs to a deleted account whose tombstone is
 // still within the resurrection window, so getOrCreateUser must refuse to
-// re-create the user instead of silently re-inserting a row. A tombstone older
-// than the maximum Clerk session lifetime is ignored (see isTombstoneActive) so
-// a failed Clerk deletion cannot lock a live identity out permanently.
+// re-create the user instead of silently re-inserting a row. Matches either the
+// peppered hash (rows written since #215) or the raw provider id (legacy rows not
+// yet migrated by scripts/backfill-hash-tombstones.ts), so hardening the stored
+// value never reopens the resurrection gap. A tombstone older than the maximum
+// Clerk session lifetime is ignored (see isTombstoneActive) so a failed Clerk
+// deletion cannot lock a live identity out permanently.
 export async function isProviderTombstoned(
   providerId: string,
 ): Promise<boolean> {
   const tombstone = await useDb().query.deletionTombstones.findFirst({
-    where: eq(deletionTombstones.providerId, providerId),
+    where: inArray(deletionTombstones.providerId, [
+      hashProviderId(providerId),
+      // @todo Drop the raw-id arm once every environment has run
+      // scripts/backfill-hash-tombstones.ts, so no legacy raw rows remain.
+      providerId,
+    ]),
   });
   if (!tombstone) {
     return false;

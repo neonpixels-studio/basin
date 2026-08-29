@@ -9,6 +9,7 @@ import { findUserByProviderId } from "./auth";
 import { deleteClerkUser } from "./clerk";
 import { deleteBillingRecords } from "./subscriptions";
 import { recordDeletionTombstone } from "./tombstone";
+import { hashProviderId } from "./tombstoneHash";
 
 // Order matters:
 //   1. Delete the Stripe customer while the `subscriptions` row still exists —
@@ -46,6 +47,14 @@ import { recordDeletionTombstone } from "./tombstone";
 // place. See deleteUserAccount's step-by-step comment above for why the order
 // matters and why each step is retryable.
 async function purgeAccountData(user: DbUser): Promise<void> {
+  // Preflight the tombstone hash before the irreversible billing purge below.
+  // recordDeletionTombstone hashes the provider id, and hashProviderId throws on
+  // a misconfigured pepper (unset/too short). Without this probe that throw would
+  // land *after* deleteBillingRecords has already erased billing PII, turning an
+  // environment/config error into unrecoverable half-deleted state that the
+  // "retryable" logging below can never actually recover until a redeploy. Probe
+  // first so a bad pepper fails with nothing yet destroyed.
+  hashProviderId(user.providerId);
   await deleteBillingRecords(user.id);
   // Split from the delete below so a reconciler can tell which write failed —
   // the single fact they need is whether the users row still exists. Both steps

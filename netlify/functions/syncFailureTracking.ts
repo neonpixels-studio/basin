@@ -1,10 +1,9 @@
 import { ErrorDoNotRetry } from "@netlify/async-workloads";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { feeds, integrations } from "../../server/db/schema";
 import {
   computeNextRetryAt,
   HEALTHY_SYNC_STATE,
-  NO_CONSECUTIVE_FAILURES,
 } from "../../server/utils/feedSyncBackoff";
 import { SYNC_STATUS } from "../../server/utils/syncStatus";
 import { createDb } from "./db";
@@ -54,49 +53,96 @@ export class ServerConfigError extends ErrorDoNotRetry {
   }
 }
 
-// Current consecutive-failure count for a feed. Scoped by (id, userId) —
-// matching fetchFeedRecord's read scope and every other write here — so a
-// feedId belonging to a different user than the event claims can never be
-// read or written. A missing row (deleted between the sync attempt and this
-// write) yields zero here; the scoped UPDATE below then matches no rows and is
-// a no-op, which is the correct outcome for a feed that no longer exists.
-async function readConsecutiveFailures(
-  feedId: number,
-  userId: number,
-): Promise<number> {
-  const db = createDb();
-  const feed = await db.query.feeds.findFirst({
-    where: and(eq(feeds.id, feedId), eq(feeds.userId, userId)),
-    columns: { consecutiveFailures: true },
-  });
-
-  return feed?.consecutiveFailures ?? NO_CONSECUTIVE_FAILURES;
-}
-
-// Records a permanent failure and advances the backoff: increments the
-// consecutive-failure count and pushes nextRetryAt out by the schedule in
-// feedSyncBackoff.ts. Advancing nextRetryAt is what stops the scheduler from
-// re-emitting a sync for this feed on every 15-minute tick.
-async function recordFeedSyncFailure(
+// Atomically bumps a feed's consecutive-failure count for a permanent failure,
+// stamping the error status in the same statement. The increment is a single
+// `consecutive_failures + 1` SQL expression, not a read-then-write: two
+// concurrent failures serialize on the row and advance N -> N+1 -> N+2, where a
+// read-then-write would let both read N and both write N+1, stalling the
+// counter and the backoff derived from it. Scoped by (id, userId) like every
+// write here, so one user's event can't touch another's feed. Returns the
+// committed post-increment count, or null when no row matched — a feed deleted
+// between the sync attempt and this write, for which doing nothing is correct.
+async function incrementConsecutiveFailures(
   feedId: number,
   userId: number,
   message: string,
-): Promise<void> {
-  const consecutiveFailures =
-    (await readConsecutiveFailures(feedId, userId)) + 1;
-  const failedAt = new Date();
-
+  failedAt: Date,
+): Promise<number | null> {
   const db = createDb();
-  await db
+  const [updatedFeed] = await db
     .update(feeds)
     .set({
       syncStatus: SYNC_STATUS.ERROR,
       syncError: message,
       syncFailedAt: failedAt,
-      consecutiveFailures,
-      nextRetryAt: computeNextRetryAt(consecutiveFailures, failedAt),
+      consecutiveFailures: sql<number>`${feeds.consecutiveFailures} + 1`,
     })
-    .where(and(eq(feeds.id, feedId), eq(feeds.userId, userId)));
+    .where(and(eq(feeds.id, feedId), eq(feeds.userId, userId)))
+    .returning({ consecutiveFailures: feeds.consecutiveFailures });
+
+  return updatedFeed?.consecutiveFailures ?? null;
+}
+
+// Pushes nextRetryAt out by the backoff schedule so the scheduler stops
+// re-emitting a sync for this feed on every 15-minute tick. It's a second
+// statement because nextRetryAt derives from the post-increment count and
+// computing it in SQL would duplicate the schedule feedSyncBackoff.ts owns and
+// unit-tests; the neon-http driver has no interactive transactions to pair the
+// two writes. The write is guarded by (syncFailedAt, consecutiveFailures) — the
+// exact pair this failure just wrote — so a slow or stalled concurrent writer
+// can't clobber a fresher nextRetryAt with its own stale one: the count
+// distinguishes two failures that stamped the same millisecond, and the
+// timestamp rules out an ABA where a success reset the count to zero and a
+// fresh failure climbed back to the same value. Either predicate failing makes
+// this a safe no-op — the row already holds the newer failure's backoff or a
+// success's cleared state.
+//
+// Between the two statements (and after a hard crash before this one runs) the
+// row is briefly counted with the prior failure's now-past nextRetryAt; a tick
+// landing there re-syncs once and self-heals, and the error is never swallowed.
+async function advanceNextRetryAt(
+  feedId: number,
+  userId: number,
+  consecutiveFailures: number,
+  failedAt: Date,
+): Promise<void> {
+  const db = createDb();
+  await db
+    .update(feeds)
+    .set({ nextRetryAt: computeNextRetryAt(consecutiveFailures, failedAt) })
+    .where(
+      and(
+        eq(feeds.id, feedId),
+        eq(feeds.userId, userId),
+        eq(feeds.syncFailedAt, failedAt),
+        eq(feeds.consecutiveFailures, consecutiveFailures),
+      ),
+    );
+}
+
+// The feed's failure record as one logical unit: atomically bump the count,
+// then — unless the row vanished between the two statements — advance the
+// backoff off that post-increment count. The backoff is the only write with a
+// data dependency on the count, which is why it's sequenced here rather than
+// dispatched alongside the independent integration write.
+async function recordFeedSyncFailure(
+  feedId: number,
+  userId: number,
+  message: string,
+): Promise<void> {
+  const failedAt = new Date();
+  const consecutiveFailures = await incrementConsecutiveFailures(
+    feedId,
+    userId,
+    message,
+    failedAt,
+  );
+
+  if (consecutiveFailures === null) {
+    return;
+  }
+
+  await advanceNextRetryAt(feedId, userId, consecutiveFailures, failedAt);
 }
 
 async function recordFeedSyncSuccess(
@@ -161,13 +207,39 @@ export async function persistPermanentSyncFailure(
     return;
   }
 
-  await recordFeedSyncFailure(feedId, userId, error.message);
+  // The feed's failure record and the integration's reconnect flag are
+  // independent rows; neither may be suppressed by the other failing. A plain
+  // await sequence lets the first write's failure skip the rest — dropping
+  // either the backoff gate (unbounded per-tick re-dispatch) or the
+  // user-visible reconnect flag. Dispatch both together instead; each write is
+  // own-scoped/guarded, so unordered dispatch is safe.
+  const pendingWrites: Promise<void>[] = [
+    recordFeedSyncFailure(feedId, userId, error.message),
+  ];
 
-  if (!(error instanceof IntegrationAuthError)) {
+  if (error instanceof IntegrationAuthError) {
+    pendingWrites.push(
+      recordIntegrationSyncFailure(userId, error.provider, error.message),
+    );
+  }
+
+  // Fail loud: surface the first rejection, but log the rest so a second
+  // concurrent failure isn't silently swallowed.
+  const settled = await Promise.allSettled(pendingWrites);
+  const rejections = settled.filter(
+    (result): result is PromiseRejectedResult => result.status === "rejected",
+  );
+  if (rejections.length === 0) {
     return;
   }
 
-  await recordIntegrationSyncFailure(userId, error.provider, error.message);
+  for (const extraRejection of rejections.slice(1)) {
+    console.error(
+      `sync failure write failed for feed ${feedId} (user ${userId}):`,
+      extraRejection.reason,
+    );
+  }
+  throw rejections[0].reason;
 }
 
 // Marks a feed sync as successful and clears any previously-recorded failure

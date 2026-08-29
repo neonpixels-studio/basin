@@ -1,14 +1,21 @@
 import { ErrorDoNotRetry } from "@netlify/async-workloads";
+import { SQL } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-const { mockUpdate, mockUpdateSet, mockUpdateWhere, mockFindFirst } =
-  vi.hoisted(() => ({
-    mockUpdate: vi.fn(),
-    mockUpdateSet: vi.fn(),
-    mockUpdateWhere: vi.fn(),
-    mockFindFirst: vi.fn(),
-  }));
+const {
+  mockUpdate,
+  mockUpdateSet,
+  mockUpdateWhere,
+  mockUpdateReturning,
+  mockFindFirst,
+} = vi.hoisted(() => ({
+  mockUpdate: vi.fn(),
+  mockUpdateSet: vi.fn(),
+  mockUpdateWhere: vi.fn(),
+  mockUpdateReturning: vi.fn(),
+  mockFindFirst: vi.fn(),
+}));
 
 vi.mock("../../../netlify/functions/db", () => ({
   createDb: vi.fn(() => ({
@@ -25,20 +32,70 @@ import {
   persistSyncSuccess,
 } from "../../../netlify/functions/syncFailureTracking";
 
+// Renders a drizzle SQL fragment to its parameterised text and params so a test
+// can assert the actual SQL emitted (e.g. an atomic `+ 1` increment) or the
+// bound values, rather than trusting an opaque object.
+function renderSql(fragment: SQL): { sql: string; params: unknown[] } {
+  return new PgDialect().sqlToQuery(fragment);
+}
+
+// Rendered-where fragments that identify a specific write regardless of dispatch
+// order: the integration update is the only one scoped by provider, the backoff
+// update the only one carrying the count guard.
+const INTEGRATION_PROVIDER_CLAUSE = '"integrations"."provider"';
+const BACKOFF_GUARD_CLAUSE = '"feeds"."consecutive_failures" = ';
+
+// A where() result that is both awaitable (writes that await it directly) and
+// carries `.returning()` (the atomic-increment write), so one stub satisfies
+// every update chain.
+function updateChainResult() {
+  return Object.assign(Promise.resolve(undefined), {
+    returning: mockUpdateReturning,
+  });
+}
+
+// Locates the UPDATE that targeted the integrations table by its where clause,
+// not by dispatch index. The feed increment and the integration write carry an
+// identical `set` shape and are dispatched concurrently, so index-based
+// selection is brittle. set() and where() are called synchronously in one
+// chain, so the returned index aligns the two mocks for a payload assertion.
+function integrationCallIndex() {
+  return mockUpdateWhere.mock.calls.findIndex(([whereClause]) =>
+    renderSql(whereClause).sql.includes(INTEGRATION_PROVIDER_CLAUSE),
+  );
+}
+
+// Rejects only the update whose rendered where clause contains `clauseFragment`;
+// every other write resolves normally. Selecting by clause rather than call
+// index keeps these tests valid regardless of dispatch order.
+function rejectWriteMatching(clauseFragment: string, error: Error) {
+  mockUpdateWhere.mockImplementation((whereClause) =>
+    renderSql(whereClause).sql.includes(clauseFragment)
+      ? Promise.reject(error)
+      : updateChainResult(),
+  );
+}
+
 describe("syncFailureTracking", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     mockUpdate.mockReturnValue({ set: mockUpdateSet });
     mockUpdateSet.mockReturnValue({ where: mockUpdateWhere });
-    mockUpdateWhere.mockResolvedValue(undefined);
-    // Default: the feed has no prior failures on record.
-    mockFindFirst.mockResolvedValue({ consecutiveFailures: 0 });
+    // where() must satisfy two chains: the atomic-increment write ends in
+    // `.returning()`, while every other write is awaited directly. One thenable
+    // that also carries `.returning` covers both.
+    mockUpdateWhere.mockReturnValue(updateChainResult());
+    // Default: the increment lands and the feed is now at one consecutive
+    // failure. Individual tests override the returned count.
+    mockUpdateReturning.mockResolvedValue([{ consecutiveFailures: 1 }]);
   });
 
-  // Restore real timers even when an assertion throws, so a single failure in a
-  // fake-timer test can't cascade into every later test running on a frozen clock.
+  // Restore real timers and any console spies even when an assertion throws, so
+  // a single failure can't cascade into every later test (a frozen clock or a
+  // still-stubbed console).
   afterEach(() => {
     vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
   describe("providerForSourceType()", () => {
@@ -62,7 +119,8 @@ describe("syncFailureTracking", () => {
         new ErrorDoNotRetry("Feed unreachable"),
       );
 
-      expect(mockUpdateSet).toHaveBeenCalledWith(
+      expect(mockUpdateSet).toHaveBeenNthCalledWith(
+        1,
         expect.objectContaining({
           syncStatus: "error",
           syncError: "Feed unreachable",
@@ -71,9 +129,71 @@ describe("syncFailureTracking", () => {
       );
     });
 
-    it("advances the backoff to the first failure and sets nextRetryAt", async () => {
-      vi.useFakeTimers();
-      vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    it("bumps consecutiveFailures with a single atomic SQL increment and no prior read", async () => {
+      // The whole point of the issue: the counter must advance via an atomic
+      // `consecutive_failures + 1` UPDATE, not a read-then-write, so concurrent
+      // failures can't race on a stale read and stall the backoff.
+      await persistPermanentSyncFailure(
+        1,
+        42,
+        new ErrorDoNotRetry("Feed unreachable"),
+      );
+
+      const [incrementSet] = mockUpdateSet.mock.calls[0];
+      expect(incrementSet.consecutiveFailures).toBeInstanceOf(SQL);
+      expect(renderSql(incrementSet.consecutiveFailures).sql).toContain(
+        '"feeds"."consecutive_failures" + 1',
+      );
+
+      // nextRetryAt must NOT ride along on the increment: computing it here would
+      // need a pre-read count — the exact read-then-write this change removes. It
+      // belongs on the second, guarded write only. Assert membership (not key
+      // order, which has no behavioral meaning) so re-adding it regresses this.
+      expect(incrementSet).not.toHaveProperty("nextRetryAt");
+      expect(Object.keys(incrementSet).sort()).toEqual([
+        "consecutiveFailures",
+        "syncError",
+        "syncFailedAt",
+        "syncStatus",
+      ]);
+
+      // No SELECT: the count is read back via RETURNING, never a prior query.
+      expect(mockFindFirst).not.toHaveBeenCalled();
+      expect(mockUpdateReturning).toHaveBeenCalledTimes(1);
+    });
+
+    it("scopes both failure writes to the feed's (id, userId)", async () => {
+      // The scope is a security boundary: a feedId belonging to a different user
+      // than the event claims must never be written. Assert both the increment
+      // and the nextRetryAt write carry the (id, userId) predicate.
+      await persistPermanentSyncFailure(
+        1,
+        42,
+        new ErrorDoNotRetry("Feed unreachable"),
+      );
+
+      expect(mockUpdateWhere).toHaveBeenCalledTimes(2);
+      for (const [whereClause] of mockUpdateWhere.mock.calls) {
+        const { sql } = renderSql(whereClause);
+        expect(sql).toContain('"feeds"."id" = ');
+        expect(sql).toContain('"feeds"."user_id" = ');
+      }
+
+      // The increment is scoped by exactly (id, userId).
+      const { params: incrementParams } = renderSql(
+        mockUpdateWhere.mock.calls[0][0],
+      );
+      expect(incrementParams).toEqual([42, 1]);
+    });
+
+    it("guards the nextRetryAt write with this call's (syncFailedAt, consecutiveFailures) so a stale writer no-ops", async () => {
+      // The neon-http driver has no interactive transactions, so a slow
+      // concurrent (or stalled-then-resumed) failure must not clobber a fresher
+      // nextRetryAt. The second write carries BOTH predicates: the RETURNING
+      // count distinguishes two failures that stamped the same millisecond
+      // (timestamp alone can't), and the timestamp rules out an ABA where a
+      // reset-to-zero then a fresh failure resurrects an old count value.
+      mockUpdateReturning.mockResolvedValue([{ consecutiveFailures: 2 }]);
 
       await persistPermanentSyncFailure(
         1,
@@ -81,21 +201,39 @@ describe("syncFailureTracking", () => {
         new ErrorDoNotRetry("Feed unreachable"),
       );
 
-      // First failure: count becomes 1 and the retry is pushed out one base
-      // interval (15 minutes) from the failure time.
-      expect(mockUpdateSet).toHaveBeenCalledWith(
-        expect.objectContaining({
-          consecutiveFailures: 1,
-          nextRetryAt: new Date("2026-01-01T00:15:00.000Z"),
-        }),
-      );
+      const stampedFailedAt = mockUpdateSet.mock.calls[0][0].syncFailedAt;
+      const { sql, params } = renderSql(mockUpdateWhere.mock.calls[1][0]);
+      expect(sql).toContain('"feeds"."sync_failed_at" = ');
+      expect(sql).toContain('"feeds"."consecutive_failures" = ');
+      // (id, userId, timestamp guard, count guard) — the exact pair write 1
+      // wrote (the dialect renders the Date param as its ISO string).
+      expect(params).toEqual([42, 1, stampedFailedAt.toISOString(), 2]);
     });
 
-    it("escalates the backoff from the feed's existing consecutive-failure count", async () => {
+    it("computes nextRetryAt from the RETURNING count for a first failure", async () => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
-      // Feed has already failed 3 times in a row; this is the 4th.
-      mockFindFirst.mockResolvedValue({ consecutiveFailures: 3 });
+      // The atomic increment reports the feed is now at one consecutive failure.
+      mockUpdateReturning.mockResolvedValue([{ consecutiveFailures: 1 }]);
+
+      await persistPermanentSyncFailure(
+        1,
+        42,
+        new ErrorDoNotRetry("Feed unreachable"),
+      );
+
+      // First failure: retry pushed out one base interval (15 minutes) from the
+      // failure time. nextRetryAt is the second write.
+      expect(mockUpdateSet).toHaveBeenNthCalledWith(2, {
+        nextRetryAt: new Date("2026-01-01T00:15:00.000Z"),
+      });
+    });
+
+    it("escalates the backoff from the RETURNING count, not a pre-read value", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+      // The DB increment lands this feed's 4th consecutive failure.
+      mockUpdateReturning.mockResolvedValue([{ consecutiveFailures: 4 }]);
 
       await persistPermanentSyncFailure(
         1,
@@ -104,18 +242,15 @@ describe("syncFailureTracking", () => {
       );
 
       // 4th failure: 2^3 * 15min = 2 hours from now.
-      expect(mockUpdateSet).toHaveBeenCalledWith(
-        expect.objectContaining({
-          consecutiveFailures: 4,
-          nextRetryAt: new Date("2026-01-01T02:00:00.000Z"),
-        }),
-      );
+      expect(mockUpdateSet).toHaveBeenNthCalledWith(2, {
+        nextRetryAt: new Date("2026-01-01T02:00:00.000Z"),
+      });
     });
 
-    it("treats a missing feed row as zero prior failures", async () => {
-      vi.useFakeTimers();
-      vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
-      mockFindFirst.mockResolvedValue(undefined);
+    it("no-ops the nextRetryAt write when the feed row no longer exists", async () => {
+      // A feed deleted between the sync attempt and this write matches no rows,
+      // so RETURNING is empty and the derived nextRetryAt write must be skipped.
+      mockUpdateReturning.mockResolvedValue([]);
 
       await persistPermanentSyncFailure(
         1,
@@ -123,30 +258,148 @@ describe("syncFailureTracking", () => {
         new ErrorDoNotRetry("Feed unreachable"),
       );
 
-      expect(mockUpdateSet).toHaveBeenCalledWith(
+      // Only the increment ran; no second (nextRetryAt) update.
+      expect(mockUpdate).toHaveBeenCalledTimes(1);
+      expect(mockUpdateSet).toHaveBeenCalledTimes(1);
+    });
+
+    it("still records the integration failure when the feed row is gone but the error is an IntegrationAuthError", async () => {
+      // A deleted feed skips the feed writes, but a broken connection still
+      // needs flagging on the integration so SettingsConnections can surface it
+      // — the account is broken regardless of whether this one feed survives.
+      mockUpdateReturning.mockResolvedValue([]);
+
+      await persistPermanentSyncFailure(
+        1,
+        42,
+        new IntegrationAuthError("youtube", "Re-connect your YouTube account."),
+      );
+
+      // Feed increment (no-op RETURNING) + the integration write; no feed
+      // nextRetryAt write. Select the integration write by table so a regressed
+      // scope or target still fails the assertion.
+      expect(mockUpdate).toHaveBeenCalledTimes(2);
+      const index = integrationCallIndex();
+      expect(index).toBeGreaterThanOrEqual(0);
+      expect(mockUpdateSet.mock.calls[index][0]).toEqual(
         expect.objectContaining({
-          consecutiveFailures: 1,
-          nextRetryAt: new Date("2026-01-01T00:15:00.000Z"),
+          syncStatus: "error",
+          syncError: "Re-connect your YouTube account.",
         }),
       );
     });
 
-    it("scopes the consecutive-failure read to the feed's (id, userId) and only selects that column", async () => {
-      // The read is a security boundary: a feedId belonging to a different user
-      // than the event claims must never be read. Assert the scope so dropping
-      // the userId predicate (or widening the column selection) fails here.
-      await persistPermanentSyncFailure(
-        1,
-        42,
-        new ErrorDoNotRetry("Feed unreachable"),
+    it("propagates a failure of the nextRetryAt write instead of swallowing it", async () => {
+      // Without an interactive transaction the two writes can't be atomic, so a
+      // failed nextRetryAt write must surface (fail loud) rather than be
+      // swallowed into a half-written, silently-ungated row. The increment write
+      // lands; the backoff write (the only one carrying the count guard) rejects.
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      rejectWriteMatching(BACKOFF_GUARD_CLAUSE, new Error("connection reset"));
+
+      await expect(
+        persistPermanentSyncFailure(
+          1,
+          42,
+          new ErrorDoNotRetry("Feed unreachable"),
+        ),
+      ).rejects.toThrow("connection reset");
+
+      // A single rejection is thrown, not also logged — nothing to slice(1).
+      expect(errorSpy).not.toHaveBeenCalled();
+    });
+
+    it("records the integration flag even when the backoff write fails", async () => {
+      // The backoff write is a separate statement that can fail on its own. It's
+      // dispatched independently of the integration write, so an
+      // IntegrationAuthError still marks the connection as needing reconnect even
+      // when the backoff dies — the flag is the user-visible signal and must not
+      // ride on the scheduling optimization. Reject the backoff write by its
+      // clause (the only one carrying the count guard), so the test holds
+      // regardless of dispatch order.
+      rejectWriteMatching(BACKOFF_GUARD_CLAUSE, new Error("connection reset"));
+
+      await expect(
+        persistPermanentSyncFailure(
+          1,
+          42,
+          new IntegrationAuthError(
+            "youtube",
+            "Re-connect your YouTube account.",
+          ),
+        ),
+      ).rejects.toThrow("connection reset");
+
+      // Assert the integration write's payload, not just that it dispatched:
+      // select it by target table, then read the aligned set() call — the
+      // increment carries the same set shape, so an unindexed match is vacuous.
+      const index = integrationCallIndex();
+      expect(index).toBeGreaterThanOrEqual(0);
+      expect(mockUpdateSet.mock.calls[index][0]).toEqual(
+        expect.objectContaining({
+          syncStatus: "error",
+          syncError: "Re-connect your YouTube account.",
+        }),
+      );
+    });
+
+    it("still flags the integration when the failure increment write rejects", async () => {
+      // The increment is the feed's own write; the integration reconnect flag is
+      // an independent row and must not be suppressed by the increment failing.
+      // Dispatched together, so a rejected increment still lets the flag land.
+      mockUpdateReturning.mockRejectedValueOnce(new Error("connection reset"));
+
+      await expect(
+        persistPermanentSyncFailure(
+          1,
+          42,
+          new IntegrationAuthError(
+            "youtube",
+            "Re-connect your YouTube account.",
+          ),
+        ),
+      ).rejects.toThrow("connection reset");
+
+      const index = integrationCallIndex();
+      expect(index).toBeGreaterThanOrEqual(0);
+      expect(mockUpdateSet.mock.calls[index][0]).toEqual(
+        expect.objectContaining({
+          syncStatus: "error",
+          syncError: "Re-connect your YouTube account.",
+        }),
+      );
+    });
+
+    it("throws the first rejection and logs the rest when both writes fail", async () => {
+      // Both independent writes fail. The thrown error must surface one failure
+      // (fail loud), and the other must be logged with the feed/user, not
+      // silently swallowed — that log is its only record.
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      // Feed write (the increment's RETURNING) fails; integration write fails too.
+      mockUpdateReturning.mockRejectedValueOnce(new Error("feed write down"));
+      rejectWriteMatching(
+        INTEGRATION_PROVIDER_CLAUSE,
+        new Error("integration write down"),
       );
 
-      const [findArgs] = mockFindFirst.mock.calls[0];
-      const { sql, params } = new PgDialect().sqlToQuery(findArgs.where);
-      expect(sql).toContain('"feeds"."id" = ');
-      expect(sql).toContain('"feeds"."user_id" = ');
-      expect(params).toEqual([42, 1]);
-      expect(findArgs.columns).toEqual({ consecutiveFailures: true });
+      await expect(
+        persistPermanentSyncFailure(
+          1,
+          42,
+          new IntegrationAuthError(
+            "youtube",
+            "Re-connect your YouTube account.",
+          ),
+        ),
+      ).rejects.toThrow("feed write down");
+
+      // Exactly the rest (slice(1)) are logged — the thrown one is not
+      // double-reported here as well as by the caller.
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+      expect(errorSpy).toHaveBeenCalledWith(
+        expect.stringContaining("feed 42 (user 1)"),
+        expect.objectContaining({ message: "integration write down" }),
+      );
     });
 
     it("does not touch integrations for a feed-only failure (not IntegrationAuthError)", async () => {
@@ -156,10 +409,11 @@ describe("syncFailureTracking", () => {
         new ErrorDoNotRetry("Source mismatch for feed 42"),
       );
 
-      // Only one update call — the feed. No integration lookup/update, even
-      // though this is a permanent failure: a source mismatch or exhausted
-      // retries says nothing about whether the connected account is broken.
-      expect(mockUpdate).toHaveBeenCalledTimes(1);
+      // Two updates — the atomic increment and the derived nextRetryAt — both on
+      // the feed. No integration lookup/update, even though this is a permanent
+      // failure: a source mismatch or exhausted retries says nothing about
+      // whether the connected account is broken.
+      expect(mockUpdate).toHaveBeenCalledTimes(2);
     });
 
     it("also persists the error status on the backing integration for an IntegrationAuthError", async () => {
@@ -169,9 +423,15 @@ describe("syncFailureTracking", () => {
         new IntegrationAuthError("youtube", "Re-connect your YouTube account."),
       );
 
-      expect(mockUpdate).toHaveBeenCalledTimes(2);
-      expect(mockUpdateSet).toHaveBeenNthCalledWith(
-        2,
+      // Three writes: the atomic increment (feed), plus the integration reconnect
+      // flag and the backoff dispatched together. Select the integration write by
+      // its target table rather than dispatch index — the increment carries an
+      // identical set shape, so the where clause is what proves the integrations
+      // row was written.
+      expect(mockUpdate).toHaveBeenCalledTimes(3);
+      const index = integrationCallIndex();
+      expect(index).toBeGreaterThanOrEqual(0);
+      expect(mockUpdateSet.mock.calls[index][0]).toEqual(
         expect.objectContaining({
           syncStatus: "error",
           syncError: "Re-connect your YouTube account.",
@@ -187,7 +447,8 @@ describe("syncFailureTracking", () => {
         new IntegrationAuthError("bluesky", "Reconnect Bluesky in Settings."),
       );
 
-      expect(mockUpdate).toHaveBeenCalledTimes(2);
+      // Two feed writes plus the integration write.
+      expect(mockUpdate).toHaveBeenCalledTimes(3);
     });
 
     it("IntegrationAuthError is an instance of ErrorDoNotRetry", () => {

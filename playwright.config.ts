@@ -86,6 +86,10 @@ export default defineConfig({
       NUXT_CLERK_SECRET_KEY: process.env.NUXT_CLERK_SECRET_KEY ?? "",
       NUXT_GOOGLE_CLIENT_ID: process.env.NUXT_GOOGLE_CLIENT_ID ?? "",
       NUXT_GOOGLE_CLIENT_SECRET: process.env.NUXT_GOOGLE_CLIENT_SECRET ?? "",
+      // OAuth redirect URIs are built from configured site URL, not the request
+      // origin. The YouTube callback e2e flow hits the real server callback, so
+      // this must be set or getConfiguredSiteUrl() 500s.
+      NUXT_SITE_URL: BASE_URL,
       // Route outbound Google API calls to the local mock server so e2e tests
       // never hit the real Google APIs.
       GOOGLE_TOKEN_URL: `${MOCK_BASE_URL}/token`,

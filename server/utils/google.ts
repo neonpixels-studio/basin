@@ -1,3 +1,5 @@
+import { getConfiguredSiteUrl } from "./siteUrl";
+
 // Configurable so e2e tests can point these at a local mock server.
 // Set GOOGLE_TOKEN_URL / YOUTUBE_CHANNELS_URL in the environment to override.
 const GOOGLE_TOKEN_URL =
@@ -16,6 +18,16 @@ const YOUTUBE_SCOPES = [
   "https://www.googleapis.com/auth/youtube.readonly",
   "https://www.googleapis.com/auth/userinfo.profile",
 ].join(" ");
+
+const YOUTUBE_CALLBACK_PATH = "/api/auth/youtube/callback";
+
+// The auth-initiation and callback steps must send Google an identical
+// redirect_uri or the token exchange fails, so both derive it from this one
+// helper. Anchored to the configured site URL (not the request origin) so a
+// forged Host header can't redirect the OAuth flow to another origin.
+export function buildYouTubeCallbackUrl(): string {
+  return `${getConfiguredSiteUrl()}${YOUTUBE_CALLBACK_PATH}`;
+}
 
 export function buildYouTubeAuthUrl(
   redirectUri: string,

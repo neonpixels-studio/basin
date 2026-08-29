@@ -6,11 +6,15 @@ const mockSendRedirect = vi.fn();
 const mockBuildYouTubeAuthUrl = vi.fn(
   () => "https://accounts.google.com/oauth?test=1",
 );
+const CONFIGURED_CALLBACK_URL =
+  "https://basin.example.com/api/auth/youtube/callback";
+const mockBuildYouTubeCallbackUrl = vi.fn(() => CONFIGURED_CALLBACK_URL);
 
 vi.stubGlobal("setCookie", mockSetCookie);
 vi.stubGlobal("getRequestURL", mockGetRequestURL);
 vi.stubGlobal("sendRedirect", mockSendRedirect);
 vi.stubGlobal("buildYouTubeAuthUrl", mockBuildYouTubeAuthUrl);
+vi.stubGlobal("buildYouTubeCallbackUrl", mockBuildYouTubeCallbackUrl);
 
 import handler from "../../../../server/api/auth/youtube.get";
 
@@ -18,12 +22,13 @@ describe("GET /api/auth/youtube", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     mockGetRequestURL.mockReturnValue(
-      new URL("https://example.com/api/auth/youtube"),
+      new URL("https://attacker.example.com/api/auth/youtube"),
     );
     mockSendRedirect.mockResolvedValue(undefined);
     mockBuildYouTubeAuthUrl.mockReturnValue(
       "https://accounts.google.com/oauth?test=1",
     );
+    mockBuildYouTubeCallbackUrl.mockReturnValue(CONFIGURED_CALLBACK_URL);
   });
 
   it("throws 401 when not authenticated", async () => {
@@ -62,15 +67,32 @@ describe("GET /api/auth/youtube", () => {
     );
   });
 
-  it("passes the correct callback redirect_uri to buildYouTubeAuthUrl", async () => {
+  it("builds redirect_uri from the configured site URL, not the request origin", async () => {
+    // The request arrives on a forged host; the redirect_uri must still be the
+    // server-configured callback so a spoofed Host header can't hijack the flow.
     mockGetRequestURL.mockReturnValue(
-      new URL("https://myapp.com/api/auth/youtube"),
+      new URL("https://attacker.example.com/api/auth/youtube"),
     );
     const event = { context: { user: { id: 1 } } };
     await handler(event);
     expect(mockBuildYouTubeAuthUrl).toHaveBeenCalledWith(
-      "https://myapp.com/api/auth/youtube/callback",
+      CONFIGURED_CALLBACK_URL,
       expect.any(String),
     );
+    // Fails loudly if request-origin derivation is ever reintroduced.
+    expect(mockGetRequestURL).not.toHaveBeenCalled();
+  });
+
+  it("propagates the 500 when the site URL is unconfigured, without redirecting or planting a cookie", async () => {
+    mockBuildYouTubeCallbackUrl.mockImplementation(() => {
+      throw Object.assign(new Error("Server configuration error"), {
+        statusCode: 500,
+      });
+    });
+    const event = { context: { user: { id: 1 } } };
+    await expect(handler(event)).rejects.toMatchObject({ statusCode: 500 });
+    expect(mockSetCookie).not.toHaveBeenCalled();
+    expect(mockBuildYouTubeAuthUrl).not.toHaveBeenCalled();
+    expect(mockSendRedirect).not.toHaveBeenCalled();
   });
 });

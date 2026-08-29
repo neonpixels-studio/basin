@@ -19,8 +19,7 @@ export default defineEventHandler(async (event) => {
 
   deleteCookie(event, "oauth_state_youtube");
 
-  const { origin } = getRequestURL(event);
-  const redirectUri = `${origin}/api/auth/youtube/callback`;
+  const redirectUri = buildYouTubeCallbackUrl();
 
   const tokens = await exchangeCodeForTokens(String(code), redirectUri);
   const handle = await getYouTubeChannelHandle(tokens.access_token);

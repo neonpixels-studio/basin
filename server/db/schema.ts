@@ -29,22 +29,28 @@ export const users = pgTable("users", {
   updatedAt: timestamp("updated_at").defaultNow(),
 });
 
-// Records the provider id (Clerk user id) of a deleted account. server/utils/
-// tombstone.ts owns the full rationale (why a still-valid session can otherwise
-// resurrect an empty row). The provider id is the primary key so re-deleting an
-// account re-stamps deletedAt via upsert (restarting the window) instead of
-// raising a unique violation.
+// Records a one-way hash of the provider id (Clerk user id) of a deleted
+// account. server/utils/tombstone.ts owns the full rationale (why a still-valid
+// session can otherwise resurrect an empty row); server/utils/tombstoneHash.ts
+// owns why we store sha256(provider_id + pepper) rather than the raw id
+// (issue #215). The hash is the primary key so re-deleting an account re-stamps
+// deletedAt via upsert (restarting the retention window) instead of raising a
+// unique violation.
 //
 // A row only ever needs to outlive the deleted account's longest valid session.
 // Only *enforcement* is windowed, not storage: tombstone.ts ignores any row older
 // than the maximum Clerk session lifetime (measured against deletedAt) so the
 // lockout self-heals without a scheduled job, but rows are retained indefinitely
-// as a record that the provider id was deleted rather than pruned. deletedAt
-// tracks the latest deletion (a re-deletion re-stamps it), not the first, so it is
-// not a full deletion history. It is stored with a time zone so that age comparison
-// against the app clock is unaffected by the server's local time zone. The stored value is Clerk's opaque
-// provider id (a pseudonymous identifier, not profile data); hashing it is a
-// reasonable hardening follow-up.
+// (Clerk never reuses a user id) as a record that the provider id was deleted
+// rather than pruned — pruning would risk reopening the resurrection gap if the
+// window undercut a still-valid token's TTL. deletedAt tracks the latest deletion
+// (a re-deletion re-stamps it), not the first, so it is not a full deletion
+// history. It is stored with a time zone so that age comparison against the app
+// clock is unaffected by the server's local time zone. The column keeps its
+// `provider_id` name (the hash is what a provider id maps to), holding either a
+// hash (rows written since #215) or a legacy raw id until
+// scripts/backfill-hash-tombstones.ts migrates it — the same tolerant storage
+// shape crypto.ts uses for legacy plaintext tokens.
 export const deletionTombstones = pgTable("deletion_tombstones", {
   providerId: text("provider_id").primaryKey(),
   deletedAt: timestamp("deleted_at", { withTimezone: true })

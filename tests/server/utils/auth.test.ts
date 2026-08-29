@@ -1,4 +1,8 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+
+// isProviderTombstoned hashes the provider id with this pepper before the
+// lookup, so it must be present for the tombstone code path to run.
+const TEST_TOMBSTONE_PEPPER = "test-tombstone-pepper-0123456789";
 
 const mockFindFirst = vi.fn();
 const mockTombstoneFindFirst = vi.fn();
@@ -32,10 +36,15 @@ const mockUser = {
 describe("getOrCreateUser", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    vi.stubEnv("TOMBSTONE_ID_PEPPER", TEST_TOMBSTONE_PEPPER);
     runtimeConfig.disableSignups = "";
     mockTombstoneFindFirst.mockResolvedValue(undefined);
     mockInsert.mockReturnValue({ values: mockValues });
     mockValues.mockReturnValue({ returning: mockReturning });
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   it("returns the existing user when found by providerId", async () => {
