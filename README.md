@@ -29,10 +29,20 @@ matching file:
 | `.env.e2e`        | e2e tests / CI     | `DOTENV_PRIVATE_KEY_E2E`        |
 | `.env.production` | Netlify production | `DOTENV_PRIVATE_KEY_PRODUCTION` |
 
-Only the database URL and the site URL (`NUXT_SITE_URL`) differ per environment;
-the Clerk, Google, and Sentry values are identical across all of them. See
-[`.env.example`](.env.example) for the full variable reference and where to
-obtain each value.
+The database URL, the Stripe keys, and `NUXT_SITE_URL` differ per environment;
+the Clerk, Google, and Sentry values are identical across all of them.
+`NUXT_SITE_URL` is the deployed origin (localhost for local/e2e, the stable
+preview alias for `.env.dev`, the production origin for `.env.production`) —
+OAuth redirect URIs and billing redirect targets are built from it. Because the
+Google OAuth client is shared across environments, every environment's
+`<NUXT_SITE_URL>/api/auth/youtube/callback` must be registered as an authorized
+redirect URI on that one client (localhost, the preview alias, and the
+production origin), and the YouTube connect flow must be started from the
+configured origin — the state cookie and callback have to share a host, so
+Netlify preview deploys must be reached via the pinned `.env.dev` alias, not a
+per-deploy hostname. A missing or malformed `NUXT_SITE_URL` makes the OAuth and
+billing routes return a 500 until it is set. See [`.env.example`](.env.example)
+for the full variable reference and where to obtain each value.
 
 **First-time setup:** restore `.env.keys` from your password manager, then point
 local dev at your own Neon branch so it never touches production data:
