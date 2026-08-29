@@ -6,6 +6,7 @@ const {
   mockUpdate,
   mockUpdateSet,
   mockUpdateWhere,
+  mockUpdateReturning,
   mockInsert,
   mockInsertValues,
   mockInsertOnConflict,
@@ -21,6 +22,7 @@ const {
   mockUpdate: vi.fn(),
   mockUpdateSet: vi.fn(),
   mockUpdateWhere: vi.fn(),
+  mockUpdateReturning: vi.fn(),
   mockInsert: vi.fn(),
   mockInsertValues: vi.fn(),
   mockInsertOnConflict: vi.fn(),
@@ -197,6 +199,22 @@ function makeVideoItem() {
   };
 }
 
+// Stubs the drizzle update chain used by every describe block here. where()
+// returns a thenable that also carries `.returning()`, so it satisfies both the
+// atomic-increment failure write (which ends in `.returning()`) and every other
+// write (awaited directly). The default RETURNING row stands in for a feed now
+// at one consecutive failure.
+function stubFeedUpdateChain() {
+  mockUpdate.mockReturnValue({ set: mockUpdateSet });
+  mockUpdateSet.mockReturnValue({ where: mockUpdateWhere });
+  mockUpdateWhere.mockReturnValue(
+    Object.assign(Promise.resolve(undefined), {
+      returning: mockUpdateReturning,
+    }),
+  );
+  mockUpdateReturning.mockResolvedValue([{ consecutiveFailures: 1 }]);
+}
+
 describe("sync-feed workload", () => {
   beforeEach(() => {
     vi.resetAllMocks();
@@ -206,9 +224,7 @@ describe("sync-feed workload", () => {
     vi.spyOn(console, "log").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
 
-    mockUpdate.mockReturnValue({ set: mockUpdateSet });
-    mockUpdateSet.mockReturnValue({ where: mockUpdateWhere });
-    mockUpdateWhere.mockResolvedValue(undefined);
+    stubFeedUpdateChain();
 
     mockInsert.mockReturnValue({ values: mockInsertValues });
     mockInsertValues.mockReturnValue({
@@ -483,9 +499,7 @@ describe("sync-feed workload — YouTube source", () => {
     vi.spyOn(console, "log").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
 
-    mockUpdate.mockReturnValue({ set: mockUpdateSet });
-    mockUpdateSet.mockReturnValue({ where: mockUpdateWhere });
-    mockUpdateWhere.mockResolvedValue(undefined);
+    stubFeedUpdateChain();
 
     mockInsert.mockReturnValue({ values: mockInsertValues });
     mockInsertValues.mockReturnValue({
@@ -790,9 +804,7 @@ describe("sync-feed workload — permanent failure persistence", () => {
     vi.spyOn(console, "log").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
 
-    mockUpdate.mockReturnValue({ set: mockUpdateSet });
-    mockUpdateSet.mockReturnValue({ where: mockUpdateWhere });
-    mockUpdateWhere.mockResolvedValue(undefined);
+    stubFeedUpdateChain();
 
     mockInsert.mockReturnValue({ values: mockInsertValues });
     mockInsertValues.mockReturnValue({
@@ -851,10 +863,11 @@ describe("sync-feed workload — permanent failure persistence", () => {
       (handler as Function)(makeYouTubeEvent()),
     ).rejects.toMatchObject({ name: "ErrorDoNotRetry" });
 
-    // Only the feed is updated. There is no integration row to mark as
+    // Only the feed is updated (its two failure writes: the atomic increment
+    // and the derived nextRetryAt). There is no integration row to mark as
     // "needs reconnect" — the user was never connected, which
     // SettingsConnections already communicates via connected: false.
-    expect(mockUpdateWhere).toHaveBeenCalledTimes(1);
+    expect(mockUpdateWhere).toHaveBeenCalledTimes(2);
     expect(mockUpdateSet).toHaveBeenCalledWith(
       expect.objectContaining({
         syncStatus: "error",
@@ -873,10 +886,10 @@ describe("sync-feed workload — permanent failure persistence", () => {
       (handler as Function)(makeYouTubeEvent()),
     ).rejects.toMatchObject({ name: "IntegrationAuthError" });
 
-    // One update for the feed, one for the integration: this is an
-    // IntegrationAuthError, since the connected account genuinely needs
-    // re-authorizing.
-    expect(mockUpdateWhere).toHaveBeenCalledTimes(2);
+    // Two updates for the feed (the atomic increment and the derived
+    // nextRetryAt) and one for the integration: this is an IntegrationAuthError,
+    // since the connected account genuinely needs re-authorizing.
+    expect(mockUpdateWhere).toHaveBeenCalledTimes(3);
     expect(mockUpdateSet).toHaveBeenCalledWith(
       expect.objectContaining({
         syncStatus: "error",
@@ -898,9 +911,10 @@ describe("sync-feed workload — permanent failure persistence", () => {
     ).rejects.toMatchObject({ name: "ErrorDoNotRetry" });
 
     // A network flake that exhausted its retries says nothing about the
-    // connected account's health — only the feed is marked, not the
+    // connected account's health — only the feed is marked (its two failure
+    // writes: the atomic increment and the derived nextRetryAt), not the
     // integration.
-    expect(mockUpdateWhere).toHaveBeenCalledTimes(1);
+    expect(mockUpdateWhere).toHaveBeenCalledTimes(2);
   });
 
   it("clears a previously-recorded failure on the next successful sync", async () => {
@@ -976,9 +990,7 @@ describe("sync-feed workload — Bluesky source", () => {
     vi.spyOn(console, "log").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
 
-    mockUpdate.mockReturnValue({ set: mockUpdateSet });
-    mockUpdateSet.mockReturnValue({ where: mockUpdateWhere });
-    mockUpdateWhere.mockResolvedValue(undefined);
+    stubFeedUpdateChain();
 
     mockInsert.mockReturnValue({ values: mockInsertValues });
     mockInsertValues.mockReturnValue({
