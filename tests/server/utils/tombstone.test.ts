@@ -1,7 +1,14 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
-import { eq } from "drizzle-orm";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { inArray } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
 import { deletionTombstones } from "../../../server/db/schema";
+import {
+  hashProviderId,
+  TombstonePepperError,
+} from "../../../server/utils/tombstoneHash";
+
+// Fixed so hashProviderId is deterministic across the assertions below.
+const TEST_TOMBSTONE_PEPPER = "test-tombstone-pepper-0123456789";
 
 const mockTombstoneFindFirst = vi.fn();
 const mockOnConflictDoNothing = vi.fn();
@@ -34,6 +41,7 @@ function sameCondition(actual: unknown, expected: unknown): boolean {
 describe("tombstone", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    vi.stubEnv("TOMBSTONE_ID_PEPPER", TEST_TOMBSTONE_PEPPER);
     mockInsert.mockReturnValue({ values: mockValues });
     mockValues.mockReturnValue({
       onConflictDoNothing: mockOnConflictDoNothing,
@@ -41,17 +49,21 @@ describe("tombstone", () => {
     mockOnConflictDoNothing.mockResolvedValue(undefined);
   });
 
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   describe("isProviderTombstoned", () => {
     it("is true when a tombstone row exists for the provider id", async () => {
       mockTombstoneFindFirst.mockResolvedValue({
-        providerId: "clerk_gone",
+        providerId: hashProviderId("clerk_gone"),
         deletedAt: null,
       });
 
       await expect(isProviderTombstoned("clerk_gone")).resolves.toBe(true);
     });
 
-    it("filters the lookup by the given provider id", async () => {
+    it("looks up by both the peppered hash and the raw provider id so legacy rows still match", async () => {
       mockTombstoneFindFirst.mockResolvedValue(undefined);
 
       await isProviderTombstoned("clerk_gone");
@@ -59,7 +71,10 @@ describe("tombstone", () => {
       expect(
         sameCondition(
           mockTombstoneFindFirst.mock.calls[0][0].where,
-          eq(deletionTombstones.providerId, "clerk_gone"),
+          inArray(deletionTombstones.providerId, [
+            hashProviderId("clerk_gone"),
+            "clerk_gone",
+          ]),
         ),
       ).toBe(true);
     });
@@ -69,15 +84,35 @@ describe("tombstone", () => {
 
       await expect(isProviderTombstoned("clerk_live")).resolves.toBe(false);
     });
+
+    it("fails closed: throws (never reports 'not tombstoned') when the pepper is unset", async () => {
+      vi.stubEnv("TOMBSTONE_ID_PEPPER", "");
+
+      await expect(isProviderTombstoned("clerk_gone")).rejects.toThrow(
+        TombstonePepperError,
+      );
+      expect(mockTombstoneFindFirst).not.toHaveBeenCalled();
+    });
   });
 
   describe("recordDeletionTombstone", () => {
-    it("inserts the provider id with onConflictDoNothing so a repeat deletion is a no-op", async () => {
+    it("inserts the peppered hash (never the raw id) with onConflictDoNothing so a repeat deletion is a no-op", async () => {
       await recordDeletionTombstone("clerk_gone");
 
+      const insertedValue = mockValues.mock.calls[0][0].providerId;
       expect(mockInsert).toHaveBeenCalledWith(deletionTombstones);
-      expect(mockValues).toHaveBeenCalledWith({ providerId: "clerk_gone" });
+      expect(insertedValue).toBe(hashProviderId("clerk_gone"));
+      expect(insertedValue).not.toBe("clerk_gone");
       expect(mockOnConflictDoNothing).toHaveBeenCalled();
+    });
+
+    it("fails closed: throws and writes nothing when the pepper is unset", async () => {
+      vi.stubEnv("TOMBSTONE_ID_PEPPER", "");
+
+      await expect(recordDeletionTombstone("clerk_gone")).rejects.toThrow(
+        TombstonePepperError,
+      );
+      expect(mockInsert).not.toHaveBeenCalled();
     });
   });
 });

@@ -83,6 +83,24 @@ npm run tokens:backfill                      # local (.env)
 dotenvx run -f .env.production -- node scripts/backfill-encrypt-tokens.ts
 ```
 
+### Deletion tombstones
+
+When an account is deleted, `deletion_tombstones` keeps a marker so a session
+minted just before deletion cannot resurrect an empty `users` row (Clerk
+verifies JWTs networklessly). The marker is `sha256(provider_id + pepper)`, not
+the raw Clerk id, so the retained value is a one-way equality token rather than
+a re-linkable pseudonymous identifier — see
+[`server/utils/tombstoneHash.ts`](server/utils/tombstoneHash.ts). Requires
+`TOMBSTONE_ID_PEPPER` (see [`.env.example`](.env.example)); treat it as
+permanent once set, since changing it orphans every existing tombstone. Lookups
+tolerate legacy raw rows written before hashing was added, but run the one-off
+backfill once per environment to migrate them:
+
+```bash
+npm run tombstones:backfill                  # local (.env)
+dotenvx run -f .env.production -- node scripts/backfill-hash-tombstones.ts
+```
+
 ### Database commands
 
 Push the schema directly to Neon (useful for initial setup or during development):

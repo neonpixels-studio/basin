@@ -14,6 +14,11 @@ const marketingCss = fileURLToPath(
 // TokenEncryptionKeyError on the first OAuth callback or token refresh.
 const TOKEN_ENCRYPTION_KEY_PATTERN = /^[0-9a-f]{64}$/i;
 
+// Must match the minimum server/utils/tombstoneHash.ts enforces — checked again
+// here so a missing/too-short pepper fails the build instead of throwing
+// TombstonePepperError on the first account deletion or new-user check.
+const MIN_TOMBSTONE_PEPPER_LENGTH = 16;
+
 // `nuxt build` (both npm run build and build:dev — Netlify production and
 // preview both go through this same command) always runs with
 // NODE_ENV=production; only `nuxt dev` doesn't. Hard-failing unconditionally
@@ -46,6 +51,30 @@ function requireTokenEncryptionKeyForBuild(): string {
   }
 
   return key;
+}
+
+// A missing or too-short pepper here would bake an empty/weak value into the
+// server bundle (same nitro.replace mechanism as the encryption key below) and
+// silently ship deletion tombstones that store guessable hashes — fail the
+// build instead of the deploy. Only blocks a deployable production build so a
+// contributor can still run `nuxt dev`/typecheck without a local pepper.
+function requireTombstonePepperForBuild(): string {
+  const pepper = process.env.TOMBSTONE_ID_PEPPER ?? "";
+
+  if (!isProductionBuild) {
+    return pepper;
+  }
+
+  if (pepper.length < MIN_TOMBSTONE_PEPPER_LENGTH) {
+    throw new Error(
+      "TOMBSTONE_ID_PEPPER must be set to at least " +
+        `${MIN_TOMBSTONE_PEPPER_LENGTH} characters before building — deletion ` +
+        "tombstones cannot be hashed without it. Generate one with " +
+        "`openssl rand -hex 32` and add it to this environment's dotenvx file.",
+    );
+  }
+
+  return pepper;
 }
 
 export default defineNuxtConfig({
@@ -118,6 +147,12 @@ export default defineNuxtConfig({
       "process.env.SENTRY_DSN": JSON.stringify(process.env.SENTRY_DSN || ""),
       "process.env.TOKEN_ENCRYPTION_KEY": JSON.stringify(
         requireTokenEncryptionKeyForBuild(),
+      ),
+      // server/utils/tombstoneHash.ts reads TOMBSTONE_ID_PEPPER via raw
+      // process.env for the same reason as the key above; bake it in so the
+      // server/api/* (Nitro) call sites resolve it at runtime.
+      "process.env.TOMBSTONE_ID_PEPPER": JSON.stringify(
+        requireTombstonePepperForBuild(),
       ),
     },
   },
