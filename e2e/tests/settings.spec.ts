@@ -1,18 +1,47 @@
 import { test, expect, type Page } from "@playwright/test";
 
-// Register the PATCH waiter BEFORE clicking so the response is never missed.
+// The settings store only PATCHes when a reactive value actually changes, so a
+// click on an already-active option fires no request. The timeout is generous
+// because the first write to a freshly-branched CI database can be slow.
 function waitForSettingSave(page: Page) {
   return page.waitForResponse(
     (resp) =>
       resp.url().includes("/api/settings/reading") &&
       resp.request().method() === "PATCH",
-    { timeout: 5_000 },
+    { timeout: 15_000 },
   );
 }
 
 async function reloadAndWait(page: Page) {
   await page.reload();
   await page.waitForLoadState("networkidle", { timeout: 15_000 });
+}
+
+// Click a segmented-control button and wait for the save to persist. If the
+// target is already active (e.g. left over from a prior CI run or a retry of
+// this same test), first switch to `resetLabel` so the target click is always a
+// real state change — a no-op click fires no PATCH and starves the save waiter.
+async function selectSegAndPersist(
+  page: Page,
+  rowLabel: string,
+  targetLabel: string,
+  resetLabel: string,
+) {
+  const row = page.locator(".set-pref-row").filter({ hasText: rowLabel });
+  const target = row.locator("button", { hasText: targetLabel });
+
+  if (await target.evaluate((el) => el.classList.contains("active"))) {
+    const reset = waitForSettingSave(page);
+    await row.locator("button", { hasText: resetLabel }).click();
+    await reset;
+  }
+
+  const save = waitForSettingSave(page);
+  await target.click();
+  await save;
+
+  await reloadAndWait(page);
+  await expect(target).toHaveClass(/active/);
 }
 
 async function testTogglePersists(page: Page, rowLabel: string) {
@@ -46,15 +75,7 @@ test.describe("Settings > Reading", () => {
   });
 
   test("theme: switching to dark persists across reload", async ({ page }) => {
-    const themeRow = page.locator(".set-pref-row").filter({ hasText: "Theme" });
-    const save = waitForSettingSave(page);
-    await themeRow.locator("button", { hasText: "Dark" }).click();
-    await save;
-
-    await reloadAndWait(page);
-    await expect(themeRow.locator("button", { hasText: "Dark" })).toHaveClass(
-      /active/,
-    );
+    await selectSegAndPersist(page, "Theme", "Dark", "System");
   });
 
   test("accent color: switching to blue persists across reload", async ({
@@ -63,53 +84,34 @@ test.describe("Settings > Reading", () => {
     const accentRow = page
       .locator(".set-pref-row")
       .filter({ hasText: "Accent color" });
+    const blue = accentRow.locator('.twk-sw[title="blue"]');
+
+    // A no-op click on the already-selected swatch fires no PATCH, so reset to
+    // another accent first when blue is already on (leftover state / a retry).
+    if (await blue.evaluate((el) => el.classList.contains("on"))) {
+      const reset = waitForSettingSave(page);
+      await accentRow.locator('.twk-sw[title="violet"]').click();
+      await reset;
+    }
+
     const save = waitForSettingSave(page);
-    await accentRow.locator('.twk-sw[title="blue"]').click();
+    await blue.click();
     await save;
 
     await reloadAndWait(page);
-    await expect(accentRow.locator('.twk-sw[title="blue"]')).toHaveClass(/on/);
+    await expect(blue).toHaveClass(/on/);
   });
 
   test("reading font: switching to serif persists across reload", async ({
     page,
   }) => {
-    const fontRow = page
-      .locator(".set-pref-row")
-      .filter({ hasText: "Reading font" });
-    const serifBtn = fontRow.locator("button", { hasText: "Serif" });
-
-    // If serif is already active from a prior CI run, switch to mono first so
-    // the serif click below is always a real state change that triggers a PATCH.
-    // Without this guard a no-op click starves waitForSettingSave and times out.
-    if (await serifBtn.evaluate((el) => el.classList.contains("active"))) {
-      const reset = waitForSettingSave(page);
-      await fontRow.locator("button", { hasText: "Mono" }).click();
-      await reset;
-    }
-
-    const save = waitForSettingSave(page);
-    await serifBtn.click();
-    await save;
-
-    await reloadAndWait(page);
-    await expect(serifBtn).toHaveClass(/active/);
+    await selectSegAndPersist(page, "Reading font", "Serif", "Mono");
   });
 
   test("spacing: switching to compact persists across reload", async ({
     page,
   }) => {
-    const spacingRow = page
-      .locator(".set-pref-row")
-      .filter({ hasText: "Spacing" });
-    const save = waitForSettingSave(page);
-    await spacingRow.locator("button", { hasText: "Compact" }).click();
-    await save;
-
-    await reloadAndWait(page);
-    await expect(
-      spacingRow.locator("button", { hasText: "Compact" }),
-    ).toHaveClass(/active/);
+    await selectSegAndPersist(page, "Spacing", "Compact", "Cozy");
   });
 
   test("show unread only: toggling persists across reload", async ({
@@ -133,17 +135,7 @@ test.describe("Settings > Reading", () => {
   test("default layout: switching to grid persists across reload", async ({
     page,
   }) => {
-    const layoutRow = page
-      .locator(".set-pref-row")
-      .filter({ hasText: "Default layout" });
-    const save = waitForSettingSave(page);
-    await layoutRow.locator("button", { hasText: "Grid" }).click();
-    await save;
-
-    await reloadAndWait(page);
-    await expect(layoutRow.locator("button", { hasText: "Grid" })).toHaveClass(
-      /active/,
-    );
+    await selectSegAndPersist(page, "Default layout", "Grid", "Timeline");
   });
 });
 
