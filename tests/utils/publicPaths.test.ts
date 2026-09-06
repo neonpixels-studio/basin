@@ -3,7 +3,7 @@ import {
   PUBLIC_PATHS,
   normalizePath,
   isPublicPath,
-  isUnauthenticatedRoute,
+  isCloakExemptPath,
 } from "~/utils/publicPaths";
 
 describe("normalizePath", () => {
@@ -39,22 +39,22 @@ describe("isPublicPath", () => {
   });
 });
 
-describe("isUnauthenticatedRoute", () => {
+describe("isCloakExemptPath", () => {
   it.each(PUBLIC_PATHS)("returns true for public path %s", (path) => {
-    expect(isUnauthenticatedRoute(path)).toBe(true);
+    expect(isCloakExemptPath(path)).toBe(true);
   });
 
   it("returns true for /login", () => {
-    expect(isUnauthenticatedRoute("/login")).toBe(true);
+    expect(isCloakExemptPath("/login")).toBe(true);
   });
 
   it("returns true for /login with a trailing slash", () => {
-    expect(isUnauthenticatedRoute("/login/")).toBe(true);
+    expect(isCloakExemptPath("/login/")).toBe(true);
   });
 
   it("returns false for authenticated routes", () => {
-    expect(isUnauthenticatedRoute("/dashboard")).toBe(false);
-    expect(isUnauthenticatedRoute("/settings")).toBe(false);
-    expect(isUnauthenticatedRoute("/settings/account")).toBe(false);
+    expect(isCloakExemptPath("/dashboard")).toBe(false);
+    expect(isCloakExemptPath("/settings")).toBe(false);
+    expect(isCloakExemptPath("/settings/account")).toBe(false);
   });
 });

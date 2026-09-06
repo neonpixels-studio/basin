@@ -1,15 +1,17 @@
 <script setup>
 import { onMounted, onUnmounted, computed } from "vue";
-import { isUnauthenticatedRoute } from "~/utils/publicPaths";
+import { isCloakExemptPath } from "~/utils/publicPaths";
 
 const appearanceStore = useAppearanceStore();
 const route = useRoute();
 
-// Marketing pages and /login paint before any authenticated theming could
-// possibly apply — never hold them behind the settings-load cloak (see
-// appearanceStore.ready below). This is what lets conversion pages hit
-// first paint without waiting on /api/settings/reading.
-const skipCloak = computed(() => isUnauthenticatedRoute(route.path));
+// Marketing pages and /login don't depend on the visitor's personalized
+// theme to render correctly — never hold their first paint behind the
+// settings-load cloak (see appearanceStore.ready below). This is what lets
+// conversion pages paint instantly instead of waiting on
+// /api/settings/reading (or on Clerk resolving whether there even is a
+// signed-in visitor to fetch settings for).
+const skipCloak = computed(() => isCloakExemptPath(route.path));
 
 const feedStore = useFeedStore();
 const state = feedStore.state;

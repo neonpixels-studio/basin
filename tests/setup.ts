@@ -62,28 +62,6 @@ globalThis.useSyncQueue = vi.fn(() => ({
   refreshFailedCount: vi.fn().mockResolvedValue(undefined),
 }));
 
-// Minimal useCookie stub — backs cookie values with an in-memory map instead
-// of real document.cookie, so reads/writes stay isolated between test files.
-// Cleared per-test below alongside the Pinia reset. Mirrors the real
-// composable's shape closely enough for tests: same name + options returns a
-// ref-like object whose .value persists across calls within a test.
-const cookieStore = new Map<string, unknown>();
-globalThis.useCookie = vi.fn(
-  (name: string, options: { default?: () => unknown } = {}) => {
-    if (!cookieStore.has(name)) {
-      cookieStore.set(name, options.default ? options.default() : null);
-    }
-    return {
-      get value() {
-        return cookieStore.get(name);
-      },
-      set value(nextValue: unknown) {
-        cookieStore.set(name, nextValue);
-      },
-    };
-  },
-);
-
 // Nuxt router / navigation globals
 globalThis.navigateTo = vi.fn();
 globalThis.useRoute = vi.fn(() => ({ path: "/", params: {}, query: {} }));
@@ -210,7 +188,6 @@ beforeEach(() => {
   const pinia = createPinia();
   setActivePinia(pinia);
   config.global.plugins = [pinia];
-  cookieStore.clear();
 });
 
 // Global stubs — covers Nuxt built-ins, Vue Transition, and every app

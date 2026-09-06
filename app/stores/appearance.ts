@@ -1,14 +1,34 @@
 import { defineStore } from "pinia";
 import { reactive, ref, computed, watch } from "vue";
-import { isUnauthenticatedRoute } from "~/utils/publicPaths";
 
 // Caches the last-applied appearance settings client-side so a returning,
 // signed-in visitor can uncloak immediately instead of waiting on the
 // /api/settings/reading round-trip. The DB fetch in init() still runs and
 // corrects any drift (e.g. a change made on another device) — this is only
 // a first-paint shortcut, not a replacement for the DB as source of truth.
-const APPEARANCE_CACHE_COOKIE = "basin-appearance-cache";
-const APPEARANCE_CACHE_MAX_AGE_SECONDS = 60 * 60 * 24 * 365; // 1 year
+// localStorage (not a cookie) because nothing server-side ever reads this —
+// it's a purely client-side cache, so there's no reason to attach it to
+// every request the browser makes to the origin.
+const APPEARANCE_CACHE_KEY = "basin-appearance-cache";
+
+function readCachedSettings(): Record<string, unknown> | null {
+  const raw = localStorage.getItem(APPEARANCE_CACHE_KEY);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedSettings(patch: Record<string, unknown>) {
+  localStorage.setItem(APPEARANCE_CACHE_KEY, JSON.stringify(patch));
+}
+
+function clearCachedSettings() {
+  localStorage.removeItem(APPEARANCE_CACHE_KEY);
+}
 
 export const ACCENTS = {
   violet: { a: "oklch(0.6 0.17 285)", s: "oklch(0.54 0.18 285)" },
@@ -80,32 +100,18 @@ export const useAppearanceStore = defineStore("appearance", () => {
     };
   }
 
-  async function init() {
-    if (initialized || !import.meta.client) return;
+  // Does the real work of loading this visitor's settings: applies any
+  // cached snapshot immediately (so the cloak can lift before the network
+  // round-trip resolves), then fetches the DB copy as the source of truth
+  // and starts persisting further changes. Guarded by `initialized` so the
+  // reveal-after-Clerk-loads case and an actual sign-in can't both trigger it.
+  async function loadFromDb() {
+    if (initialized) return;
     initialized = true;
 
-    const route = useRoute();
-    if (isUnauthenticatedRoute(route.path)) {
-      // Marketing pages and /login never have authenticated settings to
-      // load — skip the DB round-trip entirely (it would only 401 back to
-      // defaults) and uncloak immediately. app.vue independently skips the
-      // opacity cloak for these same routes, so this just saves the
-      // wasted fetch.
-      ready.value = true;
-      return;
-    }
-
-    const cache = useCookie<Record<string, unknown> | null>(
-      APPEARANCE_CACHE_COOKIE,
-      {
-        default: () => null,
-        maxAge: APPEARANCE_CACHE_MAX_AGE_SECONDS,
-        sameSite: "lax",
-      },
-    );
-
-    if (cache.value) {
-      applyDbSettings(cache.value);
+    const cached = readCachedSettings();
+    if (cached) {
+      applyDbSettings(cached);
       applyToDom();
       ready.value = true;
     }
@@ -114,7 +120,7 @@ export const useAppearanceStore = defineStore("appearance", () => {
     const dbSettings = await load();
     applyDbSettings(dbSettings);
     applyToDom();
-    cache.value = buildPatch();
+    writeCachedSettings(buildPatch());
     ready.value = true;
 
     watch(
@@ -123,14 +129,44 @@ export const useAppearanceStore = defineStore("appearance", () => {
         applyToDom();
         const patch = buildPatch();
         save(patch);
-        cache.value = patch;
+        writeCachedSettings(patch);
       },
       { deep: true },
     );
   }
 
-  // Auto-initialize when the store is first used — the guard inside prevents
-  // double-runs within the same Pinia instance.
+  async function init() {
+    if (!import.meta.client) return;
+
+    const { isSignedIn } = useAuth();
+
+    // isSignedIn reads falsy until Clerk finishes its async init (isLoaded
+    // flips true), even for an already-authenticated visitor — this watcher
+    // is what catches that reveal, plus an actual sign-in later in the same
+    // SPA session. The store is a singleton created once per session, so
+    // without this a mid-session login would never be noticed: the visitor
+    // would be stuck on default theming with their changes never saved
+    // until a full reload. Signing out clears the cache so a later sign-in
+    // (same tab, same browser) doesn't briefly paint the previous account's
+    // theme from a stale cached snapshot.
+    watch(isSignedIn, (signedIn) => {
+      if (signedIn) loadFromDb();
+      else clearCachedSettings();
+    });
+
+    if (isSignedIn.value) {
+      await loadFromDb();
+      return;
+    }
+
+    // Not signed in (yet, at least) — there's no authenticated settings to
+    // fetch right now, so don't fire a request that would only 401 back to
+    // defaults. Uncloak immediately; the watcher above takes over the
+    // moment sign-in state resolves to true.
+    ready.value = true;
+  }
+
+  // Auto-initialize when the store is first used.
   init();
 
   const accentList = computed(() =>

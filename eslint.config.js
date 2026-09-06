@@ -15,7 +15,6 @@ const nuxtGlobals = {
   useRuntimeConfig: "readonly",
   useRoute: "readonly",
   useRouter: "readonly",
-  useCookie: "readonly",
   useFetch: "readonly",
   $fetch: "readonly",
   useAsyncData: "readonly",
