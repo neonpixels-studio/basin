@@ -22,7 +22,10 @@ vi.stubGlobal("buildYouTubeCallbackUrl", mockBuildYouTubeCallbackUrl);
 const { mockIsConfiguredSiteUrlSecure } = vi.hoisted(() => ({
   mockIsConfiguredSiteUrlSecure: vi.fn(() => true),
 }));
-vi.mock("../../../../server/utils/siteUrl", () => ({
+vi.mock("../../../../server/utils/siteUrl", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("../../../../server/utils/siteUrl")
+  >()),
   isConfiguredSiteUrlSecure: mockIsConfiguredSiteUrlSecure,
 }));
 
@@ -69,7 +72,7 @@ describe("GET /api/auth/youtube", () => {
     );
   });
 
-  it("sets the oauth_state_youtube cookie as secure when the site URL is https", async () => {
+  it("sets the oauth_state_youtube cookie as secure alongside the existing httpOnly/sameSite/maxAge hardening when the site URL is https", async () => {
     mockIsConfiguredSiteUrlSecure.mockReturnValue(true);
     const event = { context: { user: { id: 1 } } };
     await handler(event);
@@ -77,7 +80,12 @@ describe("GET /api/auth/youtube", () => {
       event,
       "oauth_state_youtube",
       expect.any(String),
-      expect.objectContaining({ secure: true }),
+      {
+        httpOnly: true,
+        maxAge: 600,
+        sameSite: "lax",
+        secure: true,
+      },
     );
   });
 
