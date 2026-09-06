@@ -61,3 +61,11 @@ export function getConfiguredSiteUrl(): string {
   }
   return parsedSiteUrl.origin;
 }
+
+// Whether the configured site origin is https. Cookies that must not travel
+// over plain http (e.g. OAuth CSRF state) derive their `secure` flag from
+// this instead of a hardcoded true/false, so local http dev still works while
+// a real https deployment gets the flag it needs.
+export function isConfiguredSiteUrlSecure(): boolean {
+  return getConfiguredSiteUrl().startsWith("https:");
+}

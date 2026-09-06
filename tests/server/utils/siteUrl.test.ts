@@ -17,7 +17,10 @@ vi.stubGlobal(
     }),
 );
 
-import { getConfiguredSiteUrl } from "../../../server/utils/siteUrl";
+import {
+  getConfiguredSiteUrl,
+  isConfiguredSiteUrlSecure,
+} from "../../../server/utils/siteUrl";
 
 describe("getConfiguredSiteUrl", () => {
   beforeEach(() => {
@@ -86,5 +89,21 @@ describe("getConfiguredSiteUrl", () => {
     expect(() => getConfiguredSiteUrl()).toThrowError(
       expect.objectContaining({ statusCode: 500 }),
     );
+  });
+});
+
+describe("isConfiguredSiteUrlSecure", () => {
+  beforeEach(() => {
+    runtimeConfigValue.value = null;
+  });
+
+  it("returns true when the configured site URL is https", () => {
+    runtimeConfigValue.value = { siteUrl: "https://basin.example" };
+    expect(isConfiguredSiteUrlSecure()).toBe(true);
+  });
+
+  it("returns false when the configured site URL is http", () => {
+    runtimeConfigValue.value = { siteUrl: "http://localhost:3000" };
+    expect(isConfiguredSiteUrlSecure()).toBe(false);
   });
 });

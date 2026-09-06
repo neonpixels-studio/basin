@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { isConfiguredSiteUrlSecure } from "../../utils/siteUrl";
 
 export default defineEventHandler(async (event) => {
   if (!event.context.user) {
@@ -15,6 +16,10 @@ export default defineEventHandler(async (event) => {
     httpOnly: true,
     maxAge: 600,
     sameSite: "lax",
+    // Derived from the configured site origin (not hardcoded) so local http
+    // dev keeps working while a real https deployment stops the CSRF state
+    // cookie from being readable/overwritable over plain http.
+    secure: isConfiguredSiteUrlSecure(),
   });
 
   return sendRedirect(event, buildYouTubeAuthUrl(redirectUri, state));
