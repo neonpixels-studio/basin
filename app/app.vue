@@ -1,7 +1,15 @@
 <script setup>
-import { onMounted, onUnmounted } from "vue";
+import { onMounted, onUnmounted, computed } from "vue";
+import { isUnauthenticatedRoute } from "~/utils/publicPaths";
 
 const appearanceStore = useAppearanceStore();
+const route = useRoute();
+
+// Marketing pages and /login paint before any authenticated theming could
+// possibly apply — never hold them behind the settings-load cloak (see
+// appearanceStore.ready below). This is what lets conversion pages hit
+// first paint without waiting on /api/settings/reading.
+const skipCloak = computed(() => isUnauthenticatedRoute(route.path));
 
 const feedStore = useFeedStore();
 const state = feedStore.state;
@@ -62,7 +70,10 @@ onUnmounted(() => window.removeEventListener("keydown", onKey));
 </script>
 
 <template>
-  <div class="app-shell" :class="{ 'app-ready': appearanceStore.ready }">
+  <div
+    class="app-shell"
+    :class="{ 'app-ready': appearanceStore.ready || skipCloak }"
+  >
     <NuxtLayout>
       <NuxtPage />
     </NuxtLayout>

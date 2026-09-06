@@ -1,7 +1,7 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
 exports[`App > matches snapshot 1`] = `
-"<div class="app-shell">
+"<div class="app-shell app-ready">
   <div>
     <div></div>
   </div><!-- app-wide overlays -->

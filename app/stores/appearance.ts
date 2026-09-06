@@ -1,5 +1,14 @@
 import { defineStore } from "pinia";
 import { reactive, ref, computed, watch } from "vue";
+import { isUnauthenticatedRoute } from "~/utils/publicPaths";
+
+// Caches the last-applied appearance settings client-side so a returning,
+// signed-in visitor can uncloak immediately instead of waiting on the
+// /api/settings/reading round-trip. The DB fetch in init() still runs and
+// corrects any drift (e.g. a change made on another device) — this is only
+// a first-paint shortcut, not a replacement for the DB as source of truth.
+const APPEARANCE_CACHE_COOKIE = "basin-appearance-cache";
+const APPEARANCE_CACHE_MAX_AGE_SECONDS = 60 * 60 * 24 * 365; // 1 year
 
 export const ACCENTS = {
   violet: { a: "oklch(0.6 0.17 285)", s: "oklch(0.54 0.18 285)" },
@@ -75,17 +84,46 @@ export const useAppearanceStore = defineStore("appearance", () => {
     if (initialized || !import.meta.client) return;
     initialized = true;
 
+    const route = useRoute();
+    if (isUnauthenticatedRoute(route.path)) {
+      // Marketing pages and /login never have authenticated settings to
+      // load — skip the DB round-trip entirely (it would only 401 back to
+      // defaults) and uncloak immediately. app.vue independently skips the
+      // opacity cloak for these same routes, so this just saves the
+      // wasted fetch.
+      ready.value = true;
+      return;
+    }
+
+    const cache = useCookie<Record<string, unknown> | null>(
+      APPEARANCE_CACHE_COOKIE,
+      {
+        default: () => null,
+        maxAge: APPEARANCE_CACHE_MAX_AGE_SECONDS,
+        sameSite: "lax",
+      },
+    );
+
+    if (cache.value) {
+      applyDbSettings(cache.value);
+      applyToDom();
+      ready.value = true;
+    }
+
     const { load, save } = useUserSettings();
     const dbSettings = await load();
     applyDbSettings(dbSettings);
     applyToDom();
+    cache.value = buildPatch();
     ready.value = true;
 
     watch(
       state,
       () => {
         applyToDom();
-        save(buildPatch());
+        const patch = buildPatch();
+        save(patch);
+        cache.value = patch;
       },
       { deep: true },
     );

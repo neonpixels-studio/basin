@@ -1,8 +1,8 @@
-const PUBLIC_PATHS = ["/", "/pricing", "/about", "/privacy", "/contact"];
+import { PUBLIC_PATHS, normalizePath } from "~/utils/publicPaths";
 
 export default defineNuxtRouteMiddleware((to) => {
   const { isSignedIn } = useAuth();
-  const path = to.path.replace(/(.)\/$/, "$1");
+  const path = normalizePath(to.path);
 
   if (isSignedIn.value && (path === "/" || path === "/login")) {
     return navigateTo("/dashboard");
