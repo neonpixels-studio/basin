@@ -67,17 +67,23 @@ export function getConfiguredSiteUrl(): string {
 // this instead of a hardcoded true/false, so local http dev still works while
 // a real https deployment gets the flag it needs.
 //
-// Production always returns true regardless of the configured scheme: this
-// app's real deployments are always https, so the only way a production
-// build reaches an http siteUrl is a misconfiguration (proxy/TLS termination
-// dropped, a copy-pasted staging value, a missing scheme upgrade). Failing
-// open there would silently ship the CSRF state cookie without `secure` in
-// exactly the environment this flag exists to protect, so treat production
-// as secure unconditionally and reserve the scheme check for non-production
-// (mirrors the NODE_ENV production guard in nuxt.config.ts).
+// Production must never resolve to a non-secure origin: this app's real
+// deployments are always https, so an http siteUrl in production is a
+// misconfiguration (proxy/TLS termination dropped, a copy-pasted staging
+// value, a missing scheme upgrade), not a legitimate case to silently accept.
+// Throwing here (rather than returning false, or returning true without
+// validating anything) matches getConfiguredSiteUrl's fail-loud convention
+// and names the actual problem instead of surfacing as an unexplained
+// "Invalid OAuth state" 400 on the callback (mirrors the NODE_ENV production
+// guard in nuxt.config.ts).
 export function isConfiguredSiteUrlSecure(): boolean {
-  if (process.env.NODE_ENV === "production") {
-    return true;
+  const isSecureOrigin = getConfiguredSiteUrl().startsWith("https:");
+  if (process.env.NODE_ENV === "production" && !isSecureOrigin) {
+    throw createError({
+      statusCode: 500,
+      statusMessage:
+        "Site URL must use https in production: the OAuth state cookie cannot be set securely",
+    });
   }
-  return getConfiguredSiteUrl().startsWith("https:");
+  return isSecureOrigin;
 }

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // Lets individual tests override the runtime config returned below.
 const runtimeConfigValue: { value: Record<string, string> | null } = {
@@ -98,6 +98,13 @@ describe("isConfiguredSiteUrlSecure", () => {
     vi.stubEnv("NODE_ENV", "test");
   });
 
+  // process.env.NODE_ENV is process-global state; without this, a stub from
+  // one test (esp. "production") would silently leak into whichever test
+  // runs next if this describe block is ever reordered or extended.
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it("returns true when the configured site URL is https", () => {
     runtimeConfigValue.value = { siteUrl: "https://basin.example" };
     expect(isConfiguredSiteUrlSecure()).toBe(true);
@@ -115,21 +122,32 @@ describe("isConfiguredSiteUrlSecure", () => {
     );
   });
 
-  it("returns true in production even when the configured site URL is http", () => {
-    // A production deploy is always https in practice, so a stray http
-    // siteUrl there is a misconfiguration, not a legitimate case — fail
-    // closed (secure) rather than silently dropping the flag.
+  it("returns true when the configured site URL is https in production", () => {
     vi.stubEnv("NODE_ENV", "production");
-    runtimeConfigValue.value = { siteUrl: "http://basin.example" };
+    runtimeConfigValue.value = { siteUrl: "https://basin.example" };
     expect(isConfiguredSiteUrlSecure()).toBe(true);
   });
 
-  it("does not need a configured site URL at all in production", () => {
-    // Production short-circuits before calling getConfiguredSiteUrl, so an
-    // unset siteUrl doesn't throw here (buildYouTubeCallbackUrl still
-    // enforces it elsewhere in the request).
+  it("throws a named config error rather than failing open when production resolves to http", () => {
+    // A production deploy is always https in practice, so a stray http
+    // siteUrl there is a misconfiguration, not a legitimate case — fail
+    // loud with an actionable message rather than silently shipping the
+    // CSRF state cookie without `secure`.
+    vi.stubEnv("NODE_ENV", "production");
+    runtimeConfigValue.value = { siteUrl: "http://basin.example" };
+    expect(() => isConfiguredSiteUrlSecure()).toThrowError(
+      expect.objectContaining({
+        statusCode: 500,
+        message: expect.stringMatching(/https in production/),
+      }),
+    );
+  });
+
+  it("throws the missing-config error (not the production https error) when unset in production", () => {
     vi.stubEnv("NODE_ENV", "production");
     runtimeConfigValue.value = { siteUrl: "" };
-    expect(isConfiguredSiteUrlSecure()).toBe(true);
+    expect(() => isConfiguredSiteUrlSecure()).toThrowError(
+      /missing NUXT_SITE_URL/,
+    );
   });
 });
