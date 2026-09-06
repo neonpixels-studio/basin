@@ -6,7 +6,12 @@ export const PUBLIC_PATHS = ["/", "/pricing", "/about", "/privacy", "/contact"];
 const LOGIN_PATH = "/login";
 
 // Normalizes a single trailing slash so "/pricing/" matches "/pricing".
+// Guards against a non-string input (e.g. an ambient route mock missing
+// `path`) so callers get a clean "not a known path" rather than a throw.
 export function normalizePath(path: string): string {
+  if (typeof path !== "string") {
+    return "";
+  }
   return path.replace(/(.)\/$/, "$1");
 }
 

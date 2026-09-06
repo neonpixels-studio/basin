@@ -18,6 +18,11 @@ describe("normalizePath", () => {
   it("leaves the root path unchanged", () => {
     expect(normalizePath("/")).toBe("/");
   });
+
+  it("returns an empty string for a non-string input instead of throwing", () => {
+    expect(normalizePath(undefined as unknown as string)).toBe("");
+    expect(normalizePath(null as unknown as string)).toBe("");
+  });
 });
 
 describe("isPublicPath", () => {
