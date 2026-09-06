@@ -89,7 +89,7 @@ describe("GET /api/auth/youtube", () => {
     );
   });
 
-  it("does not set the oauth_state_youtube cookie as secure when the site URL is http", async () => {
+  it("does not set the oauth_state_youtube cookie as secure when the site URL is http, without losing the rest of the hardening", async () => {
     mockIsConfiguredSiteUrlSecure.mockReturnValue(false);
     const event = { context: { user: { id: 1 } } };
     await handler(event);
@@ -97,7 +97,12 @@ describe("GET /api/auth/youtube", () => {
       event,
       "oauth_state_youtube",
       expect.any(String),
-      expect.objectContaining({ secure: false }),
+      {
+        httpOnly: true,
+        maxAge: 600,
+        sameSite: "lax",
+        secure: false,
+      },
     );
   });
 

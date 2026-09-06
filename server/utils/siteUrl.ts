@@ -66,6 +66,18 @@ export function getConfiguredSiteUrl(): string {
 // over plain http (e.g. OAuth CSRF state) derive their `secure` flag from
 // this instead of a hardcoded true/false, so local http dev still works while
 // a real https deployment gets the flag it needs.
+//
+// Production always returns true regardless of the configured scheme: this
+// app's real deployments are always https, so the only way a production
+// build reaches an http siteUrl is a misconfiguration (proxy/TLS termination
+// dropped, a copy-pasted staging value, a missing scheme upgrade). Failing
+// open there would silently ship the CSRF state cookie without `secure` in
+// exactly the environment this flag exists to protect, so treat production
+// as secure unconditionally and reserve the scheme check for non-production
+// (mirrors the NODE_ENV production guard in nuxt.config.ts).
 export function isConfiguredSiteUrlSecure(): boolean {
+  if (process.env.NODE_ENV === "production") {
+    return true;
+  }
   return getConfiguredSiteUrl().startsWith("https:");
 }

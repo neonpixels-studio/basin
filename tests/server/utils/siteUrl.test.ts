@@ -95,6 +95,7 @@ describe("getConfiguredSiteUrl", () => {
 describe("isConfiguredSiteUrlSecure", () => {
   beforeEach(() => {
     runtimeConfigValue.value = null;
+    vi.stubEnv("NODE_ENV", "test");
   });
 
   it("returns true when the configured site URL is https", () => {
@@ -105,5 +106,30 @@ describe("isConfiguredSiteUrlSecure", () => {
   it("returns false when the configured site URL is http", () => {
     runtimeConfigValue.value = { siteUrl: "http://localhost:3000" };
     expect(isConfiguredSiteUrlSecure()).toBe(false);
+  });
+
+  it("propagates the configuration error when the site URL is unset", () => {
+    runtimeConfigValue.value = { siteUrl: "" };
+    expect(() => isConfiguredSiteUrlSecure()).toThrowError(
+      /missing NUXT_SITE_URL/,
+    );
+  });
+
+  it("returns true in production even when the configured site URL is http", () => {
+    // A production deploy is always https in practice, so a stray http
+    // siteUrl there is a misconfiguration, not a legitimate case — fail
+    // closed (secure) rather than silently dropping the flag.
+    vi.stubEnv("NODE_ENV", "production");
+    runtimeConfigValue.value = { siteUrl: "http://basin.example" };
+    expect(isConfiguredSiteUrlSecure()).toBe(true);
+  });
+
+  it("does not need a configured site URL at all in production", () => {
+    // Production short-circuits before calling getConfiguredSiteUrl, so an
+    // unset siteUrl doesn't throw here (buildYouTubeCallbackUrl still
+    // enforces it elsewhere in the request).
+    vi.stubEnv("NODE_ENV", "production");
+    runtimeConfigValue.value = { siteUrl: "" };
+    expect(isConfiguredSiteUrlSecure()).toBe(true);
   });
 });
