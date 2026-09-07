@@ -39,4 +39,31 @@ describe("canonicalUrl", () => {
     vi.stubGlobal("useRuntimeConfig", () => ({ public: { siteUrl: "" } }));
     expect(canonicalUrl("/privacy")).toBeUndefined();
   });
+
+  it("returns undefined for a scheme-less value rather than a broken URL", () => {
+    // A relative/scheme-less siteUrl would otherwise resolve against
+    // whatever host served the page — the exact spoofable-Host outcome
+    // canonicalUrl exists to avoid.
+    vi.stubGlobal("useRuntimeConfig", () => ({
+      public: { siteUrl: "reader.example" },
+    }));
+    expect(canonicalUrl("/pricing")).toBeUndefined();
+  });
+
+  it("returns undefined for a non-http(s) protocol", () => {
+    vi.stubGlobal("useRuntimeConfig", () => ({
+      public: { siteUrl: "javascript:alert(1)" },
+    }));
+    expect(canonicalUrl("/pricing")).toBeUndefined();
+  });
+
+  it("normalizes away an extraneous path on the configured site URL", () => {
+    // Uses the URL's origin only, so a misconfigured value with a path
+    // degrades to a correct bare origin instead of concatenating into a
+    // malformed URL (e.g. "https://reader.example/apppricing").
+    vi.stubGlobal("useRuntimeConfig", () => ({
+      public: { siteUrl: "https://reader.example/app" },
+    }));
+    expect(canonicalUrl("/pricing")).toBe("https://reader.example/pricing");
+  });
 });

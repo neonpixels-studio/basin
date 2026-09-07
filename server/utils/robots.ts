@@ -13,15 +13,21 @@
 // allow-list since this is a deny-list of a different, smaller set of routes.
 const DISALLOWED_PATHS = ["/dashboard", "/settings", "/login"];
 
-export function buildRobotsTxt(origin: string): string {
+// `origin` is undefined when NUXT_SITE_URL isn't configured (see
+// server/routes/robots.txt.ts, which catches getConfiguredSiteUrl's throw
+// rather than propagating it here) — the Sitemap directive is simply
+// omitted in that case. A 5xx robots.txt gets treated by crawlers as
+// "disallow everything," which is worse than serving crawl rules without a
+// sitemap pointer, so this must never throw on a missing/malformed origin.
+export function buildRobotsTxt(origin: string | undefined): string {
   const disallowLines = DISALLOWED_PATHS.map(
     (path) => `Disallow: ${path}`,
   ).join("\n");
+  // Unlisted paths are already crawlable by default per the robots.txt spec,
+  // so there's no separate "Allow: /" directive to state that — and stating
+  // it would sit alongside the Disallow lines below in a way that's easy to
+  // misread as contradicting them.
+  const sitemapLine = origin ? `\nSitemap: ${origin}/sitemap.xml\n` : "";
 
-  return `User-agent: *
-Allow: /
-${disallowLines}
-
-Sitemap: ${origin}/sitemap.xml
-`;
+  return `User-agent: *\n${disallowLines}\n${sitemapLine}`;
 }

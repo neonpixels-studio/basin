@@ -40,10 +40,13 @@ describe("GET /robots.txt", () => {
     expect(body).toContain("Sitemap: https://reader.example/sitemap.xml");
   });
 
-  it("propagates the 500 from getConfiguredSiteUrl when NUXT_SITE_URL is unset", () => {
+  it("still serves crawl rules, minus the Sitemap directive, when NUXT_SITE_URL is unset", () => {
+    // A 5xx robots.txt gets treated by crawlers as "disallow everything" —
+    // this must degrade instead of propagating getConfiguredSiteUrl's throw
+    // (see tests/server/utils/siteUrl.test.ts for that throw's own coverage).
     runtimeConfigValue.value = { siteUrl: "" };
-    expect(() => handler({} as never)).toThrowError(
-      expect.objectContaining({ statusCode: 500 }),
-    );
+    const body = handler({} as never);
+    expect(body).toContain("Disallow: /dashboard");
+    expect(body).not.toContain("Sitemap:");
   });
 });
