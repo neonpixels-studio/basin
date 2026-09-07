@@ -41,9 +41,12 @@ globalThis.usePodcastPlayer = usePodcastPlayer;
 // (mirrors Nuxt auto-import; both read whatever useClerk a test stubs).
 globalThis.useReverification = useReverification;
 globalThis.isReverificationCancelledError = isReverificationCancelledError;
-// Real composable as a global — mirrors Nuxt auto-import. Reads whatever
+// Real composable as a global, wrapped in vi.fn so page tests can assert on
+// the title/description each page passed in without re-asserting the full
+// og/twitter/canonical shape per page (that shape has its own dedicated
+// suite: tests/composables/useMarketingSeo.test.ts). Reads whatever
 // useRoute/useRuntimeConfig a test stubs (called at invocation time).
-globalThis.useMarketingSeo = useMarketingSeo;
+globalThis.useMarketingSeo = vi.fn(useMarketingSeo);
 
 // Default stub for useUserSettings — returns defaults, no-ops on save.
 // Individual tests can override this with vi.stubGlobal if needed.

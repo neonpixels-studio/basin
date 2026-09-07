@@ -1,8 +1,11 @@
-import { MARKETING_ROUTES } from "#shared/utils/marketingRoutes";
+import {
+  MARKETING_ROUTES,
+  normalizeRoutePath,
+} from "#shared/utils/marketingRoutes";
 
 export default defineNuxtRouteMiddleware((to) => {
   const { isSignedIn } = useAuth();
-  const path = to.path.replace(/(.)\/$/, "$1");
+  const path = normalizeRoutePath(to.path);
 
   if (isSignedIn.value && (path === "/" || path === "/login")) {
     return navigateTo("/dashboard");

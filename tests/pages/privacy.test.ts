@@ -4,8 +4,7 @@ import PrivacyPage from "~/pages/privacy.vue";
 
 describe("privacy page (/privacy)", () => {
   beforeEach(() => {
-    vi.mocked(globalThis.useSeoMeta).mockClear();
-    vi.mocked(globalThis.useHead).mockClear();
+    vi.mocked(globalThis.useMarketingSeo).mockClear();
     vi.stubGlobal("useRoute", () => ({
       path: "/privacy",
       params: {},
@@ -13,27 +12,14 @@ describe("privacy page (/privacy)", () => {
     }));
   });
 
-  it("emits og/twitter meta anchored to the configured site URL", () => {
+  // The og/twitter/canonical shape is asserted once, in
+  // tests/composables/useMarketingSeo.test.ts — this only checks the page
+  // wires up the composable with its own title/description.
+  it("wires up marketing SEO meta for this page", () => {
     shallowMount(PrivacyPage);
-    expect(globalThis.useSeoMeta).toHaveBeenCalledWith(
-      expect.objectContaining({
-        title: "Reader — privacy",
-        ogTitle: "Reader — privacy",
-        ogType: "website",
-        ogUrl: "https://basin.example/privacy",
-        ogSiteName: "Reader",
-        twitterCard: "summary",
-        twitterTitle: "Reader — privacy",
-      }),
-    );
-  });
-
-  it("emits a canonical link anchored to the configured site URL", () => {
-    shallowMount(PrivacyPage);
-    expect(globalThis.useHead).toHaveBeenCalledWith(
-      expect.objectContaining({
-        link: [{ rel: "canonical", href: "https://basin.example/privacy" }],
-      }),
+    expect(globalThis.useMarketingSeo).toHaveBeenCalledWith(
+      "Reader — privacy",
+      "How Reader handles your data — written to be read, not skimmed past.",
     );
   });
 

@@ -23,34 +23,22 @@ describe("contact page (/contact)", () => {
       params: {},
       query: {},
     }));
-    vi.mocked(globalThis.useSeoMeta).mockClear();
-    vi.mocked(globalThis.useHead).mockClear();
+    vi.mocked(globalThis.useMarketingSeo).mockClear();
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
   });
 
-  it("emits og/twitter meta anchored to the configured site URL", () => {
+  // The og/twitter/canonical shape is asserted once, in
+  // tests/composables/useMarketingSeo.test.ts — this only checks the page
+  // wires up the composable with its own title/description.
+  it("wires up marketing SEO meta for this page", () => {
     mountWithValidForm();
-    expect(globalThis.useSeoMeta).toHaveBeenCalledWith(
-      expect.objectContaining({
-        title: "Reader — contact",
-        ogTitle: "Reader — contact",
-        ogType: "website",
-        ogUrl: "https://basin.example/contact",
-        ogSiteName: "Reader",
-        twitterCard: "summary",
-        twitterTitle: "Reader — contact",
-      }),
+    expect(globalThis.useMarketingSeo).toHaveBeenCalledWith(
+      "Reader — contact",
+      "Bug, feature idea, a source you wish we supported, or just hello — it all reaches the same small team.",
     );
-  });
-
-  it("emits a canonical link anchored to the configured site URL", () => {
-    mountWithValidForm();
-    expect(globalThis.useHead).toHaveBeenCalledWith({
-      link: [{ rel: "canonical", href: "https://basin.example/contact" }],
-    });
   });
 
   it("renders the contact form with name, email, and message fields", () => {

@@ -60,4 +60,36 @@ describe("useMarketingSeo", () => {
       link: [{ rel: "canonical", href: "https://reader.example/contact" }],
     });
   });
+
+  it("normalizes a trailing slash so it matches the sitemap's canonical form", () => {
+    // The auth middleware (app/middleware/auth.global.ts) already treats
+    // "/pricing/" as "/pricing" — the SEO tags must agree, or the two
+    // requests would each self-canonicalize to a different URL for the same
+    // page.
+    vi.stubGlobal("useRoute", () => ({
+      path: "/pricing/",
+      params: {},
+      query: {},
+    }));
+
+    useMarketingSeo("Pricing — Reader", "Simple, quiet pricing.");
+
+    expect(globalThis.useSeoMeta).toHaveBeenCalledWith(
+      expect.objectContaining({ ogUrl: "https://reader.example/pricing" }),
+    );
+    expect(globalThis.useHead).toHaveBeenCalledWith({
+      link: [{ rel: "canonical", href: "https://reader.example/pricing" }],
+    });
+  });
+
+  it("omits ogUrl and the canonical link when no site URL is configured", () => {
+    vi.stubGlobal("useRuntimeConfig", () => ({ public: { siteUrl: "" } }));
+
+    useMarketingSeo("Reader — about", "A calm reading app.");
+
+    expect(globalThis.useSeoMeta).toHaveBeenCalledWith(
+      expect.objectContaining({ ogUrl: undefined }),
+    );
+    expect(globalThis.useHead).not.toHaveBeenCalled();
+  });
 });

@@ -35,8 +35,8 @@ describe("canonicalUrl", () => {
     );
   });
 
-  it("falls back to the bare path when no site URL is configured", () => {
+  it("returns undefined rather than a relative URL when no site URL is configured", () => {
     vi.stubGlobal("useRuntimeConfig", () => ({ public: { siteUrl: "" } }));
-    expect(canonicalUrl("/privacy")).toBe("/privacy");
+    expect(canonicalUrl("/privacy")).toBeUndefined();
   });
 });

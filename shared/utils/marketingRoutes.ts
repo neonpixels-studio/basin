@@ -13,3 +13,14 @@ export const MARKETING_ROUTES: readonly string[] = [
   "/privacy",
   "/contact",
 ];
+
+// Strips a single trailing slash from a route path (but never collapses the
+// root "/" itself). Both the auth middleware (checking a path against
+// MARKETING_ROUTES) and useMarketingSeo (building the canonical/og:url for
+// the current route) need the same normalized shape, so "/pricing/" is
+// treated identically to "/pricing" in both places instead of one
+// recognizing it and the other emitting a second, non-canonical URL for the
+// same page.
+export function normalizeRoutePath(path: string): string {
+  return path.replace(/(.)\/$/, "$1");
+}

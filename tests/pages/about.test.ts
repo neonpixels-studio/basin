@@ -4,8 +4,7 @@ import AboutPage from "~/pages/about.vue";
 
 describe("about page (/about)", () => {
   beforeEach(() => {
-    vi.mocked(globalThis.useSeoMeta).mockClear();
-    vi.mocked(globalThis.useHead).mockClear();
+    vi.mocked(globalThis.useMarketingSeo).mockClear();
     vi.stubGlobal("useRoute", () => ({
       path: "/about",
       params: {},
@@ -13,26 +12,15 @@ describe("about page (/about)", () => {
     }));
   });
 
-  it("emits og/twitter meta anchored to the configured site URL", () => {
+  // The og/twitter/canonical shape is asserted once, in
+  // tests/composables/useMarketingSeo.test.ts — this only checks the page
+  // wires up the composable with its own title/description.
+  it("wires up marketing SEO meta for this page", () => {
     shallowMount(AboutPage);
-    expect(globalThis.useSeoMeta).toHaveBeenCalledWith(
-      expect.objectContaining({
-        title: "Reader — about",
-        ogTitle: "Reader — about",
-        ogType: "website",
-        ogUrl: "https://basin.example/about",
-        ogSiteName: "Reader",
-        twitterCard: "summary",
-        twitterTitle: "Reader — about",
-      }),
+    expect(globalThis.useMarketingSeo).toHaveBeenCalledWith(
+      "Reader — about",
+      "Reader is a small, independent team building one calm page for the feeds you already care about — no ranking, no ads, no infinite scroll.",
     );
-  });
-
-  it("emits a canonical link anchored to the configured site URL", () => {
-    shallowMount(AboutPage);
-    expect(globalThis.useHead).toHaveBeenCalledWith({
-      link: [{ rel: "canonical", href: "https://basin.example/about" }],
-    });
   });
 
   it("renders the page header", () => {

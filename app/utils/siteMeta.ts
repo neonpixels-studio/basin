@@ -14,13 +14,19 @@ export const SITE_NAME = "Reader";
 // once the client takes over after hydration and og:url/canonical are
 // rendered from universal (SSR + client) code, not server-only code.
 //
-// Falls back to the bare path if NUXT_SITE_URL isn't configured (e.g. local
-// `nuxt dev` without it set) so the tag degrades to a relative URL instead of
-// emitting a broken "undefined/pricing".
-export function canonicalUrl(path: string): string {
+// Returns undefined when NUXT_SITE_URL isn't configured, rather than falling
+// back to a bare relative path: a relative og:url/canonical resolves against
+// whatever host actually served the page — exactly the spoofable-Host
+// behavior this function exists to avoid — so a missing config must omit the
+// tag, not silently ship a wrong one. Callers (see useMarketingSeo) skip
+// emitting ogUrl/canonical entirely in that case; this intentionally
+// degrades quietly rather than 500ing the whole page (unlike
+// getConfiguredSiteUrl, a broken og:url/canonical isn't worth taking the
+// public marketing surface down over).
+export function canonicalUrl(path: string): string | undefined {
   const { siteUrl } = useRuntimeConfig().public;
   if (!siteUrl) {
-    return path;
+    return undefined;
   }
   return `${siteUrl.replace(/\/+$/, "")}${path}`;
 }
