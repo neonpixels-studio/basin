@@ -65,14 +65,8 @@ function onKey(e) {
 }
 
 onMounted(() => {
-  // Deferred to onMounted (not run eagerly at store-setup time) so the
-  // client's first render matches the server's default-appearance render
-  // exactly — hydration completes cleanly, and loadFromDb()'s cache/DB
-  // apply then lands as a normal post-mount reactive update instead of
-  // racing Nuxt's Pinia state hydration, which otherwise either reverts the
-  // just-applied settings back to defaults (and re-persists that revert) or
-  // produces a hydration mismatch that Vue skips patching for. See
-  // appearanceStore's init() for the full explanation.
+  // Must run post-mount, not at store-setup time — see appearanceStore's
+  // init() for why (it races Nuxt's SSR state hydration otherwise).
   appearanceStore.init();
   setupWatchers();
   window.addEventListener("keydown", onKey);

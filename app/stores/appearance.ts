@@ -149,7 +149,17 @@ export const useAppearanceStore = defineStore("appearance", () => {
         ready.value = true;
       } catch (error) {
         console.error("Discarding unusable cached appearance settings", error);
-        localStorage.removeItem(cacheKeyFor(userId));
+        try {
+          localStorage.removeItem(cacheKeyFor(userId));
+        } catch (removeError) {
+          // Same storage-lockdown case readCachedSettings/writeCachedSettings
+          // guard against — losing the ability to clear a bad cache entry
+          // shouldn't crash loadFromDb before it reaches the DB fetch below.
+          console.error(
+            "Failed to clear unusable cached appearance settings",
+            removeError,
+          );
+        }
       }
     }
 
@@ -207,26 +217,18 @@ export const useAppearanceStore = defineStore("appearance", () => {
     applyToDom();
   }
 
-  // Called from app.vue's onMounted rather than eagerly here at store-setup
-  // time. Store setup runs synchronously as part of the current component's
-  // render (used for SSR/hydration matching), which is always rendered with
-  // default appearance server-side (Clerk auth resolves client-only). If
-  // loadFromDb() below applied the cached/DB settings during that same
-  // synchronous pass, one of two things went wrong depending on ordering:
-  // Nuxt's automatic Pinia state hydration (which runs right after store
-  // setup returns) would silently revert the just-applied values back to
-  // those server defaults — and the persistence watcher below would then
-  // treat that revert as a real edit and re-PATCH the defaults over
-  // whatever was just saved — or, if hydration had already run, the
-  // mismatch between what the client just rendered and what the server sent
-  // produced a Vue hydration-mismatch warning that Vue intentionally leaves
-  // unpatched (checked once for perf, not corrected). Waiting for onMounted
-  // guarantees hydration is fully settled first, so this instead lands as
-  // an ordinary post-mount reactive update.
+  // Called from app.vue's onMounted, not eagerly here at store-setup time:
+  // store setup runs synchronously during SSR/hydration render, which is
+  // always default appearance server-side (Clerk auth is client-only).
+  // Applying loadFromDb() in that same synchronous pass either races Nuxt's
+  // automatic Pinia state hydration (which then reverts the just-applied
+  // values back to server defaults, and the persistence watcher below
+  // re-PATCHes that revert to the DB) or produces a Vue hydration mismatch
+  // that Vue leaves unpatched. Waiting for onMounted avoids both: hydration
+  // has already settled, so this lands as an ordinary post-mount update.
   //
-  // Guards against a double-run: the store is a singleton so this only
-  // needs to succeed once, but the guard keeps re-entrancy impossible if
-  // the onMounted call site ever changes.
+  // Guarded for re-entrancy in case the onMounted call site ever changes —
+  // the store itself is a singleton, so this only needs to succeed once.
   let initialized = false;
 
   function init() {

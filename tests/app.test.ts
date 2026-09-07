@@ -11,12 +11,15 @@ function stubRoute(path: string) {
 // cloak lift" tests assert against a controlled `ready` value instead of the
 // real store's actual (async, DB-fetch-driven) readiness, which this test
 // file has no reliable way to drive to `true` on demand, while still giving
-// onMounted's `init()` call something to invoke. A plain boolean (not a ref)
-// for `ready` is enough: `appearanceStore` here is an ordinary object, not a
-// Pinia store proxy, so a nested ref wouldn't auto-unwrap in the template and
-// would read as an always-truthy object instead of its `.value`.
+// onMounted's `init()` call something to invoke (and letting callers assert
+// it was actually called). A plain boolean (not a ref) for `ready` is
+// enough: `appearanceStore` here is an ordinary object, not a Pinia store
+// proxy, so a nested ref wouldn't auto-unwrap in the template and would read
+// as an always-truthy object instead of its `.value`.
 function stubAppearanceReady(ready: boolean) {
-  vi.stubGlobal("useAppearanceStore", () => ({ ready, init: () => {} }));
+  const init = vi.fn();
+  vi.stubGlobal("useAppearanceStore", () => ({ ready, init }));
+  return init;
 }
 
 describe("App", () => {
@@ -80,6 +83,18 @@ describe("App", () => {
       stubAppearanceReady(true);
       const wrapper = shallowMount(App);
       expect(wrapper.find(".app-shell").classes()).toContain("app-ready");
+    });
+
+    // appearanceStore.init() must run post-mount (not eagerly at store-setup
+    // time) so its cache/DB apply can't race Nuxt's SSR state hydration —
+    // see the store's init() for why. This guards against that call being
+    // dropped from onMounted, which would leave settings never loading at
+    // all while every other test here still passed.
+    it("calls appearanceStore.init() on mount", () => {
+      stubRoute("/dashboard");
+      const init = stubAppearanceReady(false);
+      shallowMount(App);
+      expect(init).toHaveBeenCalledTimes(1);
     });
   });
 });
