@@ -17,6 +17,22 @@ import {
   SEARCH_RESULT_LIMIT,
 } from "../../../server/utils/search";
 
+// search.ts composes one sql`` fragment inside another (the shared
+// to_tsquery(...) expression is nested into both the where and orderBy
+// clauses), so a bound parameter can be one level deeper than the outer
+// fragment's own queryChunks. This walks into any nested fragment (identified
+// by having its own queryChunks array) so tests can inspect the fully
+// flattened chunk list regardless of nesting depth.
+function flattenSqlChunks(sqlFragment: { queryChunks: unknown[] }): unknown[] {
+  return sqlFragment.queryChunks.flatMap((chunk) => {
+    const nested = chunk as { queryChunks?: unknown[] };
+    if (nested && Array.isArray(nested.queryChunks)) {
+      return flattenSqlChunks(nested as { queryChunks: unknown[] });
+    }
+    return [chunk];
+  });
+}
+
 const mockRow = {
   id: 1,
   feedId: 10,
@@ -180,19 +196,23 @@ describe("searchFeedItems", () => {
   it("builds a prefix tsquery bound as a parameter, not spliced into the SQL text", async () => {
     await searchFeedItems(1, "podcas");
 
-    const whereClause = mockWhere.mock.calls[0][0];
-    const orderByClause = mockOrderBy.mock.calls[0][0];
+    const whereChunks = flattenSqlChunks(mockWhere.mock.calls[0][0]);
+    const orderByChunks = flattenSqlChunks(mockOrderBy.mock.calls[0][0]);
 
-    // Every SQL chunk should be static text — the query text itself must
-    // never contain the raw search term (that would mean it was
-    // string-concatenated rather than passed as a bound parameter).
-    for (const chunk of whereClause.queryChunks) {
-      if (typeof chunk === "object" && "value" in chunk) {
-        expect(chunk.value.join("")).not.toContain("podcas");
-      }
-    }
-    expect(whereClause.queryChunks).toContain("podcas:*");
-    expect(orderByClause.queryChunks).toContain("podcas:*");
+    // Static text chunks must never contain the raw search term — that
+    // would mean it was string-concatenated into the SQL rather than bound
+    // as a parameter. Filtering to chunks with an array `value` (rather than
+    // checking every chunk) keeps this from breaking if a future drizzle
+    // version changes how it represents columns or params internally.
+    const staticText = whereChunks
+      .filter((chunk) => Array.isArray(chunk?.value))
+      .map((chunk) => chunk.value.join(""))
+      .join("");
+    expect(staticText).not.toContain("podcas");
+    expect(staticText.length).toBeGreaterThan(0);
+
+    expect(whereChunks).toContain("podcas:*");
+    expect(orderByChunks).toContain("podcas:*");
   });
 
   it("does not query the database when the query has no searchable characters", async () => {
@@ -200,6 +220,20 @@ describe("searchFeedItems", () => {
 
     expect(results).toEqual([]);
     expect(mockSelect).not.toHaveBeenCalled();
+  });
+
+  it("still queries the database for a stop-word-only term, pinning the existing behavior", async () => {
+    // "the" clears MIN_PREFIX_TERM_LENGTH and reaches the DB as "the:*", same
+    // as it did under plainto_tsquery — Postgres's own dictionary reduces it
+    // to an empty tsquery and the query returns no rows. This isn't a
+    // regression, but it's worth pinning so a future change to the guard
+    // (e.g. an English stop-word list) is a deliberate choice, not a surprise.
+    mockLimit.mockResolvedValue([]);
+
+    const results = await searchFeedItems(1, "the");
+
+    expect(mockSelect).toHaveBeenCalledTimes(1);
+    expect(results).toEqual([]);
   });
 });
 
@@ -222,5 +256,40 @@ describe("buildPrefixTsQuery", () => {
 
   it("returns an empty string when there are no searchable characters", () => {
     expect(buildPrefixTsQuery("   !!!   ")).toBe("");
+  });
+
+  it("splits on hyphens so a hyphenated word still matches like Postgres's own tokenizer", () => {
+    // Postgres's tokenizer lexes "sci-fi" into "sci" and "fi" separately;
+    // gluing the pieces together into "scifi:*" would never match either.
+    expect(buildPrefixTsQuery("sci-fi")).toBe("sci:* & fi:*");
+  });
+
+  it("drops single-character fragments left over after stripping punctuation", () => {
+    // "don't" splits into "don" and "t"; "t" alone is below
+    // MIN_PREFIX_TERM_LENGTH and would otherwise force a full index scan.
+    expect(buildPrefixTsQuery("don't")).toBe("don:*");
+  });
+
+  it("drops terms shorter than the minimum prefix length", () => {
+    expect(buildPrefixTsQuery("a")).toBe("");
+    expect(buildPrefixTsQuery("a cool")).toBe("cool:*");
+  });
+
+  it("caps the number of ANDed terms so a very long query can't build an unbounded tsquery", () => {
+    const manyWords = Array.from(
+      { length: 15 },
+      (_unused, index) => `term${index}`,
+    );
+    const tsQuery = buildPrefixTsQuery(manyWords.join(" "));
+
+    expect(tsQuery.split(" & ")).toHaveLength(10);
+    expect(tsQuery).toContain("term0:*");
+    expect(tsQuery).not.toContain("term10:*");
+  });
+
+  it("truncates an individual term so a single oversized word can't build an oversized lexeme", () => {
+    const longTerm = "a".repeat(100);
+
+    expect(buildPrefixTsQuery(longTerm)).toBe(`${"a".repeat(64)}:*`);
   });
 });
