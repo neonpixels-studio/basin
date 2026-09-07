@@ -15,6 +15,8 @@ import {
   searchFeedItems,
   buildPrefixTsQuery,
   SEARCH_RESULT_LIMIT,
+  MAX_SEARCH_TERMS,
+  MAX_TERM_LENGTH,
 } from "../../../server/utils/search";
 
 // search.ts composes one sql`` fragment inside another (the shared
@@ -269,39 +271,47 @@ describe("buildPrefixTsQuery", () => {
     expect(buildPrefixTsQuery("sci-fi")).toBe("sci:* & fi:*");
   });
 
-  it("drops single-character fragments left over after stripping punctuation", () => {
+  it("keeps a too-short fragment as an exact (non-prefix) term instead of dropping it", () => {
     // "don't" splits into "don" and "t"; "t" alone is below
-    // MIN_PREFIX_TERM_LENGTH and would otherwise force a full index scan.
-    expect(buildPrefixTsQuery("don't")).toBe("don:*");
+    // MIN_PREFIX_TERM_LENGTH so it would force a full index scan as "t:*" —
+    // but it must still constrain the match, so it's required as an exact
+    // lexeme rather than discarded.
+    expect(buildPrefixTsQuery("don't")).toBe("don:* & t");
   });
 
-  it("falls back to an exact match instead of discarding the search when every term is below the prefix floor", () => {
+  it("matches a lone short term exactly instead of discarding the search", () => {
     // A lone digit or letter (e.g. "9" in "Top 9 podcasts") is a real,
     // searchable lexeme under plainto_tsquery — dropping it entirely would
     // be a regression, so it's matched exactly rather than as a wildcard.
     expect(buildPrefixTsQuery("a")).toBe("a");
   });
 
-  it("drops a too-short term but keeps prefix-matching the rest when at least one term clears the floor", () => {
-    expect(buildPrefixTsQuery("a cool")).toBe("cool:*");
+  it("keeps a too-short term as an exact match alongside prefix-matching the rest", () => {
+    // Every term must still constrain the query, even the ones too short to
+    // safely prefix-match — dropping "9" here would let "Top 5 podcasts"
+    // wrongly match a search for "top 9 podcasts".
+    expect(buildPrefixTsQuery("a cool")).toBe("a & cool:*");
+    expect(buildPrefixTsQuery("top 9 podcasts")).toBe("top:* & 9 & podcasts:*");
   });
 
   it("caps the number of ANDed terms so a very long query can't build an unbounded tsquery", () => {
     const manyWords = Array.from(
-      { length: 15 },
+      { length: MAX_SEARCH_TERMS + 5 },
       (_unused, index) => `term${index}`,
     );
     const tsQuery = buildPrefixTsQuery(manyWords.join(" "));
 
-    expect(tsQuery.split(" & ")).toHaveLength(10);
+    expect(tsQuery.split(" & ")).toHaveLength(MAX_SEARCH_TERMS);
     expect(tsQuery).toContain("term0:*");
-    expect(tsQuery).not.toContain("term10:*");
+    expect(tsQuery).not.toContain(`term${MAX_SEARCH_TERMS}:*`);
   });
 
   it("truncates an individual term so a single oversized word can't build an oversized lexeme", () => {
-    const longTerm = "a".repeat(100);
+    const longTerm = "a".repeat(MAX_TERM_LENGTH + 36);
 
-    expect(buildPrefixTsQuery(longTerm)).toBe(`${"a".repeat(64)}:*`);
+    expect(buildPrefixTsQuery(longTerm)).toBe(
+      `${"a".repeat(MAX_TERM_LENGTH)}:*`,
+    );
   });
 
   it("truncates by whole code point so an astral-plane character isn't split into an unmatchable surrogate", () => {
@@ -310,12 +320,22 @@ describe("buildPrefixTsQuery", () => {
     // mid-pair. Repeating it well past MAX_TERM_LENGTH code points exercises
     // that truncation counts whole characters, not UTF-16 units.
     const astralChar = "\u{20000}";
-    const longAstralTerm = astralChar.repeat(100);
+    const longAstralTerm = astralChar.repeat(MAX_TERM_LENGTH + 36);
 
     const tsQuery = buildPrefixTsQuery(longAstralTerm);
 
-    expect(tsQuery).toBe(`${astralChar.repeat(64)}:*`);
-    expect(tsQuery).not.toContain("�");
+    expect(tsQuery).toBe(`${astralChar.repeat(MAX_TERM_LENGTH)}:*`);
+    // Confirms truncation landed on a whole character rather than splitting
+    // a surrogate pair, which would leave an ill-formed string.
+    expect(tsQuery.isWellFormed()).toBe(true);
+  });
+
+  it("prefix-marks a lone astral-plane character since it clears the floor by code point, not code unit", () => {
+    // "\u{20000}".length is 2 (a UTF-16 surrogate pair) but it's one code
+    // point, so counting UTF-16 units here would wrongly treat a single
+    // character as clearing MIN_PREFIX_TERM_LENGTH and mark it "x:*" — the
+    // exact broad-scan case that floor exists to prevent.
+    expect(buildPrefixTsQuery("\u{20000}")).toBe("\u{20000}");
   });
 
   it("caps the raw input length before splitting so a huge pasted string can't balloon into a huge term array", () => {
@@ -325,7 +345,7 @@ describe("buildPrefixTsQuery", () => {
 
     // A single unbroken run of letters is one term, truncated to
     // MAX_TERM_LENGTH regardless of how long the raw input was.
-    expect(tsQuery).toBe(`${"z".repeat(64)}:*`);
+    expect(tsQuery).toBe(`${"z".repeat(MAX_TERM_LENGTH)}:*`);
   });
 
   it("treats non-ASCII letters as valid term characters", () => {

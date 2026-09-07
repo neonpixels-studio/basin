@@ -16,65 +16,68 @@ export const SEARCH_RESULT_LIMIT = 20;
 // flag: `String.prototype.split` doesn't use (or advance) `lastIndex`.
 const TSQUERY_TERM_SEPARATOR = /[^\p{L}\p{N}]+/u;
 
-// A prefix term below this length turns every keystroke into a broad GIN
+// A prefix term below this length (measured in whole code points, not UTF-16
+// code units — see normalizeTerm) turns every keystroke into a broad GIN
 // index scan (e.g. "z:*" matches every lexeme starting with "z"); below the
 // floor we match that term exactly instead (an exact lexeme is a point
-// lookup, not a wildcard scan) rather than sending the DB a scan only the
-// first keystroke would trigger.
+// lookup, not a wildcard scan) rather than dropping it from the query, which
+// would silently stop it constraining the match entirely.
 const MIN_PREFIX_TERM_LENGTH = 2;
 
 // Bounds on how large a tsquery we build, so a very long or many-word input
 // can't produce an unbounded number of ANDed terms or a single oversized
 // lexeme — either of which risks tsquery's own size limits and unnecessary
 // planning cost for a search box that only shows SEARCH_RESULT_LIMIT results.
-const MAX_SEARCH_TERMS = 10;
-const MAX_TERM_LENGTH = 64;
+export const MAX_SEARCH_TERMS = 10;
+export const MAX_TERM_LENGTH = 64;
 // Caps the raw input before it's split, so a huge pasted string can't
 // allocate a huge intermediate array of terms only to have all but
 // MAX_SEARCH_TERMS of them discarded. Sized to comfortably fit
-// MAX_SEARCH_TERMS terms of MAX_TERM_LENGTH plus their separators.
+// MAX_SEARCH_TERMS terms of MAX_TERM_LENGTH plus a single-character
+// separator between each; multi-character separators (", ", " - ", etc.)
+// mean the raw cap can bite slightly before the term cap does, which only
+// ever shortens a prefix term — never breaks or widens a match.
 const MAX_QUERY_LENGTH = MAX_SEARCH_TERMS * (MAX_TERM_LENGTH + 1);
 
-// `String.prototype.slice` counts UTF-16 code units, which can split an
-// astral-plane character (e.g. rarer CJK ideographs) across a surrogate
-// pair and produce an unmatchable lone surrogate. `Array.from` iterates by
-// code point, so truncation always lands on a whole character.
-function truncateTerm(term: string): string {
-  return Array.from(term).slice(0, MAX_TERM_LENGTH).join("");
+// `.length` counts UTF-16 code units, which can both split an astral-plane
+// character (e.g. rarer CJK ideographs, 2 code units) across a surrogate
+// pair when truncating, and over-count it by one when checking the prefix
+// floor. `Array.from` iterates by code point, so both truncation and the
+// floor check land on whole characters and agree with each other.
+function normalizeTerm(rawTerm: string): {
+  term: string;
+  isPrefixable: boolean;
+} {
+  const codePoints = Array.from(rawTerm).slice(0, MAX_TERM_LENGTH);
+  return {
+    term: codePoints.join(""),
+    isPrefixable: codePoints.length >= MIN_PREFIX_TERM_LENGTH,
+  };
 }
 
 /**
  * Builds a `to_tsquery`-compatible prefix expression from free-text input,
- * e.g. "cool podcas" -> "cool:* & podcas:*". Every term — including ones
- * already fully typed — gets a `:*` prefix marker (not just the last, still-
- * being-typed one); this is a deliberate simplification, so a completed word
- * like "cat" also matches "catastrophe", trading a bit of over-matching for
- * not having to special-case "which term is the one currently being typed".
- * Terms are ANDed together to keep the "match every term" behavior
- * `plainto_tsquery` had. Returns an empty string when the input has no
+ * e.g. "cool podcas" -> "cool:* & podcas:*". Every term long enough to clear
+ * MIN_PREFIX_TERM_LENGTH — including ones already fully typed, not just the
+ * last, still-being-typed one — gets a `:*` prefix marker; this is a
+ * deliberate simplification, so a completed word like "cat" also matches
+ * "catastrophe", trading a bit of over-matching for not having to
+ * special-case "which term is the one currently being typed". Terms below
+ * the floor (e.g. a lone digit or letter) are still required as an exact
+ * match rather than dropped, so they keep constraining the query the way
+ * they did under plainto_tsquery. Terms are ANDed together to keep that
+ * "match every term" behavior. Returns an empty string when the input has no
  * searchable characters.
  */
 export function buildPrefixTsQuery(query: string): string {
-  const terms = query
+  return query
     .slice(0, MAX_QUERY_LENGTH)
     .split(TSQUERY_TERM_SEPARATOR)
     .filter((term) => term.length > 0)
     .slice(0, MAX_SEARCH_TERMS)
-    .map(truncateTerm);
-
-  const prefixTerms = terms.filter(
-    (term) => term.length >= MIN_PREFIX_TERM_LENGTH,
-  );
-
-  // Every term was too short to prefix-match (e.g. a lone digit or letter)
-  // — fall back to matching them exactly rather than discarding the search
-  // entirely, which would otherwise silently return no results for a query
-  // that used to match under plainto_tsquery.
-  if (prefixTerms.length === 0) {
-    return terms.join(" & ");
-  }
-
-  return prefixTerms.map((term) => `${term}:*`).join(" & ");
+    .map(normalizeTerm)
+    .map(({ term, isPrefixable }) => (isPrefixable ? `${term}:*` : term))
+    .join(" & ");
 }
 
 export interface SearchResult {
