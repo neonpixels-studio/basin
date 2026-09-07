@@ -16,7 +16,7 @@ import {
 
 const BLOCKING_SEVERITIES = new Set(["high", "critical"]);
 const EXIT_FAILURE = 1;
-const UNIDENTIFIED_ADVISORY_ID = "UNIDENTIFIED";
+export const UNIDENTIFIED_ADVISORY_ID = "UNIDENTIFIED";
 
 function readStdin() {
   return new Promise((resolve, reject) => {
@@ -170,11 +170,19 @@ function reportBlocking(blockingAdvisories) {
   );
 }
 
-export function partitionByAllowlist(advisories) {
+// `isAllowed` defaults to the real, module-level allowlist lookup so
+// production callers need no changes. Tests that must verify the
+// derive-then-suppress round trip for an advisory shape not present in the
+// real allowlist (e.g. a url-less `source-` id) can pass a fixture predicate
+// instead of depending on the real allowlist happening to contain one.
+export function partitionByAllowlist(
+  advisories,
+  isAllowed = isAdvisoryAllowed,
+) {
   const suppressed = [];
   const blocking = [];
   for (const advisory of advisories) {
-    const bucket = isAdvisoryAllowed(advisory.id, advisory.package)
+    const bucket = isAllowed(advisory.id, advisory.package)
       ? suppressed
       : blocking;
     bucket.push(advisory);

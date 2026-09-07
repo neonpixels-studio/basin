@@ -6,6 +6,7 @@ import {
   isAllowlistExpired,
   parseAuditReport,
   partitionByAllowlist,
+  UNIDENTIFIED_ADVISORY_ID,
 } from "../../scripts/audit-gate.js";
 import {
   ALLOWED_ADVISORIES,
@@ -18,6 +19,7 @@ import {
 // stay valid regardless of which advisories the real list currently suppresses.
 const TEST_ID = "GHSA-0000-test-abcd";
 const TEST_PACKAGE = "test-package-fixture";
+const TEST_SOURCE = "synthetic-test-source-value";
 
 function advisoryVia(id: string, severity: string) {
   return {
@@ -95,8 +97,34 @@ describe("collectBlockingAdvisories", () => {
     };
     const advisories = collectBlockingAdvisories(report);
     expect(advisories).toHaveLength(1);
-    expect(advisories[0].id).not.toBeNull();
+    expect(advisories[0].id).toBe(UNIDENTIFIED_ADVISORY_ID);
     expect(advisories[0].severity).toBe("high");
+  });
+
+  // A chained "depends on vulnerable versions of X" advisory carries no
+  // upstream GHSA url, so the id falls back to `source-<via.source>` (the
+  // third branch of advisoryIdOrFallback, alongside the url-parsed case above
+  // and the fully-unidentified case before it).
+  it("derives a source-prefixed id for a url-less chained advisory", () => {
+    const report = {
+      vulnerabilities: {
+        [TEST_PACKAGE]: {
+          via: [
+            {
+              name: TEST_PACKAGE,
+              url: null,
+              source: TEST_SOURCE,
+              severity: "high",
+              title: "Depends on vulnerable versions",
+            },
+          ],
+        },
+      },
+    };
+    const advisories = collectBlockingAdvisories(report);
+    expect(advisories.map((advisory) => advisory.id)).toEqual([
+      `source-${TEST_SOURCE}`,
+    ]);
   });
 });
 
@@ -199,6 +227,43 @@ describe("partitionByAllowlist", () => {
     expect(blocking).toEqual([]);
     expect(suppressed).toHaveLength(advisories.length);
   });
+
+  // No entry in the real allowlist currently uses the url-less `source-<id>`
+  // shape (the last one, for @netlify/async-workloads, was removed 2026-09-07
+  // — see the audit-allowlist.js header comment). This still verifies the
+  // derive-then-suppress round trip — the exact bug class this test guards
+  // against is `advisoryIdOrFallback`'s id format drifting from what
+  // `isAdvisoryAllowed` matches — by passing partitionByAllowlist a fixture
+  // predicate instead of depending on the real allowlist containing a match.
+  it("suppresses a url-less chained advisory whose derived source id is allowlisted", () => {
+    const report = {
+      vulnerabilities: {
+        [TEST_PACKAGE]: {
+          via: [
+            {
+              name: TEST_PACKAGE,
+              url: null,
+              source: TEST_SOURCE,
+              severity: "high",
+              title: "Depends on vulnerable versions",
+            },
+          ],
+        },
+      },
+    };
+    const advisories = collectBlockingAdvisories(report);
+    const derivedId = `source-${TEST_SOURCE}`;
+    expect(advisories.map((advisory) => advisory.id)).toEqual([derivedId]);
+
+    const fixtureIsAllowed = (advisoryId: string, packageName: string) =>
+      advisoryId === derivedId && packageName === TEST_PACKAGE;
+    const { suppressed, blocking } = partitionByAllowlist(
+      advisories,
+      fixtureIsAllowed,
+    );
+    expect(blocking).toEqual([]);
+    expect(suppressed).toHaveLength(1);
+  });
 });
 
 describe("isAdvisoryAllowed (real allowlist)", () => {
@@ -233,36 +298,6 @@ describe("isAdvisoryAllowed (real allowlist)", () => {
         keys.add(key);
       }
     }
-  });
-
-  // A chained "depends on vulnerable versions of X" advisory carries no upstream
-  // GHSA url, so the gate derives its key as `source-<via.source>` (see
-  // advisoryIdOrFallback in audit-gate.js). No entry in the real allowlist
-  // currently uses this url-less shape (the last one, for @netlify/async-workloads,
-  // was removed 2026-09-07 once npm audit stopped reporting it at all — see the
-  // audit-allowlist.js header comment), so this covers the derivation directly
-  // with a self-contained fixture (same pattern as TEST_ID/TEST_PACKAGE above)
-  // instead of depending on the real allowlist containing a matching shape.
-  it("derives a source-prefixed id for a url-less chained advisory", () => {
-    const report = {
-      vulnerabilities: {
-        [TEST_PACKAGE]: {
-          via: [
-            {
-              name: TEST_PACKAGE,
-              url: null,
-              source: "synthetic-test-source-value",
-              severity: "high",
-              title: "Depends on vulnerable versions",
-            },
-          ],
-        },
-      },
-    };
-    const advisories = collectBlockingAdvisories(report);
-    expect(advisories.map((advisory) => advisory.id)).toEqual([
-      "source-synthetic-test-source-value",
-    ]);
   });
 });
 

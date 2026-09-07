@@ -26,7 +26,19 @@
 // @netlify/async-workloads still pulling the unpatched image-size above — is
 // unchanged, so this chained advisory may reappear under a freshly regenerated
 // `source-` id; if it does, the gate fails loudly (fail-closed) and the entry
-// should be re-added rather than assuming it's gone for good.
+// should be re-added rather than assuming it's gone for good. Regenerate the id
+// with `npm audit --json | jq '.vulnerabilities["@netlify/async-workloads"].via'`
+// — the gate's own blocking output also prints the derived `source-…` id.
+//
+// `browserslist` is pinned via the `overrides` block in package.json (not this
+// allowlist) to `^4.28.7`, the first version fixing GHSA-c83g-rgw3-j3cx
+// (unbounded memory growth) and GHSA-73wf-gq98-2v4g (uncaught crash /
+// prototype write via untrusted browserslist-stats.json); both advisories'
+// vulnerable range is `<=4.28.6`. It reaches the tree transitively via
+// `autoprefixer` (both the `@netlify/sdk--ui-react` dev chain and Nuxt's own
+// `@nuxt/vite-builder` chain) and `@babel/helper-compilation-targets` (via
+// `@sentry/nuxt`). Drop the override once every one of those direct
+// dependencies bumps its own browserslist requirement past 4.28.6.
 
 export const ALLOWLIST_REVIEW_BY = "2026-09-27";
 
