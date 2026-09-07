@@ -1,4 +1,4 @@
-import { PUBLIC_PATHS, normalizePath } from "~/utils/publicPaths";
+import { isPublicPath, normalizePath } from "~/utils/publicPaths";
 
 export default defineNuxtRouteMiddleware((to) => {
   const { isSignedIn } = useAuth();
@@ -8,7 +8,7 @@ export default defineNuxtRouteMiddleware((to) => {
     return navigateTo("/dashboard");
   }
 
-  if (!isSignedIn.value && !PUBLIC_PATHS.includes(path) && path !== "/login") {
+  if (!isSignedIn.value && !isPublicPath(path) && path !== "/login") {
     return navigateTo("/login");
   }
 });

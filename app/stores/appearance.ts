@@ -69,7 +69,6 @@ const DEFAULTS = {
 export const useAppearanceStore = defineStore("appearance", () => {
   const state = reactive({ ...DEFAULTS });
   const ready = ref(false);
-  let initialized = false;
 
   function applyToDom() {
     if (!import.meta.client) return;
@@ -118,48 +117,52 @@ export const useAppearanceStore = defineStore("appearance", () => {
   }
 
   // Stops the deep persistence watcher started by loadFromDb() — captured so
-  // a sign-out mid-session can tear it down (see resetForSignedOut) instead
+  // a sign-out (or an account switch) mid-session can tear it down instead
   // of leaving it saving one account's in-memory state under the next
   // account's auth token.
   let stopPersisting: (() => void) | null = null;
 
-  // Does the real work of loading this visitor's settings: applies any
-  // cached snapshot immediately (so the cloak can lift before the network
-  // round-trip resolves), then fetches the DB copy as the source of truth
-  // and starts persisting further changes. Guarded by `initialized` so a
-  // rapid isLoaded/isSignedIn re-fire can't start this twice.
+  // Tracks which account's settings are currently loaded: a user id once
+  // loaded, `null` once resolved to "signed out", or `undefined` before
+  // Clerk has resolved at all. Distinguishing "resolved to nobody" from
+  // "not yet resolved" is what lets the very first anonymous visitor still
+  // reach `ready.value = true` below instead of being read as a no-op.
+  let loadedUserId: string | null | undefined;
+
+  // Does the real work of loading `userId`'s settings: applies any cached
+  // snapshot immediately (so the cloak can lift before the network
+  // round-trip resolves), registers the persistence watcher up front — so a
+  // change made during that round-trip is saved instead of silently
+  // overwritten when the fetch lands — then fetches the DB copy as the
+  // source of truth. Never rejects: every failure path still uncloaks and
+  // leaves the store retryable on the next auth change. Only ever called
+  // right after teardownLoadedAccount(), so there's no previous account's
+  // state left to guard against here.
   async function loadFromDb(userId: string) {
-    if (initialized) {
-      return;
-    }
-    initialized = true;
+    loadedUserId = userId;
 
     const cached = readCachedSettings(userId);
     if (cached) {
-      applyDbSettings(cached);
-      applyToDom();
-      ready.value = true;
+      try {
+        applyDbSettings(cached);
+        applyToDom();
+        ready.value = true;
+      } catch (error) {
+        console.error("Discarding unusable cached appearance settings", error);
+        localStorage.removeItem(cacheKeyFor(userId));
+      }
     }
 
     const { load, save } = useUserSettings();
-    try {
-      const dbSettings = await load();
-      applyDbSettings(dbSettings);
-      applyToDom();
-      writeCachedSettings(userId, buildPatch());
-    } catch (error) {
-      // useUserSettings().load() already falls back to defaults internally
-      // and shouldn't reject — this only guards against a future change (or
-      // an unexpected throw) leaving the cloak stuck down and the persistence
-      // watcher below never registered.
-      console.error("Failed to load appearance settings", error);
-    } finally {
-      ready.value = true;
-    }
 
+    // Flips once the visitor changes a setting locally. Registered before
+    // the DB fetch below so that edit is saved rather than being clobbered
+    // when the fetch resolves and would otherwise re-apply the stale value.
+    let dirty = false;
     stopPersisting = watch(
       state,
       () => {
+        dirty = true;
         applyToDom();
         const patch = buildPatch();
         save(patch);
@@ -167,52 +170,78 @@ export const useAppearanceStore = defineStore("appearance", () => {
       },
       { deep: true },
     );
+
+    try {
+      const dbSettings = await load();
+      if (!dirty) {
+        applyDbSettings(dbSettings);
+        applyToDom();
+        writeCachedSettings(userId, buildPatch());
+      }
+    } catch (error) {
+      // useUserSettings().load() already falls back to defaults internally
+      // and shouldn't reject — this only guards against a future change (or
+      // an unexpected throw) leaving the cloak stuck down. Clear the claim so
+      // a later auth re-fire retries instead of assuming this account is
+      // already loaded.
+      console.error("Failed to load appearance settings", error);
+      loadedUserId = undefined;
+    } finally {
+      ready.value = true;
+    }
   }
 
-  // Signing out (or never having been signed in) means there's no
-  // authenticated settings to load — stop persisting whatever the previous
-  // account had loaded, drop back to defaults, and uncloak immediately
-  // rather than firing a fetch that would only 401. Without the teardown, a
-  // sign-out-then-sign-in-as-a-different-user in the same tab would leave
-  // `initialized` stuck true (so the new account's settings never load) and
-  // the old watcher live (so the new account's next change would save the
-  // *old* account's in-memory theme under the new account's auth token).
-  function resetForSignedOut() {
+  // Tears down whichever account's settings are currently loaded: stops the
+  // persistence watcher and drops back to defaults. Used both for a genuine
+  // sign-out and as the first step of an account switch (Clerk's account
+  // switcher can move between accounts while isSignedIn stays true
+  // throughout — only userId changes). Always clearing the previous
+  // account's watcher before a new one is registered is what stops the new
+  // account's first edit from saving the old account's in-memory theme
+  // under the new account's auth token.
+  function teardownLoadedAccount() {
     stopPersisting?.();
     stopPersisting = null;
-    initialized = false;
+    loadedUserId = null;
     Object.assign(state, DEFAULTS);
     applyToDom();
-    ready.value = true;
   }
 
-  async function init() {
+  function init() {
     if (!import.meta.client) {
       return;
     }
 
     const { isSignedIn, isLoaded, userId } = useAuth();
 
-    // Both isSignedIn and userId read falsy until Clerk finishes its async
+    // isSignedIn and userId both read falsy until Clerk finishes its async
     // init (isLoaded flips true), even for an already-authenticated visitor
     // — waiting for isLoaded is what tells "genuinely signed out" apart from
     // "Clerk just hasn't resolved yet" (see the isLoaded comments in
-    // pricing.vue/index.vue for the same race). `immediate: true` runs this
-    // once loaded resolves for the first time, then again for any later
-    // sign-in/sign-out within the same SPA session — the store is a
-    // singleton created once, so without this a mid-session auth change
-    // would never be noticed.
+    // pricing.vue/index.vue for the same race). Watching `userId` too (not
+    // just isSignedIn) catches it settling a tick after isLoaded/isSignedIn,
+    // and catches a Clerk account switch, where isSignedIn never toggles but
+    // userId changes. `immediate: true` runs this once loaded resolves for
+    // the first time, then again for any later auth change within the same
+    // SPA session — the store is a singleton created once, so without this
+    // a mid-session auth change would never be noticed.
     watch(
-      [isLoaded, isSignedIn],
-      ([loaded, signedIn]) => {
+      [isLoaded, isSignedIn, userId],
+      ([loaded, signedIn, currentUserId]) => {
         if (!loaded) {
           return;
         }
-        if (signedIn && userId.value) {
-          loadFromDb(userId.value);
+        const nextUserId = signedIn ? currentUserId : null;
+        if (nextUserId === loadedUserId) {
+          // Already loaded (or already resolved to signed-out) — nothing to do.
           return;
         }
-        resetForSignedOut();
+        teardownLoadedAccount();
+        if (nextUserId) {
+          loadFromDb(nextUserId);
+          return;
+        }
+        ready.value = true;
       },
       { immediate: true },
     );
