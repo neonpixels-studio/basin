@@ -3,7 +3,7 @@
 // first-paint cloak skip so the two lists can never drift apart.
 export const PUBLIC_PATHS = ["/", "/pricing", "/about", "/privacy", "/contact"];
 
-const LOGIN_PATH = "/login";
+export const LOGIN_PATH = "/login";
 
 // Normalizes a single trailing slash so "/pricing/" matches "/pricing".
 // Guards against a non-string input (e.g. an ambient route mock missing
