@@ -5,6 +5,31 @@ import { formatRelativeTime } from "../../app/utils/feedTime";
 
 export const SEARCH_RESULT_LIMIT = 20;
 
+// Anything that isn't a Unicode letter or digit is stripped from each term.
+// This isn't a SQL-injection guard (the sanitized string is still passed as a
+// bound parameter below, never spliced into the SQL text) — it's what stops
+// tsquery operator characters (& | ! ( ) :) in user input from being
+// interpreted as tsquery syntax, which would otherwise let a search term
+// change the query's logic or throw a syntax error.
+const TSQUERY_UNSAFE_CHARS = /[^\p{L}\p{N}]+/gu;
+
+/**
+ * Builds a `to_tsquery`-compatible prefix expression from free-text input,
+ * e.g. "cool podcas" -> "cool:* & podcas:*". Each term gets a `:*` prefix
+ * marker so a partial word — as typed incrementally into the Cmd-K palette —
+ * matches any word it's a prefix of, and terms are ANDed together to keep the
+ * "match every term" behavior `plainto_tsquery` had.
+ * Returns an empty string when the input has no searchable characters.
+ */
+export function buildPrefixTsQuery(query: string): string {
+  return query
+    .split(/\s+/)
+    .map((term) => term.replace(TSQUERY_UNSAFE_CHARS, ""))
+    .filter((term) => term.length > 0)
+    .map((term) => `${term}:*`)
+    .join(" & ");
+}
+
 export interface SearchResult {
   id: number;
   feedId: number;
@@ -35,6 +60,11 @@ export async function searchFeedItems(
 ): Promise<SearchResult[]> {
   const db = useDb();
 
+  const tsQuery = buildPrefixTsQuery(query);
+  if (!tsQuery) {
+    return [];
+  }
+
   const rows = await db
     .select({
       id: feedItems.id,
@@ -58,10 +88,10 @@ export async function searchFeedItems(
     .from(feedItems)
     .innerJoin(feeds, eq(feedItems.feedId, feeds.id))
     .where(
-      sql`${feeds.userId} = ${userId} AND ${feedItems.searchVector} @@ plainto_tsquery('english', ${query})`,
+      sql`${feeds.userId} = ${userId} AND ${feedItems.searchVector} @@ to_tsquery('english', ${tsQuery})`,
     )
     .orderBy(
-      sql`ts_rank(${feedItems.searchVector}, plainto_tsquery('english', ${query})) DESC`,
+      sql`ts_rank(${feedItems.searchVector}, to_tsquery('english', ${tsQuery})) DESC`,
     )
     .limit(SEARCH_RESULT_LIMIT);
 

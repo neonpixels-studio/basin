@@ -13,6 +13,7 @@ vi.stubGlobal("useDb", () => ({
 
 import {
   searchFeedItems,
+  buildPrefixTsQuery,
   SEARCH_RESULT_LIMIT,
 } from "../../../server/utils/search";
 
@@ -174,5 +175,52 @@ describe("searchFeedItems", () => {
     expect(mockWhere).toHaveBeenCalledTimes(1);
     expect(mockOrderBy).toHaveBeenCalledTimes(1);
     expect(mockLimit).toHaveBeenCalledTimes(1);
+  });
+
+  it("builds a prefix tsquery bound as a parameter, not spliced into the SQL text", async () => {
+    await searchFeedItems(1, "podcas");
+
+    const whereClause = mockWhere.mock.calls[0][0];
+    const orderByClause = mockOrderBy.mock.calls[0][0];
+
+    // Every SQL chunk should be static text — the query text itself must
+    // never contain the raw search term (that would mean it was
+    // string-concatenated rather than passed as a bound parameter).
+    for (const chunk of whereClause.queryChunks) {
+      if (typeof chunk === "object" && "value" in chunk) {
+        expect(chunk.value.join("")).not.toContain("podcas");
+      }
+    }
+    expect(whereClause.queryChunks).toContain("podcas:*");
+    expect(orderByClause.queryChunks).toContain("podcas:*");
+  });
+
+  it("does not query the database when the query has no searchable characters", async () => {
+    const results = await searchFeedItems(1, "   !!!   ");
+
+    expect(results).toEqual([]);
+    expect(mockSelect).not.toHaveBeenCalled();
+  });
+});
+
+describe("buildPrefixTsQuery", () => {
+  it("appends a prefix marker to a single term so a partial word matches", () => {
+    expect(buildPrefixTsQuery("podcas")).toBe("podcas:*");
+  });
+
+  it("ANDs multiple terms together, each with its own prefix marker", () => {
+    expect(buildPrefixTsQuery("cool podcast")).toBe("cool:* & podcast:*");
+  });
+
+  it("collapses repeated whitespace between terms", () => {
+    expect(buildPrefixTsQuery("cool   podcast")).toBe("cool:* & podcast:*");
+  });
+
+  it("strips tsquery operator characters so they can't be interpreted as query syntax", () => {
+    expect(buildPrefixTsQuery("foo & bar:*")).toBe("foo:* & bar:*");
+  });
+
+  it("returns an empty string when there are no searchable characters", () => {
+    expect(buildPrefixTsQuery("   !!!   ")).toBe("");
   });
 });
