@@ -33,6 +33,30 @@ describe("pricing page (/pricing)", () => {
     stubAuth(false);
     stubBilling();
     stubRoute();
+    vi.mocked(globalThis.useSeoMeta).mockClear();
+    vi.mocked(globalThis.useHead).mockClear();
+  });
+
+  it("emits og/twitter meta anchored to the configured site URL", () => {
+    shallowMount(PricingPage);
+    expect(globalThis.useSeoMeta).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Pricing — Reader",
+        ogTitle: "Pricing — Reader",
+        ogType: "website",
+        ogUrl: "https://basin.example/pricing",
+        ogSiteName: "Reader",
+        twitterCard: "summary",
+        twitterTitle: "Pricing — Reader",
+      }),
+    );
+  });
+
+  it("emits a canonical link anchored to the configured site URL", () => {
+    shallowMount(PricingPage);
+    expect(globalThis.useHead).toHaveBeenCalledWith({
+      link: [{ rel: "canonical", href: "https://basin.example/pricing" }],
+    });
   });
 
   it("renders the price header", () => {

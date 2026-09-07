@@ -1,4 +1,4 @@
-const PUBLIC_PATHS = ["/", "/pricing", "/about", "/privacy", "/contact"];
+import { MARKETING_ROUTES } from "#shared/utils/marketingRoutes";
 
 export default defineNuxtRouteMiddleware((to) => {
   const { isSignedIn } = useAuth();
@@ -8,7 +8,11 @@ export default defineNuxtRouteMiddleware((to) => {
     return navigateTo("/dashboard");
   }
 
-  if (!isSignedIn.value && !PUBLIC_PATHS.includes(path) && path !== "/login") {
+  if (
+    !isSignedIn.value &&
+    !MARKETING_ROUTES.includes(path) &&
+    path !== "/login"
+  ) {
     return navigateTo("/login");
   }
 });

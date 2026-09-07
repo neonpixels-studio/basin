@@ -1,8 +1,42 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { shallowMount } from "@vue/test-utils";
 import PrivacyPage from "~/pages/privacy.vue";
 
 describe("privacy page (/privacy)", () => {
+  beforeEach(() => {
+    vi.mocked(globalThis.useSeoMeta).mockClear();
+    vi.mocked(globalThis.useHead).mockClear();
+    vi.stubGlobal("useRoute", () => ({
+      path: "/privacy",
+      params: {},
+      query: {},
+    }));
+  });
+
+  it("emits og/twitter meta anchored to the configured site URL", () => {
+    shallowMount(PrivacyPage);
+    expect(globalThis.useSeoMeta).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Reader — privacy",
+        ogTitle: "Reader — privacy",
+        ogType: "website",
+        ogUrl: "https://basin.example/privacy",
+        ogSiteName: "Reader",
+        twitterCard: "summary",
+        twitterTitle: "Reader — privacy",
+      }),
+    );
+  });
+
+  it("emits a canonical link anchored to the configured site URL", () => {
+    shallowMount(PrivacyPage);
+    expect(globalThis.useHead).toHaveBeenCalledWith(
+      expect.objectContaining({
+        link: [{ rel: "canonical", href: "https://basin.example/privacy" }],
+      }),
+    );
+  });
+
   it("renders the page header", () => {
     const wrapper = shallowMount(PrivacyPage);
     expect(wrapper.find(".page-h1").text()).toBe("Privacy policy.");

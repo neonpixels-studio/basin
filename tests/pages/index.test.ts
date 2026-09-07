@@ -1,8 +1,35 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { shallowMount } from "@vue/test-utils";
 import IndexPage from "~/pages/index.vue";
 
 describe("home page (/)", () => {
+  beforeEach(() => {
+    vi.mocked(globalThis.useSeoMeta).mockClear();
+    vi.mocked(globalThis.useHead).mockClear();
+  });
+
+  it("emits og/twitter meta anchored to the configured site URL", () => {
+    shallowMount(IndexPage);
+    expect(globalThis.useSeoMeta).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Reader — all your feeds, one quiet page",
+        ogTitle: "Reader — all your feeds, one quiet page",
+        ogType: "website",
+        ogUrl: "https://basin.example/",
+        ogSiteName: "Reader",
+        twitterCard: "summary",
+        twitterTitle: "Reader — all your feeds, one quiet page",
+      }),
+    );
+  });
+
+  it("emits a canonical link anchored to the configured site URL", () => {
+    shallowMount(IndexPage);
+    expect(globalThis.useHead).toHaveBeenCalledWith({
+      link: [{ rel: "canonical", href: "https://basin.example/" }],
+    });
+  });
+
   it("renders the hero section", () => {
     const wrapper = shallowMount(IndexPage);
     expect(wrapper.find("section.hero").exists()).toBe(true);

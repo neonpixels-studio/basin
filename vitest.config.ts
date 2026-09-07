@@ -10,6 +10,7 @@ export default defineConfig({
     alias: {
       "~": `${root}app`,
       "#imports": `${root}tests/__mocks__/nuxt-imports.ts`,
+      "#shared": `${root}shared`,
     },
   },
   define: {

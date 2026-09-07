@@ -129,6 +129,15 @@ export default defineNuxtConfig({
       sentry: {
         dsn: process.env.SENTRY_DSN || "",
       },
+      // Same NUXT_SITE_URL as the private `siteUrl` key above, also exposed
+      // publicly here: unlike that key (kept private for the OAuth/billing
+      // redirect trust boundary — see server/utils/siteUrl.ts), this value
+      // isn't secret. It's the origin every public marketing page's
+      // og:url/canonical link ships to the browser as page metadata (see
+      // app/utils/siteMeta.ts). It needs its own `public` copy because the
+      // private key resolves to empty once the client takes over after
+      // hydration.
+      siteUrl: process.env.NUXT_SITE_URL || "",
     },
   },
   devtools: { enabled: true },

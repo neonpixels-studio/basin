@@ -16,16 +16,10 @@ watch(
   { immediate: true },
 );
 
-useHead({
-  title: "Reader — all your feeds, one quiet page",
-  meta: [
-    {
-      name: "description",
-      content:
-        "Stop checking multiple apps. Reader folds RSS, podcasts, YouTube and Bluesky into one timeline — no ranking, no ads, no doomscroll.",
-    },
-  ],
-});
+useMarketingSeo(
+  "Reader — all your feeds, one quiet page",
+  "Stop checking multiple apps. Reader folds RSS, podcasts, YouTube and Bluesky into one timeline — no ranking, no ads, no doomscroll.",
+);
 </script>
 
 <template>

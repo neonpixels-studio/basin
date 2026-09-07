@@ -18,10 +18,39 @@ describe("contact page (/contact)", () => {
       "fetch",
       vi.fn(() => Promise.resolve({ ok: true } as Response)),
     );
+    vi.stubGlobal("useRoute", () => ({
+      path: "/contact",
+      params: {},
+      query: {},
+    }));
+    vi.mocked(globalThis.useSeoMeta).mockClear();
+    vi.mocked(globalThis.useHead).mockClear();
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  it("emits og/twitter meta anchored to the configured site URL", () => {
+    mountWithValidForm();
+    expect(globalThis.useSeoMeta).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Reader — contact",
+        ogTitle: "Reader — contact",
+        ogType: "website",
+        ogUrl: "https://basin.example/contact",
+        ogSiteName: "Reader",
+        twitterCard: "summary",
+        twitterTitle: "Reader — contact",
+      }),
+    );
+  });
+
+  it("emits a canonical link anchored to the configured site URL", () => {
+    mountWithValidForm();
+    expect(globalThis.useHead).toHaveBeenCalledWith({
+      link: [{ rel: "canonical", href: "https://basin.example/contact" }],
+    });
   });
 
   it("renders the contact form with name, email, and message fields", () => {
