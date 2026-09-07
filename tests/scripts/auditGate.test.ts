@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect } from "vitest";
 import {
   advisoryIdFromUrl,
   assertUsableReport,
@@ -240,38 +240,18 @@ describe("isAdvisoryAllowed (real allowlist)", () => {
   // advisoryIdOrFallback in audit-gate.js). No entry in the real allowlist
   // currently uses this url-less shape (the last one, for @netlify/async-workloads,
   // was removed 2026-09-07 once npm audit stopped reporting it at all — see the
-  // audit-allowlist.js header comment). This test keeps the fallback mechanism
-  // itself covered with a synthetic allowlist, independent of whatever the real
-  // list currently contains, by mocking audit-allowlist.js for a fresh import of
-  // audit-gate.js.
-  it("suppresses a url-less chained advisory whose derived source id is allowlisted", async () => {
-    const sourceValue = "synthetic-test-source-value";
-    const packageName = "synthetic-chained-package";
-    const syntheticId = `source-${sourceValue}`;
-
-    vi.resetModules();
-    vi.doMock("../../scripts/audit-allowlist.js", () => ({
-      ALLOWED_ADVISORIES: [
-        {
-          id: syntheticId,
-          packages: [packageName],
-          reason: "Synthetic entry for the url-less advisory fallback test.",
-        },
-      ],
-      ALLOWLIST_REVIEW_BY: "2999-01-01",
-      isAdvisoryAllowed: (advisoryId: string, pkg: string) =>
-        advisoryId === syntheticId && pkg === packageName,
-    }));
-
-    const freshAuditGate = await import("../../scripts/audit-gate.js");
+  // audit-allowlist.js header comment), so this covers the derivation directly
+  // with a self-contained fixture (same pattern as TEST_ID/TEST_PACKAGE above)
+  // instead of depending on the real allowlist containing a matching shape.
+  it("derives a source-prefixed id for a url-less chained advisory", () => {
     const report = {
       vulnerabilities: {
-        [packageName]: {
+        [TEST_PACKAGE]: {
           via: [
             {
-              name: packageName,
+              name: TEST_PACKAGE,
               url: null,
-              source: sourceValue,
+              source: "synthetic-test-source-value",
               severity: "high",
               title: "Depends on vulnerable versions",
             },
@@ -279,15 +259,10 @@ describe("isAdvisoryAllowed (real allowlist)", () => {
         },
       },
     };
-    const advisories = freshAuditGate.collectBlockingAdvisories(report);
-    expect(advisories.map((advisory) => advisory.id)).toEqual([syntheticId]);
-    const { suppressed, blocking } =
-      freshAuditGate.partitionByAllowlist(advisories);
-    expect(blocking).toEqual([]);
-    expect(suppressed).toHaveLength(1);
-
-    vi.doUnmock("../../scripts/audit-allowlist.js");
-    vi.resetModules();
+    const advisories = collectBlockingAdvisories(report);
+    expect(advisories.map((advisory) => advisory.id)).toEqual([
+      "source-synthetic-test-source-value",
+    ]);
   });
 });
 

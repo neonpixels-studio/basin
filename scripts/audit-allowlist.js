@@ -19,10 +19,14 @@
 // image-size's parsers), NOT on dev-only scope.
 //
 // A third entry used to cover the chained "@netlify/async-workloads depends on
-// vulnerable @netlify/sdk" source advisory. It was removed 2026-09-07: npm audit
-// no longer reports any advisory for @netlify/async-workloads at all (the gate's
-// own "no longer matches any advisory" note confirmed it), so re-add it — with a
-// freshly regenerated source id — only if it reappears.
+// vulnerable @netlify/sdk" source advisory. It was removed 2026-09-07: the gate
+// (which only tracks high/critical severity — see BLOCKING_SEVERITIES in
+// audit-gate.js) reported no high/critical advisory for @netlify/async-workloads
+// on that date, so the entry no longer matched anything. The root cause —
+// @netlify/async-workloads still pulling the unpatched image-size above — is
+// unchanged, so this chained advisory may reappear under a freshly regenerated
+// `source-` id; if it does, the gate fails loudly (fail-closed) and the entry
+// should be re-added rather than assuming it's gone for good.
 
 export const ALLOWLIST_REVIEW_BY = "2026-09-27";
 
