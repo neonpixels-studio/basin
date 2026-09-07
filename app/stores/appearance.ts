@@ -207,10 +207,33 @@ export const useAppearanceStore = defineStore("appearance", () => {
     applyToDom();
   }
 
+  // Called from app.vue's onMounted rather than eagerly here at store-setup
+  // time. Store setup runs synchronously as part of the current component's
+  // render (used for SSR/hydration matching), which is always rendered with
+  // default appearance server-side (Clerk auth resolves client-only). If
+  // loadFromDb() below applied the cached/DB settings during that same
+  // synchronous pass, one of two things went wrong depending on ordering:
+  // Nuxt's automatic Pinia state hydration (which runs right after store
+  // setup returns) would silently revert the just-applied values back to
+  // those server defaults — and the persistence watcher below would then
+  // treat that revert as a real edit and re-PATCH the defaults over
+  // whatever was just saved — or, if hydration had already run, the
+  // mismatch between what the client just rendered and what the server sent
+  // produced a Vue hydration-mismatch warning that Vue intentionally leaves
+  // unpatched (checked once for perf, not corrected). Waiting for onMounted
+  // guarantees hydration is fully settled first, so this instead lands as
+  // an ordinary post-mount reactive update.
+  //
+  // Guards against a double-run: the store is a singleton so this only
+  // needs to succeed once, but the guard keeps re-entrancy impossible if
+  // the onMounted call site ever changes.
+  let initialized = false;
+
   function init() {
-    if (!import.meta.client) {
+    if (initialized || !import.meta.client) {
       return;
     }
+    initialized = true;
 
     const { isSignedIn, isLoaded, userId } = useAuth();
 
@@ -247,9 +270,6 @@ export const useAppearanceStore = defineStore("appearance", () => {
     );
   }
 
-  // Auto-initialize when the store is first used.
-  init();
-
   const accentList = computed(() =>
     Object.keys(ACCENTS).map((k) => ({
       key: k,
@@ -279,5 +299,6 @@ export const useAppearanceStore = defineStore("appearance", () => {
     themeIcon,
     cycleTheme,
     applyToDom,
+    init,
   };
 });

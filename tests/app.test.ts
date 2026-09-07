@@ -6,16 +6,17 @@ function stubRoute(path: string) {
   vi.stubGlobal("useRoute", () => ({ path, params: {}, query: {} }));
 }
 
-// app.vue only ever reads `appearanceStore.ready` — stubbing it lets the
-// "does the cloak lift" tests assert against a controlled value instead of
-// the real store's actual (async, DB-fetch-driven) readiness, which this
-// test file has no reliable way to drive to `true` on demand. A plain
-// boolean (not a ref) is enough: `appearanceStore` here is an ordinary
-// object, not a Pinia store proxy, so a nested ref wouldn't auto-unwrap in
-// the template and would read as an always-truthy object instead of its
-// `.value`.
+// app.vue reads `appearanceStore.ready` in its template and calls
+// `appearanceStore.init()` from onMounted — stubbing both lets the "does the
+// cloak lift" tests assert against a controlled `ready` value instead of the
+// real store's actual (async, DB-fetch-driven) readiness, which this test
+// file has no reliable way to drive to `true` on demand, while still giving
+// onMounted's `init()` call something to invoke. A plain boolean (not a ref)
+// for `ready` is enough: `appearanceStore` here is an ordinary object, not a
+// Pinia store proxy, so a nested ref wouldn't auto-unwrap in the template and
+// would read as an always-truthy object instead of its `.value`.
 function stubAppearanceReady(ready: boolean) {
-  vi.stubGlobal("useAppearanceStore", () => ({ ready }));
+  vi.stubGlobal("useAppearanceStore", () => ({ ready, init: () => {} }));
 }
 
 describe("App", () => {
