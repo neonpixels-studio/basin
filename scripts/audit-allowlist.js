@@ -16,8 +16,13 @@
 // published fix — latest 2.0.2, advisory range <=2.0.2). image-size reaches the
 // PRODUCTION tree via @netlify/async-workloads > @netlify/sdk > @netlify/dev-utils,
 // so the suppression rests on unreachability (basin never feeds bytes to
-// image-size's parsers), NOT on dev-only scope. The third entry is the chained
-// @netlify/async-workloads advisory — a pure consequence of the same root cause.
+// image-size's parsers), NOT on dev-only scope.
+//
+// A third entry used to cover the chained "@netlify/async-workloads depends on
+// vulnerable @netlify/sdk" source advisory. It was removed 2026-09-07: npm audit
+// no longer reports any advisory for @netlify/async-workloads at all (the gate's
+// own "no longer matches any advisory" note confirmed it), so re-add it — with a
+// freshly regenerated source id — only if it reappears.
 
 export const ALLOWLIST_REVIEW_BY = "2026-09-27";
 
@@ -54,19 +59,6 @@ export const ALLOWED_ADVISORIES = [
       "range <=2.0.2), and although it ships in the production tree via " +
       "@netlify/async-workloads > ... > @netlify/dev-utils, basin never passes " +
       "attacker-controlled bytes to image-size's parsers.",
-  },
-  {
-    id: "source-WQd50vOH5wPTzKenE46N2oa/B6QboJET5IMAHAcuCaUn1/WqjtDxaFSZ/ICntZ3c1NLIv9v0lImDYe5nP8Z44g==",
-    packages: ["@netlify/async-workloads"],
-    reason:
-      "Chained 'depends on vulnerable versions of @netlify/sdk' advisory that exists " +
-      "solely because @netlify/sdk transitively pulls the unpatched image-size above. " +
-      "Not a distinct vulnerability — it clears automatically once image-size ships a fix. " +
-      "The only npm-proposed remediation is a semver-major downgrade of the direct dep. " +
-      "The `source-…` id is npm's synthetic id for this url-less chained advisory " +
-      "(regenerate with " +
-      "`npm audit --json | jq '.vulnerabilities[\"@netlify/async-workloads\"].via'`); " +
-      "if it changes, the gate will fail loudly rather than silently pass.",
   },
 ];
 
