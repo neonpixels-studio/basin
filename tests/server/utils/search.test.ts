@@ -204,8 +204,13 @@ describe("searchFeedItems", () => {
     // as a parameter. Filtering to chunks with an array `value` (rather than
     // checking every chunk) keeps this from breaking if a future drizzle
     // version changes how it represents columns or params internally.
+    const isStaticTextChunk = (chunk: unknown): chunk is { value: string[] } =>
+      typeof chunk === "object" &&
+      chunk !== null &&
+      Array.isArray((chunk as { value?: unknown }).value);
+
     const staticText = whereChunks
-      .filter((chunk) => Array.isArray(chunk?.value))
+      .filter(isStaticTextChunk)
       .map((chunk) => chunk.value.join(""))
       .join("");
     expect(staticText).not.toContain("podcas");
@@ -270,8 +275,14 @@ describe("buildPrefixTsQuery", () => {
     expect(buildPrefixTsQuery("don't")).toBe("don:*");
   });
 
-  it("drops terms shorter than the minimum prefix length", () => {
-    expect(buildPrefixTsQuery("a")).toBe("");
+  it("falls back to an exact match instead of discarding the search when every term is below the prefix floor", () => {
+    // A lone digit or letter (e.g. "9" in "Top 9 podcasts") is a real,
+    // searchable lexeme under plainto_tsquery — dropping it entirely would
+    // be a regression, so it's matched exactly rather than as a wildcard.
+    expect(buildPrefixTsQuery("a")).toBe("a");
+  });
+
+  it("drops a too-short term but keeps prefix-matching the rest when at least one term clears the floor", () => {
     expect(buildPrefixTsQuery("a cool")).toBe("cool:*");
   });
 
@@ -291,5 +302,34 @@ describe("buildPrefixTsQuery", () => {
     const longTerm = "a".repeat(100);
 
     expect(buildPrefixTsQuery(longTerm)).toBe(`${"a".repeat(64)}:*`);
+  });
+
+  it("truncates by whole code point so an astral-plane character isn't split into an unmatchable surrogate", () => {
+    // U+20000 is outside the BMP (a UTF-16 surrogate pair, 2 code units per
+    // character), so a naive UTF-16 .slice(0, MAX_TERM_LENGTH) could land
+    // mid-pair. Repeating it well past MAX_TERM_LENGTH code points exercises
+    // that truncation counts whole characters, not UTF-16 units.
+    const astralChar = "\u{20000}";
+    const longAstralTerm = astralChar.repeat(100);
+
+    const tsQuery = buildPrefixTsQuery(longAstralTerm);
+
+    expect(tsQuery).toBe(`${astralChar.repeat(64)}:*`);
+    expect(tsQuery).not.toContain("�");
+  });
+
+  it("caps the raw input length before splitting so a huge pasted string can't balloon into a huge term array", () => {
+    const hugeQuery = "z".repeat(10_000);
+
+    const tsQuery = buildPrefixTsQuery(hugeQuery);
+
+    // A single unbroken run of letters is one term, truncated to
+    // MAX_TERM_LENGTH regardless of how long the raw input was.
+    expect(tsQuery).toBe(`${"z".repeat(64)}:*`);
+  });
+
+  it("treats non-ASCII letters as valid term characters", () => {
+    expect(buildPrefixTsQuery("café")).toBe("café:*");
+    expect(buildPrefixTsQuery("日本語")).toBe("日本語:*");
   });
 });

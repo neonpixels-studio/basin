@@ -12,13 +12,15 @@ export const SEARCH_RESULT_LIMIT = 20;
 // — it's what stops those operator characters from being interpreted as
 // tsquery syntax, while still splitting on them the way Postgres's own
 // tokenizer splits "sci-fi" into "sci" and "fi" (stripping them instead of
-// splitting on them would glue those into the unmatchable "scifi").
-const TSQUERY_TERM_SEPARATOR = /[^\p{L}\p{N}]+/gu;
+// splitting on them would glue those into the unmatchable "scifi"). No `g`
+// flag: `String.prototype.split` doesn't use (or advance) `lastIndex`.
+const TSQUERY_TERM_SEPARATOR = /[^\p{L}\p{N}]+/u;
 
 // A prefix term below this length turns every keystroke into a broad GIN
 // index scan (e.g. "z:*" matches every lexeme starting with "z"); below the
-// floor we just skip the term rather than sending the DB a wildcard scan
-// only the first keystroke would trigger.
+// floor we match that term exactly instead (an exact lexeme is a point
+// lookup, not a wildcard scan) rather than sending the DB a scan only the
+// first keystroke would trigger.
 const MIN_PREFIX_TERM_LENGTH = 2;
 
 // Bounds on how large a tsquery we build, so a very long or many-word input
@@ -27,22 +29,52 @@ const MIN_PREFIX_TERM_LENGTH = 2;
 // planning cost for a search box that only shows SEARCH_RESULT_LIMIT results.
 const MAX_SEARCH_TERMS = 10;
 const MAX_TERM_LENGTH = 64;
+// Caps the raw input before it's split, so a huge pasted string can't
+// allocate a huge intermediate array of terms only to have all but
+// MAX_SEARCH_TERMS of them discarded. Sized to comfortably fit
+// MAX_SEARCH_TERMS terms of MAX_TERM_LENGTH plus their separators.
+const MAX_QUERY_LENGTH = MAX_SEARCH_TERMS * (MAX_TERM_LENGTH + 1);
+
+// `String.prototype.slice` counts UTF-16 code units, which can split an
+// astral-plane character (e.g. rarer CJK ideographs) across a surrogate
+// pair and produce an unmatchable lone surrogate. `Array.from` iterates by
+// code point, so truncation always lands on a whole character.
+function truncateTerm(term: string): string {
+  return Array.from(term).slice(0, MAX_TERM_LENGTH).join("");
+}
 
 /**
  * Builds a `to_tsquery`-compatible prefix expression from free-text input,
- * e.g. "cool podcas" -> "cool:* & podcas:*". Each term gets a `:*` prefix
- * marker so a partial word — as typed incrementally into the Cmd-K palette —
- * matches any word it's a prefix of, and terms are ANDed together to keep the
- * "match every term" behavior `plainto_tsquery` had.
- * Returns an empty string when the input has no searchable characters.
+ * e.g. "cool podcas" -> "cool:* & podcas:*". Every term — including ones
+ * already fully typed — gets a `:*` prefix marker (not just the last, still-
+ * being-typed one); this is a deliberate simplification, so a completed word
+ * like "cat" also matches "catastrophe", trading a bit of over-matching for
+ * not having to special-case "which term is the one currently being typed".
+ * Terms are ANDed together to keep the "match every term" behavior
+ * `plainto_tsquery` had. Returns an empty string when the input has no
+ * searchable characters.
  */
 export function buildPrefixTsQuery(query: string): string {
-  return query
+  const terms = query
+    .slice(0, MAX_QUERY_LENGTH)
     .split(TSQUERY_TERM_SEPARATOR)
-    .filter((term) => term.length >= MIN_PREFIX_TERM_LENGTH)
+    .filter((term) => term.length > 0)
     .slice(0, MAX_SEARCH_TERMS)
-    .map((term) => `${term.slice(0, MAX_TERM_LENGTH)}:*`)
-    .join(" & ");
+    .map(truncateTerm);
+
+  const prefixTerms = terms.filter(
+    (term) => term.length >= MIN_PREFIX_TERM_LENGTH,
+  );
+
+  // Every term was too short to prefix-match (e.g. a lone digit or letter)
+  // — fall back to matching them exactly rather than discarding the search
+  // entirely, which would otherwise silently return no results for a query
+  // that used to match under plainto_tsquery.
+  if (prefixTerms.length === 0) {
+    return terms.join(" & ");
+  }
+
+  return prefixTerms.map((term) => `${term}:*`).join(" & ");
 }
 
 export interface SearchResult {
