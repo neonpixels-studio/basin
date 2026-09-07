@@ -15,7 +15,10 @@ function escapeXmlEntities(value: string): string {
     .join("&gt;");
 }
 
-function serializeUrlEntry(origin: string, path: string): string {
+// Exported so escaping is directly testable — MARKETING_ROUTES is a fixed,
+// hardcoded list today with nothing to escape, but this guards against a
+// future entry (or origin) containing XML-significant characters.
+export function serializeUrlEntry(origin: string, path: string): string {
   const location = escapeXmlEntities(`${origin}${path}`);
   return `  <url>\n    <loc>${location}</loc>\n  </url>`;
 }

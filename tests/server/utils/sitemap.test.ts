@@ -1,7 +1,17 @@
 import { describe, it, expect } from "vitest";
-import { buildSitemap } from "../../../server/utils/sitemap";
+import { buildSitemap, serializeUrlEntry } from "../../../server/utils/sitemap";
 
 const ORIGIN = "https://reader.example";
+
+describe("serializeUrlEntry", () => {
+  it("escapes XML-significant characters in the resulting <loc>", () => {
+    const entry = serializeUrlEntry("https://reader.example", "/a?b=1&c=2<3>4");
+    expect(entry).toContain(
+      "<loc>https://reader.example/a?b=1&amp;c=2&lt;3&gt;4</loc>",
+    );
+    expect(entry).not.toContain("&c=2<3>4");
+  });
+});
 
 describe("buildSitemap", () => {
   it("includes every marketing route as an absolute <loc>", () => {

@@ -57,13 +57,20 @@ describe("canonicalUrl", () => {
     expect(canonicalUrl("/pricing")).toBeUndefined();
   });
 
-  it("normalizes away an extraneous path on the configured site URL", () => {
-    // Uses the URL's origin only, so a misconfigured value with a path
-    // degrades to a correct bare origin instead of concatenating into a
-    // malformed URL (e.g. "https://reader.example/apppricing").
+  it("returns undefined rather than silently stripping an extraneous path", () => {
+    // Matches getConfiguredSiteUrl's server-side bar: a configured value with
+    // a path would otherwise concatenate into a malformed URL (e.g.
+    // "https://reader.example/apppricing") — reject it instead of guessing.
     vi.stubGlobal("useRuntimeConfig", () => ({
       public: { siteUrl: "https://reader.example/app" },
     }));
-    expect(canonicalUrl("/pricing")).toBe("https://reader.example/pricing");
+    expect(canonicalUrl("/pricing")).toBeUndefined();
+  });
+
+  it("returns undefined for a configured site URL carrying credentials", () => {
+    vi.stubGlobal("useRuntimeConfig", () => ({
+      public: { siteUrl: "https://user:pass@reader.example" },
+    }));
+    expect(canonicalUrl("/pricing")).toBeUndefined();
   });
 });
