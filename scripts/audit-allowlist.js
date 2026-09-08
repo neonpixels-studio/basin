@@ -16,8 +16,17 @@
 // published fix — latest 2.0.2, advisory range <=2.0.2). image-size reaches the
 // PRODUCTION tree via @netlify/async-workloads > @netlify/sdk > @netlify/dev-utils,
 // so the suppression rests on unreachability (basin never feeds bytes to
-// image-size's parsers), NOT on dev-only scope. The third entry is the chained
-// @netlify/async-workloads advisory — a pure consequence of the same root cause.
+// image-size's parsers), NOT on dev-only scope.
+//
+// A third entry used to suppress a chained "depends on vulnerable versions of
+// @netlify/sdk" advisory filed against @netlify/async-workloads itself. As of
+// the 2026-09-06 minor-and-patch bump (PR #235) `npm audit` no longer emits
+// that advisory: the resolved dependency tree now surfaces the same image-size
+// root cause through @netlify/dev-utils / @netlify/blobs `via` string
+// references rather than a distinct advisory object, so nothing keys to
+// @netlify/async-workloads anymore. Removed rather than re-dated — re-add only
+// if `npm audit --json | jq '.vulnerabilities["@netlify/async-workloads"]'`
+// produces a fresh chained advisory.
 
 export const ALLOWLIST_REVIEW_BY = "2026-09-27";
 
@@ -54,19 +63,6 @@ export const ALLOWED_ADVISORIES = [
       "range <=2.0.2), and although it ships in the production tree via " +
       "@netlify/async-workloads > ... > @netlify/dev-utils, basin never passes " +
       "attacker-controlled bytes to image-size's parsers.",
-  },
-  {
-    id: "source-WQd50vOH5wPTzKenE46N2oa/B6QboJET5IMAHAcuCaUn1/WqjtDxaFSZ/ICntZ3c1NLIv9v0lImDYe5nP8Z44g==",
-    packages: ["@netlify/async-workloads"],
-    reason:
-      "Chained 'depends on vulnerable versions of @netlify/sdk' advisory that exists " +
-      "solely because @netlify/sdk transitively pulls the unpatched image-size above. " +
-      "Not a distinct vulnerability — it clears automatically once image-size ships a fix. " +
-      "The only npm-proposed remediation is a semver-major downgrade of the direct dep. " +
-      "The `source-…` id is npm's synthetic id for this url-less chained advisory " +
-      "(regenerate with " +
-      "`npm audit --json | jq '.vulnerabilities[\"@netlify/async-workloads\"].via'`); " +
-      "if it changes, the gate will fail loudly rather than silently pass.",
   },
 ];
 
