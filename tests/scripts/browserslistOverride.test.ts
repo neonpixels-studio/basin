@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { resolve } from "node:path";
 import { describe, it, expect } from "vitest";
 
 // The first browserslist release fixing both GHSA-c83g-rgw3-j3cx (unbounded
@@ -26,7 +26,15 @@ function parseVersionFloor(versionRange: unknown, source: string): number[] {
         `(${JSON.stringify(versionRange)}); update parseVersionFloor if the override format changed.`,
     );
   }
-  const match = /^[\^~>=]*(\d+)\.(\d+)\.(\d+)\s*$/.exec(versionRange.trim());
+  // Deliberately excludes a bare `>` (exclusive lower bound): `>4.28.6` is
+  // satisfied by 4.28.7+ but its numeric floor read verbatim (4.28.6) is
+  // itself below the patched version, which would fail a genuinely-safe
+  // range. Only `^`, `~`, and `>=` map straightforwardly onto "this number or
+  // higher"; a bare `>` falls through to the throw below instead of silently
+  // mis-computing a floor.
+  const match = /^(?:\^|~|>=)?(\d+)\.(\d+)\.(\d+)\s*$/.exec(
+    versionRange.trim(),
+  );
   if (!match) {
     throw new Error(
       `Cannot read a version floor from ${source} (${versionRange}); ` +
@@ -50,7 +58,8 @@ function isAtLeast(versionParts: number[], minimumParts: number[]): boolean {
 
 describe("browserslist dependency override", () => {
   it("pins browserslist at or above the version patching both GHSA advisories", () => {
-    const packageJsonPath = join(__dirname, "../../package.json");
+    // vitest runs with the repo root as cwd (see tests/server/db/sourceCap.test.ts).
+    const packageJsonPath = resolve(process.cwd(), "package.json");
     const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8"));
     const overrideRange = packageJson.overrides?.browserslist;
 
@@ -76,7 +85,7 @@ describe("browserslist dependency override", () => {
   // resolved copy in the tree stayed vulnerable. This asserts the version
   // actually locked, which is what `npm ci` actually installs.
   it("locks every resolved copy of browserslist at or above the patched version", () => {
-    const packageLockPath = join(__dirname, "../../package-lock.json");
+    const packageLockPath = resolve(process.cwd(), "package-lock.json");
     const packageLock = JSON.parse(readFileSync(packageLockPath, "utf8"));
     const browserslistEntries = Object.entries(
       packageLock.packages || {},
@@ -103,5 +112,47 @@ describe("browserslist dependency override", () => {
           "overrides entry actually takes effect in the lockfile",
       ).toBe(true);
     }
+  });
+});
+
+// parseVersionFloor/isAtLeast only ever run through the passing branch in the
+// tests above (the real override and lockfile are both currently patched), so
+// nothing there proves the guard actually rejects a regression. These test the
+// helpers directly against both a below-floor version and unreadable shapes.
+describe("version floor helpers", () => {
+  it("rejects a version below the patched floor", () => {
+    expect(
+      isAtLeast(
+        parseVersionFloor("4.28.6", "test"),
+        FIRST_PATCHED_BROWSERSLIST_VERSION,
+      ),
+    ).toBe(false);
+    expect(
+      isAtLeast(
+        parseVersionFloor("4.27.99", "test"),
+        FIRST_PATCHED_BROWSERSLIST_VERSION,
+      ),
+    ).toBe(false);
+    expect(
+      isAtLeast(
+        parseVersionFloor("^5.0.0", "test"),
+        FIRST_PATCHED_BROWSERSLIST_VERSION,
+      ),
+    ).toBe(true);
+  });
+
+  it("throws on a version shape it cannot read", () => {
+    expect(() => parseVersionFloor({ ".": "^4.28.7" }, "test")).toThrow(
+      /parseVersionFloor/,
+    );
+    expect(() => parseVersionFloor("^4.28.7 || ^5.0.0", "test")).toThrow(
+      /parseVersionFloor/,
+    );
+    expect(() => parseVersionFloor(">4.28.6", "test")).toThrow(
+      /parseVersionFloor/,
+    );
+    expect(() => parseVersionFloor(undefined, "test")).toThrow(
+      /parseVersionFloor/,
+    );
   });
 });
