@@ -299,6 +299,43 @@ describe("isAdvisoryAllowed (real allowlist)", () => {
       }
     }
   });
+
+  // A url-less chained advisory (npm gives no GHSA url, only a numeric
+  // `source`) has no stable upstream id, so the gate derives its allowlist key
+  // as `source-<via.source>`. This is a fixture-based mechanism test — it does
+  // NOT assume the real allowlist currently contains a `source-` entry (it may
+  // not, if the last one was pruned as stale); it only asserts the derivation
+  // and blocking/suppression wiring behave correctly for that id shape,
+  // mirroring the fixture-ID pattern used by the `partitionByAllowlist` tests
+  // above. If a future `source-` entry gets added to the real allowlist,
+  // `isAdvisoryAllowed` is already covered generically by the
+  // "allows each real id::package pair" test.
+  it("derives a source-prefixed id for a url-less chained advisory and blocks it when unallowlisted", () => {
+    const sourceValue = "123456789";
+    const packageName = TEST_PACKAGE;
+    const report = {
+      vulnerabilities: {
+        [packageName]: {
+          via: [
+            {
+              name: packageName,
+              url: null,
+              source: sourceValue,
+              severity: "high",
+              title: "Depends on vulnerable versions",
+            },
+          ],
+        },
+      },
+    };
+    const advisories = collectBlockingAdvisories(report);
+    expect(advisories.map((advisory) => advisory.id)).toEqual([
+      `source-${sourceValue}`,
+    ]);
+    const { suppressed, blocking } = partitionByAllowlist(advisories);
+    expect(suppressed).toEqual([]);
+    expect(blocking).toHaveLength(1);
+  });
 });
 
 describe("assertUsableReport", () => {

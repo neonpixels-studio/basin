@@ -18,17 +18,15 @@
 // so the suppression rests on unreachability (basin never feeds bytes to
 // image-size's parsers), NOT on dev-only scope.
 //
-// A third entry used to cover the chained "@netlify/async-workloads depends on
-// vulnerable @netlify/sdk" source advisory. It was removed 2026-09-07: the gate
-// (which only tracks high/critical severity — see BLOCKING_SEVERITIES in
-// audit-gate.js) reported no high/critical advisory for @netlify/async-workloads
-// on that date, so the entry no longer matched anything. The root cause —
-// @netlify/async-workloads still pulling the unpatched image-size above — is
-// unchanged, so this chained advisory may reappear under a freshly regenerated
-// `source-` id; if it does, the gate fails loudly (fail-closed) and the entry
-// should be re-added rather than assuming it's gone for good. Regenerate the id
-// with `npm audit --json | jq '.vulnerabilities["@netlify/async-workloads"].via'`
-// — the gate's own blocking output also prints the derived `source-…` id.
+// A third entry used to suppress a chained "depends on vulnerable versions of
+// @netlify/sdk" advisory filed against @netlify/async-workloads itself. As of
+// the 2026-09-06 minor-and-patch bump (PR #235) `npm audit` no longer emits
+// that advisory: the resolved dependency tree now surfaces the same image-size
+// root cause through @netlify/dev-utils / @netlify/blobs `via` string
+// references rather than a distinct advisory object, so nothing keys to
+// @netlify/async-workloads anymore. Removed rather than re-dated — re-add only
+// if `npm audit --json | jq '.vulnerabilities["@netlify/async-workloads"]'`
+// produces a fresh chained advisory.
 //
 // `browserslist` is pinned via the `overrides` block in package.json (not this
 // allowlist) to `^4.28.7`, the first version fixing GHSA-c83g-rgw3-j3cx
