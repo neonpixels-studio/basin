@@ -11,6 +11,7 @@ import {
 import {
   ALLOWED_ADVISORIES,
   ALLOWLIST_REVIEW_BY,
+  createAllowlistLookup,
   isAdvisoryAllowed,
 } from "../../scripts/audit-allowlist.js";
 
@@ -27,6 +28,27 @@ function advisoryVia(id: string, severity: string) {
     url: `https://github.com/advisories/${id}`,
     severity,
     title: `${severity} advisory ${id}`,
+  };
+}
+
+// A chained "depends on vulnerable versions of X" advisory carries no upstream
+// GHSA url, so the id falls back to `source-<via.source>` — the shape shared
+// by every url-less-chained-advisory test below.
+function urlLessChainedReport(packageName: string, source: string) {
+  return {
+    vulnerabilities: {
+      [packageName]: {
+        via: [
+          {
+            name: packageName,
+            url: null,
+            source,
+            severity: "high",
+            title: "Depends on vulnerable versions",
+          },
+        ],
+      },
+    },
   };
 }
 
@@ -99,32 +121,6 @@ describe("collectBlockingAdvisories", () => {
     expect(advisories).toHaveLength(1);
     expect(advisories[0].id).toBe(UNIDENTIFIED_ADVISORY_ID);
     expect(advisories[0].severity).toBe("high");
-  });
-
-  // A chained "depends on vulnerable versions of X" advisory carries no
-  // upstream GHSA url, so the id falls back to `source-<via.source>` (the
-  // third branch of advisoryIdOrFallback, alongside the url-parsed case above
-  // and the fully-unidentified case before it).
-  it("derives a source-prefixed id for a url-less chained advisory", () => {
-    const report = {
-      vulnerabilities: {
-        [TEST_PACKAGE]: {
-          via: [
-            {
-              name: TEST_PACKAGE,
-              url: null,
-              source: TEST_SOURCE,
-              severity: "high",
-              title: "Depends on vulnerable versions",
-            },
-          ],
-        },
-      },
-    };
-    const advisories = collectBlockingAdvisories(report);
-    expect(advisories.map((advisory) => advisory.id)).toEqual([
-      `source-${TEST_SOURCE}`,
-    ]);
   });
 });
 
@@ -233,36 +229,20 @@ describe("partitionByAllowlist", () => {
   // — see the audit-allowlist.js header comment). This still verifies the
   // derive-then-suppress round trip — the exact bug class this test guards
   // against is `advisoryIdOrFallback`'s id format drifting from what
-  // `isAdvisoryAllowed` matches — by passing partitionByAllowlist a fixture
-  // predicate instead of depending on the real allowlist containing a match.
+  // `isAdvisoryAllowed`-style matching expects — by building a fixture
+  // allowlist through the real `createAllowlistLookup` factory (not a
+  // hand-rolled predicate) so the actual key-construction logic is under test.
   it("suppresses a url-less chained advisory whose derived source id is allowlisted", () => {
-    const report = {
-      vulnerabilities: {
-        [TEST_PACKAGE]: {
-          via: [
-            {
-              name: TEST_PACKAGE,
-              url: null,
-              source: TEST_SOURCE,
-              severity: "high",
-              title: "Depends on vulnerable versions",
-            },
-          ],
-        },
-      },
-    };
+    const report = urlLessChainedReport(TEST_PACKAGE, TEST_SOURCE);
     const advisories = collectBlockingAdvisories(report);
     const derivedId = `source-${TEST_SOURCE}`;
     expect(advisories.map((advisory) => advisory.id)).toEqual([derivedId]);
 
-    const fixtureIsAllowed = (advisoryId: string, packageName: string) =>
-      advisoryId === derivedId && packageName === TEST_PACKAGE;
-    const { suppressed, blocking } = partitionByAllowlist(
-      advisories,
-      fixtureIsAllowed,
-    );
-    expect(blocking).toEqual([]);
-    expect(suppressed).toHaveLength(1);
+    const isAllowed = createAllowlistLookup([
+      { id: derivedId, packages: [TEST_PACKAGE], reason: "fixture" },
+    ]);
+    expect(isAllowed(derivedId, TEST_PACKAGE)).toBe(true);
+    expect(isAllowed(derivedId, "some-other-package")).toBe(false);
   });
 });
 
@@ -312,22 +292,7 @@ describe("isAdvisoryAllowed (real allowlist)", () => {
   // "allows each real id::package pair" test.
   it("derives a source-prefixed id for a url-less chained advisory and blocks it when unallowlisted", () => {
     const sourceValue = "123456789";
-    const packageName = TEST_PACKAGE;
-    const report = {
-      vulnerabilities: {
-        [packageName]: {
-          via: [
-            {
-              name: packageName,
-              url: null,
-              source: sourceValue,
-              severity: "high",
-              title: "Depends on vulnerable versions",
-            },
-          ],
-        },
-      },
-    };
+    const report = urlLessChainedReport(TEST_PACKAGE, sourceValue);
     const advisories = collectBlockingAdvisories(report);
     expect(advisories.map((advisory) => advisory.id)).toEqual([
       `source-${sourceValue}`,
