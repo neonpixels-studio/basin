@@ -12,15 +12,24 @@ const FIRST_PATCHED_BROWSERSLIST_VERSION = [4, 28, 7];
 // "^4.28.7"). Not a general semver parser — just enough to read the numeric
 // floor out of the handful of override shapes this repo actually writes, so
 // this guard doesn't need a new dependency for one comparison. Anything else
-// (a range list like "^4.28.7 || ^5.0.0", an "x.y.z <a.b.c" comparator range)
+// (a non-string value like npm's nested `{ ".": "^4.28.7" }` override form, a
+// range list like "^4.28.7 || ^5.0.0", an "x.y.z <a.b.c" comparator range)
 // throws rather than silently parsing to NaN/0, so a format this parser can't
 // read fails loud with an actionable message instead of a confusing false
-// "version too low" red.
-function parseVersionFloor(versionRange: string): number[] {
+// "version too low" red. `source` identifies which field is being parsed (the
+// package.json override vs. a specific package-lock.json resolution) so the
+// error points at the right file.
+function parseVersionFloor(versionRange: unknown, source: string): number[] {
+  if (typeof versionRange !== "string") {
+    throw new Error(
+      `Expected a version string for ${source}, received ${typeof versionRange} ` +
+        `(${JSON.stringify(versionRange)}); update parseVersionFloor if the override format changed.`,
+    );
+  }
   const match = /^[\^~>=]*(\d+)\.(\d+)\.(\d+)\s*$/.exec(versionRange.trim());
   if (!match) {
     throw new Error(
-      `Cannot read a version floor from overrides.browserslist (${versionRange}); ` +
+      `Cannot read a version floor from ${source} (${versionRange}); ` +
         "update parseVersionFloor if the override format changed.",
     );
   }
@@ -28,14 +37,15 @@ function parseVersionFloor(versionRange: string): number[] {
 }
 
 function isAtLeast(versionParts: number[], minimumParts: number[]): boolean {
-  for (let index = 0; index < minimumParts.length; index += 1) {
-    const versionPart = versionParts[index] ?? 0;
-    const minimumPart = minimumParts[index] ?? 0;
-    if (versionPart !== minimumPart) {
-      return versionPart > minimumPart;
-    }
+  const firstDifferingIndex = minimumParts.findIndex(
+    (minimumPart, index) => (versionParts[index] ?? 0) !== minimumPart,
+  );
+  if (firstDifferingIndex === -1) {
+    return true;
   }
-  return true;
+  return (
+    (versionParts[firstDifferingIndex] ?? 0) > minimumParts[firstDifferingIndex]
+  );
 }
 
 describe("browserslist dependency override", () => {
@@ -50,7 +60,7 @@ describe("browserslist dependency override", () => {
         "reopens GHSA-c83g-rgw3-j3cx and GHSA-73wf-gq98-2v4g (see scripts/audit-allowlist.js)",
     ).toBeDefined();
 
-    const floor = parseVersionFloor(overrideRange);
+    const floor = parseVersionFloor(overrideRange, "overrides.browserslist");
     expect(
       isAtLeast(floor, FIRST_PATCHED_BROWSERSLIST_VERSION),
       `overrides.browserslist (${overrideRange}) must be at least ` +
@@ -85,7 +95,7 @@ describe("browserslist dependency override", () => {
         resolvedVersion,
         `expected a resolved version for ${packagePath}`,
       ).toBeDefined();
-      const floor = parseVersionFloor(resolvedVersion as string);
+      const floor = parseVersionFloor(resolvedVersion, packagePath);
       expect(
         isAtLeast(floor, FIRST_PATCHED_BROWSERSLIST_VERSION),
         `${packagePath} resolves to ${resolvedVersion}, below the patched floor ` +
