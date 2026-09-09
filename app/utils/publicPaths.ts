@@ -1,23 +1,20 @@
 // Marketing/conversion pages that never require an authenticated session.
-// Shared by the auth middleware (redirect gate) and the app shell's
-// first-paint cloak skip so the two lists can never drift apart.
-export const PUBLIC_PATHS = ["/", "/pricing", "/about", "/privacy", "/contact"];
+// Re-exported from shared/utils/marketingRoutes.ts (the actual source of
+// truth — server code needs the same list for sitemap.xml, which can't
+// import from app/) rather than duplicated here, so the auth middleware's
+// redirect gate and the app shell's first-paint cloak skip can never drift
+// apart.
+import {
+  MARKETING_ROUTES,
+  LOGIN_PATH,
+  normalizeRoutePath,
+  isMarketingRoute,
+} from "#shared/utils/marketingRoutes";
 
-export const LOGIN_PATH = "/login";
-
-// Normalizes a single trailing slash so "/pricing/" matches "/pricing".
-// Guards against a non-string input (e.g. an ambient route mock missing
-// `path`) so callers get a clean "not a known path" rather than a throw.
-export function normalizePath(path: string): string {
-  if (typeof path !== "string") {
-    return "";
-  }
-  return path.replace(/(.)\/$/, "$1");
-}
-
-export function isPublicPath(path: string): boolean {
-  return PUBLIC_PATHS.includes(normalizePath(path));
-}
+export const PUBLIC_PATHS = MARKETING_ROUTES;
+export { LOGIN_PATH };
+export const normalizePath = normalizeRoutePath;
+export const isPublicPath = isMarketingRoute;
 
 // Routes where the first-paint opacity cloak should never apply: the
 // marketing pages plus /login. This is a route-only concept, independent of
