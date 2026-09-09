@@ -50,18 +50,12 @@
 // Do not delete it as redundant; drop it once `postcss-svgo` itself declares
 // `svgo@^4.1.0` or later.
 //
-// `sax` is pinned via the `overrides` block in package.json to the exact
-// `1.6.1`. The load-bearing reason is that the PRODUCTION
-// `rss-parser > xml2js > sax` chain — the XML parser that processes untrusted
-// RSS/Atom feed bytes — only declares `xml2js` -> `sax@>=0.6.0`, an
-// unbounded range with no floor of its own. npm hoists a single shared `sax`
-// for the whole tree, and today that floor is being supplied incidentally by
-// svgo 4.1.0's own exact `sax@1.6.1` dependency; the override makes the floor
-// explicit and intentional instead of a side effect of an unrelated
-// devDependency. It is pinned exact (not `^1.6.1`) so it cannot drift svgo
-// onto a `sax` version svgo itself never tested against. Do not delete it as
-// redundant even after svgo is gone; drop or loosen it only after a
-// deliberate review of the `rss-parser`/`xml2js` chain's own sax requirement.
+// (No separate `sax` override: svgo 4.1.0 declares an exact `sax@1.6.1`
+// dependency, which npm's resolver already uses to satisfy the unrelated
+// `rss-parser > xml2js > sax@>=0.6.0` range tree-wide — verified by removing
+// a candidate `sax` override and re-running `npm install`, which still
+// resolves a single hoisted `sax@1.6.1`. Revisit only if `svgo` is ever
+// removed from the tree, since that constraint is what pins `sax` today.)
 
 export const ALLOWLIST_REVIEW_BY = "2026-09-27";
 
