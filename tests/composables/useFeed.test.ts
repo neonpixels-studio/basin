@@ -7,6 +7,7 @@ import {
   MARK_ALL_READ_TIMEOUT_MS,
 } from "~/stores/feed";
 import { VALID_MARK_ALL_READ_FILTERS } from "../../server/utils/markAllRead";
+import { mapSearchRow, type SearchRow } from "../../server/utils/search";
 import { makeFeed, makeConnection } from "../fixtures";
 
 const item = (overrides: Record<string, unknown> = {}) => ({
@@ -1149,18 +1150,12 @@ describe("useFeedStore", () => {
         );
       });
 
-      // Regression coverage for #247: a search result opened via
-      // SearchOverlay's chooseRow() is passed to openItem() as-is — the raw
-      // object returned by GET /api/search. That shape used to omit `unread`
-      // entirely (only `readAt`), so `item.unread === true` was always false
-      // and the sync silently never fired. Rather than hand-setting `unread`
-      // on a fixture (which would keep passing even if the server-side
-      // derivation were reverted or broken), these call the real
-      // mapSearchRow() — the same row-to-SearchResult mapping
-      // searchFeedItems() applies to every DB row — and feed its actual
-      // output straight into openItem(), proving the two layers agree.
+      // Regression: #247 — search results omitted `unread`, so opening one
+      // never fired the markRead sync. Uses the real mapSearchRow() (what
+      // searchFeedItems() applies to every DB row) rather than a hand-set
+      // fixture, so this fails if the derivation regresses.
       describe("with a real mapSearchRow() payload", () => {
-        const mockDbRow = (overrides: Record<string, unknown> = {}) => ({
+        const mockDbRow = (overrides: Partial<SearchRow> = {}): SearchRow => ({
           id: 501,
           feedId: 42,
           feedSource: "rss",
@@ -1182,7 +1177,6 @@ describe("useFeedStore", () => {
         });
 
         it("enqueues a markRead action when opening an unread search result", async () => {
-          const { mapSearchRow } = await import("../../server/utils/search");
           const searchResult = mapSearchRow(mockDbRow({ readAt: null }));
           expect(searchResult.unread).toBe(true);
 
@@ -1197,14 +1191,11 @@ describe("useFeedStore", () => {
         });
 
         it("does not enqueue a markRead action when opening an already-read search result", async () => {
-          const { mapSearchRow } = await import("../../server/utils/search");
           const searchResult = mapSearchRow(
             mockDbRow({ readAt: new Date("2026-01-01T00:00:00Z") }),
           );
-          // Asserted directly (not just the queueAction side effect) so this
-          // test fails on a missing/broken `unread` derivation, not only on a
-          // falsy one — the already-read case can't otherwise distinguish
-          // "correctly false" from "field dropped entirely".
+          // Asserted directly, not just via the queueAction side effect, so
+          // this fails on a dropped `unread` field, not only a falsy one.
           expect(searchResult.unread).toBe(false);
 
           await feed.openItem(searchResult);

@@ -169,14 +169,9 @@ describe("searchFeedItems", () => {
     expect(results[0].source).toBe("rss");
   });
 
-  // Regression coverage for #247: search results previously omitted `unread`
-  // entirely, so app/stores/feed.ts openItem() (which checks
-  // `item.unread === true`) silently skipped the markRead sync for every item
-  // opened from search. This mirrors feedItems.ts's derivation so the two
-  // item shapes stay consistent. The null-readAt -> unread=true case is
-  // already pinned by "returns matching feed items…" above (mockRow.readAt is
-  // null and expectedResult asserts unread: true), so only the non-null case
-  // adds new signal here.
+  // Regression: #247. The null-readAt -> unread=true case is already pinned
+  // by "returns matching feed items…" above; only the non-null case adds
+  // signal here.
   it("derives unread=false from a non-null readAt, matching feedItems.ts", async () => {
     const readRow = { ...mockRow, readAt: new Date("2026-01-01T00:00:00Z") };
     mockLimit.mockResolvedValue([readRow]);

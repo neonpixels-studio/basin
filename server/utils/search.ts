@@ -108,7 +108,10 @@ export interface SearchResult {
   unread: boolean;
 }
 
-interface SearchRow {
+// Exported so tests can build a typo-safe fixture (Partial<SearchRow>)
+// instead of a bare Record<string, unknown>, which would silently accept a
+// misspelled field name.
+export interface SearchRow {
   id: number;
   feedId: number;
   feedSource: string;
