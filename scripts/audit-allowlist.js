@@ -37,6 +37,25 @@
 // `@nuxt/vite-builder` chain) and `@babel/helper-compilation-targets` (via
 // `@sentry/nuxt`). Drop the override once every one of those direct
 // dependencies bumps its own browserslist requirement past 4.28.6.
+//
+// `svgo` is pinned via the `overrides` block in package.json (not this
+// allowlist) to `^4.1.0`, the first version clearing GHSA-w27v-7q3p-w38r
+// (removeScripts executable-link bypass, high) and the related moderate
+// GHSA-4vpr-x523-8j87 — both advisories' vulnerable range is
+// `>=4.0.0 <4.1.0`. It reaches the tree only via
+// `nuxt > @nuxt/vite-builder > cssnano > cssnano-preset-default >
+// postcss-svgo`, which already declares `svgo@^4.0.2` (a range that admits
+// 4.1.0 on its own), so the override is a forward guard against a future
+// dependent requesting `svgo@^3`, not a constraint on today's resolution.
+// Do not delete it as redundant.
+//
+// `sax` is pinned via the `overrides` block in package.json to `^1.6.1` for
+// the same reason, one level down: svgo 4.1.0 declares an exact `sax@1.6.1`
+// dependency, and npm hoists a single shared `sax` for the whole tree. Without
+// an explicit floor, the production `rss-parser > xml2js > sax` chain — the
+// XML parser that processes untrusted RSS/Atom feed bytes — would have its
+// resolved version decided implicitly by svgo's exact pin instead of by an
+// intentional, reviewed range.
 
 export const ALLOWLIST_REVIEW_BY = "2026-09-27";
 
