@@ -108,6 +108,43 @@ export interface SearchResult {
   unread: boolean;
 }
 
+interface SearchRow {
+  id: number;
+  feedId: number;
+  feedSource: string;
+  feedTitle: string | null;
+  guid: string;
+  title: string;
+  url: string | null;
+  author: string | null;
+  imageUrl: string | null;
+  content: string | null;
+  tags: string[] | null;
+  publishedAt: Date | null;
+  readAt: Date | null;
+  starred: boolean | null;
+  savedAt: Date | null;
+  createdAt: Date | null;
+  updatedAt: Date | null;
+}
+
+// Extracted so tests (and any future caller) can exercise the exact
+// row-to-SearchResult derivation — including `unread` — without standing up
+// the drizzle query chain. Mirrors feedItems.ts's mapRow.
+export function mapSearchRow({
+  feedSource,
+  feedTitle,
+  ...item
+}: SearchRow): SearchResult {
+  return {
+    ...item,
+    type: FEED_SOURCE_TO_ITEM_TYPE[feedSource] ?? feedSource,
+    source: feedTitle?.trim() || feedSource,
+    time: formatRelativeTime(item.publishedAt),
+    unread: item.readAt === null,
+  };
+}
+
 export async function searchFeedItems(
   userId: number,
   query: string,
@@ -151,11 +188,5 @@ export async function searchFeedItems(
     .orderBy(sql`ts_rank(${feedItems.searchVector}, ${tsQueryExpression}) DESC`)
     .limit(SEARCH_RESULT_LIMIT);
 
-  return rows.map(({ feedSource, feedTitle, ...item }) => ({
-    ...item,
-    type: FEED_SOURCE_TO_ITEM_TYPE[feedSource] ?? feedSource,
-    source: feedTitle?.trim() || feedSource,
-    time: formatRelativeTime(item.publishedAt),
-    unread: item.readAt === null,
-  }));
+  return rows.map(mapSearchRow);
 }
