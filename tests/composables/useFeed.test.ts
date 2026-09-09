@@ -1148,6 +1148,55 @@ describe("useFeedStore", () => {
           "Could not queue change for sync",
         );
       });
+
+      // Regression coverage for #247: a search result opened via
+      // SearchOverlay's chooseRow() is passed to openItem() as-is — the raw
+      // object returned by GET /api/search. That shape used to omit `unread`
+      // entirely (only `readAt`), so `item.unread === true` was always false
+      // and the sync silently never fired. server/utils/search.ts now derives
+      // `unread` the same way server/utils/feedItems.ts does; these items
+      // mirror that real API response shape (readAt + derived unread) rather
+      // than the useFeed test fixture's hand-set unread flag.
+      it("enqueues a markRead action when opening an unread search result", async () => {
+        const searchResult = {
+          id: 501,
+          feedId: 42,
+          guid: "guid-search-unread",
+          type: "article",
+          source: "Test Feed",
+          time: "1h",
+          title: "Found via search",
+          readAt: null,
+          unread: true,
+        };
+
+        await feed.openItem(searchResult);
+
+        expect(queueAction).toHaveBeenCalledOnce();
+        const [action, payload] = queueAction.mock.calls[0];
+        expect(action).toBe("markRead");
+        expect(payload.feedId).toBe(42);
+        expect(payload.guid).toBe("guid-search-unread");
+        expect(typeof payload.readAt).toBe("string");
+      });
+
+      it("does not enqueue a markRead action when opening an already-read search result", async () => {
+        const searchResult = {
+          id: 502,
+          feedId: 42,
+          guid: "guid-search-read",
+          type: "article",
+          source: "Test Feed",
+          time: "1h",
+          title: "Found via search",
+          readAt: new Date("2026-01-01T00:00:00Z").toISOString(),
+          unread: false,
+        };
+
+        await feed.openItem(searchResult);
+
+        expect(queueAction).not.toHaveBeenCalled();
+      });
     });
   });
 

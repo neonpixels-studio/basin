@@ -102,6 +102,10 @@ export interface SearchResult {
   savedAt: Date | null;
   createdAt: Date | null;
   updatedAt: Date | null;
+  // Derived the same way as FeedItemResult.unread (feedItems.ts) so any
+  // consumer that keys off `unread` — e.g. the feed store's openItem — behaves
+  // identically whether the item came from the dashboard feed or search.
+  unread: boolean;
 }
 
 export async function searchFeedItems(
@@ -152,5 +156,6 @@ export async function searchFeedItems(
     type: FEED_SOURCE_TO_ITEM_TYPE[feedSource] ?? feedSource,
     source: feedTitle?.trim() || feedSource,
     time: formatRelativeTime(item.publishedAt),
+    unread: item.readAt === null,
   }));
 }
