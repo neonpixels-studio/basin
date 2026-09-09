@@ -51,6 +51,7 @@
   },
   "overrides": {
     "@netlify/sdk": "^5.0.4",
+    "browserslist": "^4.28.7",
     "tmp": "^0.2.6",
     "http-proxy-middleware": "^4.1.1",
     "brace-expansion": "^5.0.9",
@@ -58,8 +59,7 @@
     "nanoid": "^3.3.17",
     "postcss": "^8.5.23",
     "shell-quote": "^1.10.0",
-    "svgo": "^4.0.2",
-    "browserslist": "^4.28.7"
+    "svgo": "^4.0.2"
   },
   "devDependencies": {
     "@clerk/backend": "^3.15.1",

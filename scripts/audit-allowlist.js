@@ -27,6 +27,16 @@
 // @netlify/async-workloads anymore. Removed rather than re-dated — re-add only
 // if `npm audit --json | jq '.vulnerabilities["@netlify/async-workloads"]'`
 // produces a fresh chained advisory.
+//
+// `browserslist` is pinned via the `overrides` block in package.json (not this
+// allowlist) to `^4.28.7`, the first version fixing GHSA-c83g-rgw3-j3cx
+// (unbounded memory growth) and GHSA-73wf-gq98-2v4g (uncaught crash /
+// prototype write via untrusted browserslist-stats.json); both advisories'
+// vulnerable range is `<=4.28.6`. It reaches the tree transitively via
+// `autoprefixer` (both the `@netlify/sdk--ui-react` dev chain and Nuxt's own
+// `@nuxt/vite-builder` chain) and `@babel/helper-compilation-targets` (via
+// `@sentry/nuxt`). Drop the override once every one of those direct
+// dependencies bumps its own browserslist requirement past 4.28.6.
 
 export const ALLOWLIST_REVIEW_BY = "2026-09-27";
 
@@ -66,15 +76,23 @@ export const ALLOWED_ADVISORIES = [
   },
 ];
 
-const ALLOWED_KEYS = new Set(
-  ALLOWED_ADVISORIES.flatMap((advisory) =>
-    advisory.packages.map((packageName) => `${advisory.id}::${packageName}`),
-  ),
-);
-
-// An advisory is suppressed only when its ID AND affected package both match an
-// allowlist entry, so a justification tied to where a package sits in the tree
-// stops applying if a different package later trips the same advisory ID.
-export function isAdvisoryAllowed(advisoryId, packageName) {
-  return ALLOWED_KEYS.has(`${advisoryId}::${packageName}`);
+// Builds an id::package lookup from a list of allowlist entries. Exported (not
+// just the module-level `isAdvisoryAllowed` singleton below) so tests can
+// exercise the real key-construction/matching logic against a fixture entry
+// list, instead of reimplementing the match with an ad hoc predicate that
+// could silently drift out of sync with this format.
+export function createAllowlistLookup(entries) {
+  const allowedKeys = new Set(
+    entries.flatMap((advisory) =>
+      advisory.packages.map((packageName) => `${advisory.id}::${packageName}`),
+    ),
+  );
+  // An advisory is suppressed only when its ID AND affected package both match
+  // an allowlist entry, so a justification tied to where a package sits in the
+  // tree stops applying if a different package later trips the same advisory ID.
+  return function isAdvisoryAllowed(advisoryId, packageName) {
+    return allowedKeys.has(`${advisoryId}::${packageName}`);
+  };
 }
+
+export const isAdvisoryAllowed = createAllowlistLookup(ALLOWED_ADVISORIES);

@@ -1,7 +1,17 @@
 <script setup>
-import { onMounted, onUnmounted } from "vue";
+import { onMounted, onUnmounted, computed } from "vue";
+import { isCloakExemptPath } from "~/utils/publicPaths";
 
 const appearanceStore = useAppearanceStore();
+const route = useRoute();
+
+// Marketing pages and /login don't depend on the visitor's personalized
+// theme to render correctly — never hold their first paint behind the
+// settings-load cloak (see appearanceStore.ready below). This is what lets
+// conversion pages paint instantly instead of waiting on
+// /api/settings/reading (or on Clerk resolving whether there even is a
+// signed-in visitor to fetch settings for).
+const skipCloak = computed(() => isCloakExemptPath(route.path));
 
 const feedStore = useFeedStore();
 const state = feedStore.state;
@@ -55,6 +65,9 @@ function onKey(e) {
 }
 
 onMounted(() => {
+  // Must run post-mount, not at store-setup time — see appearanceStore's
+  // init() for why (it races Nuxt's SSR state hydration otherwise).
+  appearanceStore.init();
   setupWatchers();
   window.addEventListener("keydown", onKey);
 });
@@ -62,7 +75,10 @@ onUnmounted(() => window.removeEventListener("keydown", onKey));
 </script>
 
 <template>
-  <div class="app-shell" :class="{ 'app-ready': appearanceStore.ready }">
+  <div
+    class="app-shell"
+    :class="{ 'app-ready': appearanceStore.ready || skipCloak }"
+  >
     <NuxtLayout>
       <NuxtPage />
     </NuxtLayout>
