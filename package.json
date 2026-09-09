@@ -60,7 +60,7 @@
     "postcss": "^8.5.23",
     "shell-quote": "^1.10.0",
     "svgo": "^4.1.0",
-    "sax": "^1.6.1"
+    "sax": "1.6.1"
   },
   "devDependencies": {
     "@clerk/backend": "^3.15.1",
