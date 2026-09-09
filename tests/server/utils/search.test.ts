@@ -173,16 +173,10 @@ describe("searchFeedItems", () => {
   // entirely, so app/stores/feed.ts openItem() (which checks
   // `item.unread === true`) silently skipped the markRead sync for every item
   // opened from search. This mirrors feedItems.ts's derivation so the two
-  // item shapes stay consistent.
-  it("derives unread=true from a null readAt, matching feedItems.ts", async () => {
-    const unreadRow = { ...mockRow, readAt: null };
-    mockLimit.mockResolvedValue([unreadRow]);
-
-    const results = await searchFeedItems(1, "testing");
-
-    expect(results[0].unread).toBe(true);
-  });
-
+  // item shapes stay consistent. The null-readAt -> unread=true case is
+  // already pinned by "returns matching feed items…" above (mockRow.readAt is
+  // null and expectedResult asserts unread: true), so only the non-null case
+  // adds new signal here.
   it("derives unread=false from a non-null readAt, matching feedItems.ts", async () => {
     const readRow = { ...mockRow, readAt: new Date("2026-01-01T00:00:00Z") };
     mockLimit.mockResolvedValue([readRow]);

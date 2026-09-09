@@ -1153,49 +1153,73 @@ describe("useFeedStore", () => {
       // SearchOverlay's chooseRow() is passed to openItem() as-is — the raw
       // object returned by GET /api/search. That shape used to omit `unread`
       // entirely (only `readAt`), so `item.unread === true` was always false
-      // and the sync silently never fired. server/utils/search.ts now derives
-      // `unread` the same way server/utils/feedItems.ts does; these items
-      // mirror that real API response shape (readAt + derived unread) rather
-      // than the useFeed test fixture's hand-set unread flag.
-      it("enqueues a markRead action when opening an unread search result", async () => {
-        const searchResult = {
+      // and the sync silently never fired. Rather than hand-setting `unread`
+      // on a fixture (which would keep passing even if the server-side
+      // derivation were reverted or broken), these run the real
+      // searchFeedItems() against a mocked DB row and feed its actual output
+      // straight into openItem() — proving the two layers agree.
+      describe("with a real searchFeedItems() payload", () => {
+        const mockDbRow = (overrides: Record<string, unknown> = {}) => ({
           id: 501,
           feedId: 42,
-          guid: "guid-search-unread",
-          type: "article",
-          source: "Test Feed",
-          time: "1h",
+          feedSource: "rss",
+          feedTitle: "Test Feed",
+          guid: "guid-search",
           title: "Found via search",
+          url: null,
+          author: null,
+          imageUrl: null,
+          content: null,
+          tags: null,
+          publishedAt: null,
           readAt: null,
-          unread: true,
-        };
+          starred: false,
+          savedAt: null,
+          createdAt: null,
+          updatedAt: null,
+          ...overrides,
+        });
 
-        await feed.openItem(searchResult);
+        function stubSearchDb(rows: Record<string, unknown>[]) {
+          const mockLimit = vi.fn().mockResolvedValue(rows);
+          const mockOrderBy = vi.fn().mockReturnValue({ limit: mockLimit });
+          const mockWhere = vi.fn().mockReturnValue({ orderBy: mockOrderBy });
+          const mockInnerJoin = vi.fn().mockReturnValue({ where: mockWhere });
+          const mockFrom = vi.fn().mockReturnValue({ innerJoin: mockInnerJoin });
+          const mockSelect = vi.fn().mockReturnValue({ from: mockFrom });
+          vi.stubGlobal("useDb", () => ({ select: mockSelect }));
+        }
 
-        expect(queueAction).toHaveBeenCalledOnce();
-        const [action, payload] = queueAction.mock.calls[0];
-        expect(action).toBe("markRead");
-        expect(payload.feedId).toBe(42);
-        expect(payload.guid).toBe("guid-search-unread");
-        expect(typeof payload.readAt).toBe("string");
-      });
+        it("enqueues a markRead action when opening an unread search result", async () => {
+          stubSearchDb([mockDbRow({ readAt: null })]);
+          const { searchFeedItems } = await import(
+            "../../server/utils/search"
+          );
+          const [searchResult] = await searchFeedItems(1, "testing");
 
-      it("does not enqueue a markRead action when opening an already-read search result", async () => {
-        const searchResult = {
-          id: 502,
-          feedId: 42,
-          guid: "guid-search-read",
-          type: "article",
-          source: "Test Feed",
-          time: "1h",
-          title: "Found via search",
-          readAt: new Date("2026-01-01T00:00:00Z").toISOString(),
-          unread: false,
-        };
+          await feed.openItem(searchResult);
 
-        await feed.openItem(searchResult);
+          expect(queueAction).toHaveBeenCalledOnce();
+          const [action, payload] = queueAction.mock.calls[0];
+          expect(action).toBe("markRead");
+          expect(payload.feedId).toBe(42);
+          expect(payload.guid).toBe("guid-search");
+          expect(typeof payload.readAt).toBe("string");
+        });
 
-        expect(queueAction).not.toHaveBeenCalled();
+        it("does not enqueue a markRead action when opening an already-read search result", async () => {
+          stubSearchDb([
+            mockDbRow({ readAt: new Date("2026-01-01T00:00:00Z") }),
+          ]);
+          const { searchFeedItems } = await import(
+            "../../server/utils/search"
+          );
+          const [searchResult] = await searchFeedItems(1, "testing");
+
+          await feed.openItem(searchResult);
+
+          expect(queueAction).not.toHaveBeenCalled();
+        });
       });
     });
   });
