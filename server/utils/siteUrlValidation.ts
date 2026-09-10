@@ -120,5 +120,10 @@ export function requireValidSiteUrlForBuild(
     );
   }
 
-  return rawSiteUrl ?? "";
+  // Return the already-validated, normalized origin (not the raw input) so a
+  // harmless variation the validator accepts — a trailing root slash, e.g.
+  // "https://basin.example/" — doesn't get baked into runtimeConfig.siteUrl
+  // as anything other than the canonical origin getConfiguredSiteUrl() would
+  // itself derive from the same raw value at request time.
+  return validationResult.origin;
 }

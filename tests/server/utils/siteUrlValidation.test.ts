@@ -121,8 +121,18 @@ describe("requireValidSiteUrlForBuild", () => {
     expect(requireValidSiteUrlForBuild("not-a-url", false)).toBe("not-a-url");
   });
 
-  it("returns a valid https origin's raw value for a production build", () => {
+  it("returns a valid https origin for a production build", () => {
     expect(requireValidSiteUrlForBuild("https://basin.example", true)).toBe(
+      "https://basin.example",
+    );
+  });
+
+  it("returns the normalized origin, not the raw value, for a production build", () => {
+    // A trailing root slash is accepted by validateSiteUrl but should not
+    // flow through verbatim — the build guard's output becomes
+    // runtimeConfig.siteUrl, and getConfiguredSiteUrl() would itself derive
+    // the slash-less origin from this same raw value at request time.
+    expect(requireValidSiteUrlForBuild("https://basin.example/", true)).toBe(
       "https://basin.example",
     );
   });
