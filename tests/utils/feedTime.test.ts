@@ -31,6 +31,20 @@ describe("formatRelativeTime", () => {
     expect(formatRelativeTime(oldDate)).toMatch(/Jan 5/);
   });
 
+  it("omits the year for an absolute date in the current year", () => {
+    const now = new Date();
+    const sameYearDate = new Date(now.getFullYear(), 0, 5, 12, 0, 0);
+    expect(formatRelativeTime(sameYearDate)).toBe("Jan 5");
+  });
+
+  it("includes the year for an absolute date in a prior year", () => {
+    const now = new Date();
+    const priorYearDate = new Date(now.getFullYear() - 1, 0, 5, 12, 0, 0);
+    expect(formatRelativeTime(priorYearDate)).toBe(
+      `Jan 5, ${now.getFullYear() - 1}`,
+    );
+  });
+
   it("floors a future-dated item at 0m instead of a negative token", () => {
     const twoHoursAhead = new Date(Date.now() + 2 * 3_600_000);
     expect(formatRelativeTime(twoHoursAhead)).toBe("0m");

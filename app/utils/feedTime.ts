@@ -31,7 +31,22 @@ export function formatRelativeTime(date: Date | null): string {
     return `${diffDays}d`;
   }
 
-  return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  return formatAbsoluteDate(date);
+}
+
+// "Jan 5" for the current year; "Jan 5, 2024" once the item crosses into a
+// prior year, so an old item is never mistaken for one from this January.
+function formatAbsoluteDate(date: Date): string {
+  const dateOptions: Intl.DateTimeFormatOptions = {
+    month: "short",
+    day: "numeric",
+  };
+
+  if (date.getFullYear() !== new Date().getFullYear()) {
+    dateOptions.year = "numeric";
+  }
+
+  return date.toLocaleDateString("en-US", dateOptions);
 }
 
 export function isRelativeTime(time: string): boolean {
