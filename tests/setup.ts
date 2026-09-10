@@ -76,6 +76,7 @@ globalThis.useSeoMeta = vi.fn();
 // Nuxt / Nitro handler wrappers — identity so the inner function is what gets exported
 globalThis.defineNuxtRouteMiddleware = (fn: Function) => fn;
 globalThis.defineEventHandler = (fn: Function) => fn;
+globalThis.defineNuxtPlugin = (fn: Function) => fn;
 
 // H3 / Nitro server globals used by API handlers under test
 globalThis.createError = ({

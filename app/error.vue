@@ -12,15 +12,28 @@ const props = defineProps({
 const HOME_PATH = "/dashboard";
 const DEFAULT_STATUS_CODE = 500;
 const DEFAULT_MESSAGE = "Something threw us off the trail.";
+const SERVER_ERROR_THRESHOLD = 500;
 
 const statusCode = computed(
   () => props.error?.statusCode ?? DEFAULT_STATUS_CODE,
 );
-// statusMessage is the only error field we treat as user-facing copy; never
-// error.message, which can carry raw JS throw text, upstream API detail, or DB
-// driver messages. Server routes must never assign a raw caught err.message to
-// statusMessage (they throw purpose-written errors today) or it lands here.
-const message = computed(() => props.error?.statusMessage || DEFAULT_MESSAGE);
+const isServerError = computed(
+  () => statusCode.value >= SERVER_ERROR_THRESHOLD,
+);
+// statusMessage is only trusted as user-facing copy on a 4xx: those are
+// purpose-written H3 strings ("Not Found", "Forbidden"). On a 5xx it can
+// carry raw thrown err.message text, upstream API detail, or DB driver
+// output, so it's never shown — DEFAULT_MESSAGE is used instead regardless
+// of what statusMessage contains. Never error.message either way, for the
+// same reason. Server routes must never assign a raw caught err.message to
+// statusMessage (they throw purpose-written errors today) or it could reach
+// here on a 4xx.
+const message = computed(() => {
+  if (isServerError.value) {
+    return DEFAULT_MESSAGE;
+  }
+  return props.error?.statusMessage || DEFAULT_MESSAGE;
+});
 
 useHead({ title: message });
 

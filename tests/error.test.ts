@@ -2,9 +2,13 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { shallowMount } from "@vue/test-utils";
 import ErrorPage from "~/error.vue";
 
-// A non-default status code so the passthrough assertions can't pass on the
-// DEFAULT_STATUS_CODE (500) fallback — the {} case below covers that fallback.
-const sampleError = { statusCode: 503, statusMessage: "Service Unavailable" };
+// A 4xx error: statusMessage is purpose-written H3 copy ("Not Found") and is
+// safe to show verbatim.
+const clientError = { statusCode: 404, statusMessage: "Not Found" };
+// A 5xx error: even a benign-looking statusMessage must never reach the user
+// — 5xx statusMessage can carry raw thrown err.message text, upstream API
+// detail, or DB driver output.
+const serverError = { statusCode: 503, statusMessage: "Service Unavailable" };
 
 describe("error.vue (fatal error page)", () => {
   let clearError;
@@ -22,13 +26,20 @@ describe("error.vue (fatal error page)", () => {
   });
 
   it("renders the error status code", () => {
-    const wrapper = shallowMount(ErrorPage, { props: { error: sampleError } });
-    expect(wrapper.find("h1").text()).toBe("503");
+    const wrapper = shallowMount(ErrorPage, { props: { error: clientError } });
+    expect(wrapper.find("h1").text()).toBe("404");
   });
 
-  it("renders the status message from the error prop", () => {
-    const wrapper = shallowMount(ErrorPage, { props: { error: sampleError } });
-    expect(wrapper.text()).toContain("Service Unavailable");
+  it("renders the statusMessage from the error prop on a 4xx", () => {
+    const wrapper = shallowMount(ErrorPage, { props: { error: clientError } });
+    expect(wrapper.text()).toContain("Not Found");
+  });
+
+  it("shows the generic message on a 5xx, never the raw statusMessage", () => {
+    const wrapper = shallowMount(ErrorPage, { props: { error: serverError } });
+    expect(wrapper.find("h1").text()).toBe("503");
+    expect(wrapper.text()).not.toContain("Service Unavailable");
+    expect(wrapper.text()).toContain("Something threw us off the trail.");
   });
 
   it("falls back to defaults when the error prop is sparse", () => {
@@ -47,21 +58,27 @@ describe("error.vue (fatal error page)", () => {
     expect(wrapper.text()).toContain("Something threw us off the trail.");
   });
 
-  it("sets the document title to the error message", () => {
-    shallowMount(ErrorPage, { props: { error: sampleError } });
+  it("sets the document title to the statusMessage on a 4xx", () => {
+    shallowMount(ErrorPage, { props: { error: clientError } });
     expect(useHead).toHaveBeenCalledTimes(1);
     const [headArg] = useHead.mock.calls[0];
-    expect(headArg.title.value).toBe("Service Unavailable");
+    expect(headArg.title.value).toBe("Not Found");
+  });
+
+  it("sets the document title to the generic message on a 5xx", () => {
+    shallowMount(ErrorPage, { props: { error: serverError } });
+    const [headArg] = useHead.mock.calls[0];
+    expect(headArg.title.value).toBe("Something threw us off the trail.");
   });
 
   it("re-renders the current route via clearError on Try again", async () => {
-    const wrapper = shallowMount(ErrorPage, { props: { error: sampleError } });
+    const wrapper = shallowMount(ErrorPage, { props: { error: clientError } });
     await wrapper.find("button.btn-primary").trigger("click");
     expect(clearError).toHaveBeenCalledWith();
   });
 
   it("clears the error and redirects home on Back to your feed", async () => {
-    const wrapper = shallowMount(ErrorPage, { props: { error: sampleError } });
+    const wrapper = shallowMount(ErrorPage, { props: { error: clientError } });
     const backButton = wrapper
       .findAll("button")
       .find((button) => button.text().includes("Back to your feed"));
@@ -72,8 +89,13 @@ describe("error.vue (fatal error page)", () => {
     });
   });
 
-  it("matches snapshot", () => {
-    const wrapper = shallowMount(ErrorPage, { props: { error: sampleError } });
+  it("matches snapshot for a 4xx client error", () => {
+    const wrapper = shallowMount(ErrorPage, { props: { error: clientError } });
+    expect(wrapper.html()).toMatchSnapshot();
+  });
+
+  it("matches snapshot for a 5xx server error", () => {
+    const wrapper = shallowMount(ErrorPage, { props: { error: serverError } });
     expect(wrapper.html()).toMatchSnapshot();
   });
 });

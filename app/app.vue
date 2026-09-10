@@ -64,10 +64,11 @@ function onKey(e) {
   handleSlash(e);
 }
 
+// appearanceStore.init() is no longer called from here — it's registered in
+// app/plugins/appearance.client.ts so it also runs on a cold fatal load,
+// where Nuxt renders error.vue instead of app.vue and this onMounted never
+// fires. app.vue only reads appearanceStore.ready below (for the cloak).
 onMounted(() => {
-  // Must run post-mount, not at store-setup time — see appearanceStore's
-  // init() for why (it races Nuxt's SSR state hydration otherwise).
-  appearanceStore.init();
   setupWatchers();
   window.addEventListener("keydown", onKey);
 });
