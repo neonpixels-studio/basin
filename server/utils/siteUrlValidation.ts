@@ -102,7 +102,7 @@ export function requireValidSiteUrlForBuild(
   if (!validationResult.valid) {
     throw new Error(
       `${validationResult.message} — OAuth redirects and billing bounces ` +
-        "need a trusted origin. Set NUXT_SITE_URL to a bare http(s) origin " +
+        "need a trusted origin. Set NUXT_SITE_URL to a bare https origin " +
         "in this environment's dotenvx file before building.",
     );
   }

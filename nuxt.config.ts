@@ -54,16 +54,12 @@ function requireTokenEncryptionKeyForBuild(): string {
   return key;
 }
 
-// A missing or malformed NUXT_SITE_URL would otherwise only surface at
-// request time (server/utils/siteUrl.ts's getConfiguredSiteUrl() and
-// isConfiguredSiteUrlSecure(), called on the first OAuth Connect click or
-// billing redirect) instead of at deploy time. The actual guard logic lives
-// in ./server/utils/siteUrlValidation (requireValidSiteUrlForBuild), unit
-// tested there, since `defineNuxtConfig` isn't a real global outside Nuxt's
-// own config loader and this file can't be imported directly in tests. Only
-// blocks an actual deployable build, matching requireTokenEncryptionKeyForBuild
-// and requireTombstonePepperForBuild above/below, so `nuxt dev` still works
-// without a site URL set.
+// Fails a bad NUXT_SITE_URL at deploy time instead of the first OAuth Connect
+// click or billing redirect — see ./server/utils/siteUrlValidation for the
+// rule set and why the guard logic (and its tests) live there rather than
+// here. Only blocks an actual deployable build, matching
+// requireTokenEncryptionKeyForBuild and requireTombstonePepperForBuild
+// above/below, so `nuxt dev` still works without a site URL set.
 function requireSiteUrlForBuild(): string {
   return requireValidSiteUrlForBuild(
     process.env.NUXT_SITE_URL,

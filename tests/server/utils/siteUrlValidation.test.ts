@@ -7,10 +7,10 @@ import {
 
 // This is the shared rule set both server/utils/siteUrl.ts (request time) and
 // nuxt.config.ts's requireSiteUrlForBuild (build time, via
-// requireValidSiteUrlForBuild below) delegate to, so it is the single place
-// valid/missing/malformed NUXT_SITE_URL behavior is exercised — see
+// requireValidSiteUrlForBuild below) delegate to — see
 // tests/server/utils/siteUrl.test.ts for the request-time wrapper's
-// createError translation.
+// createError translation (it re-exercises the same cases through that
+// wrapper, rather than relying on this file alone).
 describe("validateSiteUrl", () => {
   it("accepts a bare https origin", () => {
     expect(validateSiteUrl("https://basin.example")).toEqual({
