@@ -31,20 +31,6 @@ describe("formatRelativeTime", () => {
     expect(formatRelativeTime(oldDate)).toMatch(/Jan 5/);
   });
 
-  it("omits the year for an absolute date in the current year", () => {
-    const now = new Date();
-    const sameYearDate = new Date(now.getFullYear(), 0, 5, 12, 0, 0);
-    expect(formatRelativeTime(sameYearDate)).toBe("Jan 5");
-  });
-
-  it("includes the year for an absolute date in a prior year", () => {
-    const now = new Date();
-    const priorYearDate = new Date(now.getFullYear() - 1, 0, 5, 12, 0, 0);
-    expect(formatRelativeTime(priorYearDate)).toBe(
-      `Jan 5, ${now.getFullYear() - 1}`,
-    );
-  });
-
   it("floors a future-dated item at 0m instead of a negative token", () => {
     const twoHoursAhead = new Date(Date.now() + 2 * 3_600_000);
     expect(formatRelativeTime(twoHoursAhead)).toBe("0m");
@@ -131,5 +117,45 @@ describe("formatRelativeTime ↔ isRelativeTime contract", () => {
     expect(formatRelativeTime(ago(7 * DAY - 60_000))).toBe("6d");
     expect(formatRelativeTime(ago(7 * DAY))).toMatch(ABSOLUTE_DATE);
     expect(formatRelativeTime(ago(400 * DAY))).toMatch(ABSOLUTE_DATE);
+  });
+});
+
+// Absolute-date year suffix (issue #248): "Jan 5" reads as this January
+// unless the item is actually from a prior year, in which case it must say
+// so. Clock is frozen (not a bare `new Date()` compared against itself) so
+// these don't go red every New Year's week when "today" drifts into the
+// date under test.
+describe("formatRelativeTime absolute date year suffix", () => {
+  const NOW = new Date(2026, 5, 15, 12, 0, 0);
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("omits the year for an absolute date in the current year", () => {
+    const sameYearDate = new Date(2026, 0, 5, 12, 0, 0);
+    expect(formatRelativeTime(sameYearDate)).toBe("Jan 5");
+  });
+
+  it("includes the year for an absolute date in a prior year", () => {
+    const priorYearDate = new Date(2025, 0, 5, 12, 0, 0);
+    expect(formatRelativeTime(priorYearDate)).toBe("Jan 5, 2025");
+  });
+
+  it("uses a relative token, not a bare month/day, just after the New Year", () => {
+    vi.setSystemTime(new Date(2026, 0, 2, 12, 0, 0));
+    const twoDaysAgo = new Date(2025, 11, 31, 12, 0, 0);
+    expect(formatRelativeTime(twoDaysAgo)).toBe("2d");
+  });
+
+  it("includes the prior year once a late-December item crosses the relative window", () => {
+    vi.setSystemTime(new Date(2026, 0, 20, 12, 0, 0));
+    const lateDecemberItem = new Date(2025, 11, 28, 12, 0, 0);
+    expect(formatRelativeTime(lateDecemberItem)).toBe("Dec 28, 2025");
   });
 });
