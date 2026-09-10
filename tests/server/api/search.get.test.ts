@@ -26,7 +26,12 @@ const mockFeedItem = {
   savedAt: null,
   createdAt: null,
   updatedAt: null,
+  type: "article",
+  source: "Test Feed",
+  time: "2h",
 };
+
+const mockPage = { items: [mockFeedItem], nextOffset: null };
 
 describe("GET /api/search", () => {
   beforeEach(() => {
@@ -52,33 +57,92 @@ describe("GET /api/search", () => {
     await expect(handler(event)).rejects.toMatchObject({ statusCode: 400 });
   });
 
-  it("returns search results for authenticated user", async () => {
+  it("returns the search page for an authenticated user", async () => {
     mockGetQuery.mockReturnValue({ q: "testing" });
-    mockSearchFeedItems.mockResolvedValue([mockFeedItem]);
+    mockSearchFeedItems.mockResolvedValue(mockPage);
     const event = { context: { user: { id: 1 } } };
 
     const result = await handler(event);
 
-    expect(result).toEqual([mockFeedItem]);
+    expect(result).toEqual(mockPage);
   });
 
-  it("calls searchFeedItems with the authenticated user id and trimmed query", async () => {
+  it("calls searchFeedItems with the authenticated user id, trimmed query, and default paging options", async () => {
     mockGetQuery.mockReturnValue({ q: "  hello world  " });
-    mockSearchFeedItems.mockResolvedValue([]);
+    mockSearchFeedItems.mockResolvedValue({ items: [], nextOffset: null });
     const event = { context: { user: { id: 42 } } };
 
     await handler(event);
 
-    expect(mockSearchFeedItems).toHaveBeenCalledWith(42, "hello world");
+    expect(mockSearchFeedItems).toHaveBeenCalledWith(42, "hello world", {
+      limit: undefined,
+      offset: undefined,
+    });
   });
 
-  it("returns an empty array when no results are found", async () => {
-    mockGetQuery.mockReturnValue({ q: "noresults" });
-    mockSearchFeedItems.mockResolvedValue([]);
+  it("parses limit and offset from the query string and passes them through", async () => {
+    mockGetQuery.mockReturnValue({ q: "testing", limit: "20", offset: "40" });
+    mockSearchFeedItems.mockResolvedValue({ items: [], nextOffset: null });
+    const event = { context: { user: { id: 1 } } };
+
+    await handler(event);
+
+    expect(mockSearchFeedItems).toHaveBeenCalledWith(1, "testing", {
+      limit: 20,
+      offset: 40,
+    });
+  });
+
+  it("passes undefined for non-numeric limit and offset", async () => {
+    mockGetQuery.mockReturnValue({
+      q: "testing",
+      limit: "abc",
+      offset: "40xyz",
+    });
+    mockSearchFeedItems.mockResolvedValue({ items: [], nextOffset: null });
+    const event = { context: { user: { id: 1 } } };
+
+    await handler(event);
+
+    expect(mockSearchFeedItems).toHaveBeenCalledWith(1, "testing", {
+      limit: undefined,
+      offset: undefined,
+    });
+  });
+
+  it("drops an offset too large to be a safe integer instead of passing it through", async () => {
+    mockGetQuery.mockReturnValue({ q: "testing", offset: "9".repeat(20) });
+    mockSearchFeedItems.mockResolvedValue({ items: [], nextOffset: null });
+    const event = { context: { user: { id: 1 } } };
+
+    await handler(event);
+
+    expect(mockSearchFeedItems).toHaveBeenCalledWith(1, "testing", {
+      limit: undefined,
+      offset: undefined,
+    });
+  });
+
+  it("returns nextOffset as a number when more pages exist", async () => {
+    mockGetQuery.mockReturnValue({ q: "testing" });
+    mockSearchFeedItems.mockResolvedValue({
+      items: [mockFeedItem],
+      nextOffset: 20,
+    });
     const event = { context: { user: { id: 1 } } };
 
     const result = await handler(event);
 
-    expect(result).toEqual([]);
+    expect(result.nextOffset).toBe(20);
+  });
+
+  it("returns an empty page when no results are found", async () => {
+    mockGetQuery.mockReturnValue({ q: "noresults" });
+    mockSearchFeedItems.mockResolvedValue({ items: [], nextOffset: null });
+    const event = { context: { user: { id: 1 } } };
+
+    const result = await handler(event);
+
+    expect(result).toEqual({ items: [], nextOffset: null });
   });
 });
