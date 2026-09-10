@@ -9,13 +9,17 @@
 export default defineNuxtPlugin((nuxtApp) => {
   const appearanceStore = useAppearanceStore();
 
-  // Deferred to the app:mounted hook (not called eagerly at plugin-body
-  // time) for the same reason documented on the store's init(): running it
-  // before Vue's hydration pass completes can race Nuxt's automatic Pinia
-  // state hydration and produce a hydration mismatch. app:mounted fires
-  // once the root Vue instance mounts regardless of whether app.vue or
-  // error.vue is the component that actually mounted.
-  nuxtApp.hook("app:mounted", () => {
+  // Deferred to app:suspense:resolve (not app:mounted, and not called
+  // eagerly at plugin-body time) for the same reason documented on the
+  // store's init(): running it before Vue's hydration pass has settled can
+  // race Nuxt's automatic Pinia state hydration and produce a hydration
+  // mismatch. app:mounted fires as soon as vueApp.mount() returns, which is
+  // before the root Suspense boundary (and therefore hydration) resolves —
+  // app:suspense:resolve is what Nuxt's own onNuxtReady waits on for that
+  // reason (see node_modules/nuxt/dist/app/composables/ready.js). It fires
+  // once regardless of whether app.vue or error.vue is the component that
+  // resolved inside it, which is what makes error.vue themed too.
+  nuxtApp.hooks.hookOnce("app:suspense:resolve", () => {
     appearanceStore.init();
   });
 });

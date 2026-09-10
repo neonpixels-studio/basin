@@ -20,14 +20,19 @@ const statusCode = computed(
 const isServerError = computed(
   () => statusCode.value >= SERVER_ERROR_THRESHOLD,
 );
-// statusMessage is only trusted as user-facing copy on a 4xx: those are
-// purpose-written H3 strings ("Not Found", "Forbidden"). On a 5xx it can
-// carry raw thrown err.message text, upstream API detail, or DB driver
-// output, so it's never shown — DEFAULT_MESSAGE is used instead regardless
-// of what statusMessage contains. Never error.message either way, for the
-// same reason. Server routes must never assign a raw caught err.message to
-// statusMessage (they throw purpose-written errors today) or it could reach
-// here on a 4xx.
+// statusMessage is only trusted as user-facing copy on a 4xx, because every
+// 4xx this app's own server routes throw is a fixed, purpose-written string
+// (see server/api/**, server/utils/urlValidator.ts's H3 wrapper) — never an
+// interpolated request value. That's an invariant of this codebase's routes,
+// not a guarantee Nuxt/H3 make generally, so a new route must keep following
+// it: never assign a raw caught err.message, or an interpolated user input,
+// to statusMessage on a 4xx it throws. On a 5xx statusMessage can carry raw
+// thrown err.message text, upstream API detail, or DB driver output, so it's
+// never shown — DEFAULT_MESSAGE is used instead regardless of what
+// statusMessage contains. Never error.message either way, for the same
+// reason. Route misses never reach here at all (see the file-top comment):
+// they fall to pages/[...slug].vue's fixed copy instead of Nuxt's built-in
+// 404, which can otherwise echo the requested path back into statusMessage.
 const message = computed(() => {
   if (isServerError.value) {
     return DEFAULT_MESSAGE;

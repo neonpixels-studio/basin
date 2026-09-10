@@ -42,6 +42,22 @@ describe("error.vue (fatal error page)", () => {
     expect(wrapper.text()).toContain("Something threw us off the trail.");
   });
 
+  // Pins the >= boundary exactly at 500 so a future >/>=  typo (which every
+  // other test here would miss — 503 and 404 both sit well clear of the
+  // boundary, and the {} fallback test carries no statusMessage either way)
+  // fails immediately.
+  it("treats exactly 500 as a server error, never the raw statusMessage", () => {
+    const boundaryError = {
+      statusCode: 500,
+      statusMessage: "connection refused 10.0.0.4:5432",
+    };
+    const wrapper = shallowMount(ErrorPage, {
+      props: { error: boundaryError },
+    });
+    expect(wrapper.text()).not.toContain("connection refused");
+    expect(wrapper.text()).toContain("Something threw us off the trail.");
+  });
+
   it("falls back to defaults when the error prop is sparse", () => {
     const wrapper = shallowMount(ErrorPage, { props: { error: {} } });
     expect(wrapper.find("h1").text()).toBe("500");
