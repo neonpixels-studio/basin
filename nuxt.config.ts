@@ -1,5 +1,6 @@
 import tailwindcss from "@tailwindcss/vite";
 import { fileURLToPath } from "node:url";
+import { validateSiteUrl } from "./server/utils/siteUrlValidation";
 
 const mainCss = fileURLToPath(
   new URL("./app/assets/css/main.css", import.meta.url),
@@ -53,6 +54,32 @@ function requireTokenEncryptionKeyForBuild(): string {
   return key;
 }
 
+// A missing or malformed NUXT_SITE_URL would otherwise only surface at
+// request time (server/utils/siteUrl.ts's getConfiguredSiteUrl(), called on
+// the first OAuth Connect click or billing redirect) instead of at deploy
+// time. Reuses the exact same rules from ./server/utils/siteUrlValidation
+// (rather than re-deriving them here) so build time and request time can
+// never drift out of sync. Only blocks an actual deployable build, same as
+// the two guards above, so `nuxt dev` still works without a site URL set.
+function requireSiteUrlForBuild(): string {
+  const rawSiteUrl = process.env.NUXT_SITE_URL || "";
+
+  if (!isProductionBuild) {
+    return rawSiteUrl;
+  }
+
+  const validationResult = validateSiteUrl(rawSiteUrl);
+  if (!validationResult.valid) {
+    throw new Error(
+      `${validationResult.message} — OAuth redirects and billing bounces ` +
+        "need a trusted origin. Set NUXT_SITE_URL to a bare http(s) origin " +
+        "in this environment's dotenvx file before building.",
+    );
+  }
+
+  return rawSiteUrl;
+}
+
 // A missing or too-short pepper here would bake an empty/weak value into the
 // server bundle (same nitro.replace mechanism as the encryption key below) and
 // silently ship deletion tombstones that store guessable hashes — fail the
@@ -103,8 +130,11 @@ export default defineNuxtConfig({
     // post-billing bounce (see server/utils/siteUrl.ts, which throws a 500 if it
     // is unset or malformed at request time). Read INLINE like the values below
     // so dotenvx-decrypted values bake into the server bundle at build time.
-    // Must be set per environment in the dotenvx files.
-    siteUrl: process.env.NUXT_SITE_URL || "",
+    // Must be set per environment in the dotenvx files. Read through
+    // requireSiteUrlForBuild() rather than raw process.env so a missing or
+    // malformed value fails the build instead of only the first request that
+    // needs it (see requireSiteUrlForBuild above).
+    siteUrl: requireSiteUrlForBuild(),
     googleClientId: process.env.NUXT_GOOGLE_CLIENT_ID || "",
     googleClientSecret: process.env.NUXT_GOOGLE_CLIENT_SECRET || "",
     disableSignups: process.env.NUXT_DISABLE_SIGNUPS || "",
