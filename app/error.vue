@@ -12,13 +12,21 @@ const props = defineProps({
 const HOME_PATH = "/dashboard";
 const DEFAULT_STATUS_CODE = 500;
 const DEFAULT_MESSAGE = "Something threw us off the trail.";
-const SERVER_ERROR_THRESHOLD = 500;
+const CLIENT_ERROR_RANGE_START = 400;
+const CLIENT_ERROR_RANGE_END = 499;
 
 const statusCode = computed(
   () => props.error?.statusCode ?? DEFAULT_STATUS_CODE,
 );
-const isServerError = computed(
-  () => statusCode.value >= SERVER_ERROR_THRESHOLD,
+// Trust statusMessage only inside the 4xx range, not merely "not a 5xx" —
+// that also excludes an unexpected 3xx/2xx/0/NaN statusCode, none of which
+// this app's routes ever throw with a user-facing statusMessage, so they
+// fall back to DEFAULT_MESSAGE like a 5xx would rather than assuming
+// they're safe to show.
+const isClientError = computed(
+  () =>
+    statusCode.value >= CLIENT_ERROR_RANGE_START &&
+    statusCode.value <= CLIENT_ERROR_RANGE_END,
 );
 // statusMessage is only trusted as user-facing copy on a 4xx, because every
 // 4xx this app's own server routes throw is a fixed, purpose-written string
@@ -26,18 +34,19 @@ const isServerError = computed(
 // interpolated request value. That's an invariant of this codebase's routes,
 // not a guarantee Nuxt/H3 make generally, so a new route must keep following
 // it: never assign a raw caught err.message, or an interpolated user input,
-// to statusMessage on a 4xx it throws. On a 5xx statusMessage can carry raw
-// thrown err.message text, upstream API detail, or DB driver output, so it's
-// never shown — DEFAULT_MESSAGE is used instead regardless of what
-// statusMessage contains. Never error.message either way, for the same
-// reason. Route misses never reach here at all (see the file-top comment):
-// they fall to pages/[...slug].vue's fixed copy instead of Nuxt's built-in
-// 404, which can otherwise echo the requested path back into statusMessage.
+// to statusMessage on a 4xx it throws. Outside the 4xx range (5xx, or any
+// other/unexpected status) statusMessage can carry raw thrown err.message
+// text, upstream API detail, or DB driver output, so it's never shown —
+// DEFAULT_MESSAGE is used instead regardless of what statusMessage
+// contains. Never error.message either way, for the same reason. Route
+// misses never reach here at all (see the file-top comment): they fall to
+// pages/[...slug].vue's fixed copy instead of Nuxt's built-in 404, which
+// can otherwise echo the requested path back into statusMessage.
 const message = computed(() => {
-  if (isServerError.value) {
-    return DEFAULT_MESSAGE;
+  if (isClientError.value) {
+    return props.error?.statusMessage || DEFAULT_MESSAGE;
   }
-  return props.error?.statusMessage || DEFAULT_MESSAGE;
+  return DEFAULT_MESSAGE;
 });
 
 useHead({ title: message });

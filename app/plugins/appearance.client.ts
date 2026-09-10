@@ -19,7 +19,14 @@ export default defineNuxtPlugin((nuxtApp) => {
   // reason (see node_modules/nuxt/dist/app/composables/ready.js). It fires
   // once regardless of whether app.vue or error.vue is the component that
   // resolved inside it, which is what makes error.vue themed too.
+  //
+  // Client-side hook callbacks run with no Vue injection context (Nuxt only
+  // wraps callHook in runWithContext on the server — see
+  // node_modules/nuxt/dist/app/nuxt.js's `if (import.meta.server)` branch),
+  // so init()'s call to useAuth() would otherwise hit Clerk's inject() with
+  // nothing provided and throw. runWithContext delegates to Vue's
+  // app.runWithContext, which restores that injection context.
   nuxtApp.hooks.hookOnce("app:suspense:resolve", () => {
-    appearanceStore.init();
+    nuxtApp.runWithContext(() => appearanceStore.init());
   });
 });

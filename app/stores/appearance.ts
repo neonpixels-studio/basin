@@ -217,18 +217,22 @@ export const useAppearanceStore = defineStore("appearance", () => {
     applyToDom();
   }
 
-  // Called from app.vue's onMounted, not eagerly here at store-setup time:
-  // store setup runs synchronously during SSR/hydration render, which is
-  // always default appearance server-side (Clerk auth is client-only).
-  // Applying loadFromDb() in that same synchronous pass either races Nuxt's
+  // Called from app/plugins/appearance.client.ts on the app:suspense:resolve
+  // hook (inside nuxtApp.runWithContext, which useAuth() below needs — see
+  // that plugin's comment), not eagerly here at store-setup time: store
+  // setup runs synchronously during SSR/hydration render, which is always
+  // default appearance server-side (Clerk auth is client-only). Applying
+  // loadFromDb() in that same synchronous pass either races Nuxt's
   // automatic Pinia state hydration (which then reverts the just-applied
   // values back to server defaults, and the persistence watcher below
   // re-PATCHes that revert to the DB) or produces a Vue hydration mismatch
-  // that Vue leaves unpatched. Waiting for onMounted avoids both: hydration
-  // has already settled, so this lands as an ordinary post-mount update.
+  // that Vue leaves unpatched. Waiting for app:suspense:resolve avoids
+  // both: hydration has already settled by then, so this lands as an
+  // ordinary post-hydration update — and it fires regardless of whether
+  // app.vue or error.vue is the component that resolved inside it.
   //
-  // Guarded for re-entrancy in case the onMounted call site ever changes —
-  // the store itself is a singleton, so this only needs to succeed once.
+  // Guarded for re-entrancy in case the call site ever changes — the store
+  // itself is a singleton, so this only needs to succeed once.
   let initialized = false;
 
   function init() {

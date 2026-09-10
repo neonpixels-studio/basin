@@ -58,6 +58,22 @@ describe("error.vue (fatal error page)", () => {
     expect(wrapper.text()).toContain("Something threw us off the trail.");
   });
 
+  // Guards the range check itself: an unexpected 3xx must fall back to the
+  // generic message rather than being treated as "safe because it's not a
+  // 5xx" — this app's routes never throw a 3xx with a user-facing
+  // statusMessage, so there's nothing to trust here either.
+  it("shows the generic message on an unexpected 3xx, never the raw statusMessage", () => {
+    const redirectError = {
+      statusCode: 302,
+      statusMessage: "internal redirect target: /api/internal/debug",
+    };
+    const wrapper = shallowMount(ErrorPage, {
+      props: { error: redirectError },
+    });
+    expect(wrapper.text()).not.toContain("internal redirect target");
+    expect(wrapper.text()).toContain("Something threw us off the trail.");
+  });
+
   it("falls back to defaults when the error prop is sparse", () => {
     const wrapper = shallowMount(ErrorPage, { props: { error: {} } });
     expect(wrapper.find("h1").text()).toBe("500");
