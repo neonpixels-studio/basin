@@ -13,7 +13,7 @@
 // nuxt.config.ts can run the identical checks at build time (see
 // requireSiteUrlForBuild there) and fail the deploy instead of only surfacing
 // here on the first request that needs a site URL.
-import { validateSiteUrl } from "./siteUrlValidation";
+import { isSecureSiteOrigin, validateSiteUrl } from "./siteUrlValidation";
 
 // Returns the configured site origin (scheme://host[:port], no trailing path)
 // so callers can join redirect paths onto a trusted base. Throws a 500 when the
@@ -46,7 +46,7 @@ export function getConfiguredSiteUrl(): string {
 // "Invalid OAuth state" 400 on the callback (mirrors the NODE_ENV production
 // guard in nuxt.config.ts).
 export function isConfiguredSiteUrlSecure(): boolean {
-  const isSecureOrigin = getConfiguredSiteUrl().startsWith("https:");
+  const isSecureOrigin = isSecureSiteOrigin(getConfiguredSiteUrl());
   if (process.env.NODE_ENV === "production" && !isSecureOrigin) {
     throw createError({
       statusCode: 500,

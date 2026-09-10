@@ -1,6 +1,6 @@
 import tailwindcss from "@tailwindcss/vite";
 import { fileURLToPath } from "node:url";
-import { validateSiteUrl } from "./server/utils/siteUrlValidation";
+import { requireValidSiteUrlForBuild } from "./server/utils/siteUrlValidation";
 
 const mainCss = fileURLToPath(
   new URL("./app/assets/css/main.css", import.meta.url),
@@ -55,29 +55,20 @@ function requireTokenEncryptionKeyForBuild(): string {
 }
 
 // A missing or malformed NUXT_SITE_URL would otherwise only surface at
-// request time (server/utils/siteUrl.ts's getConfiguredSiteUrl(), called on
-// the first OAuth Connect click or billing redirect) instead of at deploy
-// time. Reuses the exact same rules from ./server/utils/siteUrlValidation
-// (rather than re-deriving them here) so build time and request time can
-// never drift out of sync. Only blocks an actual deployable build, same as
-// the two guards above, so `nuxt dev` still works without a site URL set.
+// request time (server/utils/siteUrl.ts's getConfiguredSiteUrl() and
+// isConfiguredSiteUrlSecure(), called on the first OAuth Connect click or
+// billing redirect) instead of at deploy time. The actual guard logic lives
+// in ./server/utils/siteUrlValidation (requireValidSiteUrlForBuild), unit
+// tested there, since `defineNuxtConfig` isn't a real global outside Nuxt's
+// own config loader and this file can't be imported directly in tests. Only
+// blocks an actual deployable build, matching requireTokenEncryptionKeyForBuild
+// and requireTombstonePepperForBuild above/below, so `nuxt dev` still works
+// without a site URL set.
 function requireSiteUrlForBuild(): string {
-  const rawSiteUrl = process.env.NUXT_SITE_URL || "";
-
-  if (!isProductionBuild) {
-    return rawSiteUrl;
-  }
-
-  const validationResult = validateSiteUrl(rawSiteUrl);
-  if (!validationResult.valid) {
-    throw new Error(
-      `${validationResult.message} — OAuth redirects and billing bounces ` +
-        "need a trusted origin. Set NUXT_SITE_URL to a bare http(s) origin " +
-        "in this environment's dotenvx file before building.",
-    );
-  }
-
-  return rawSiteUrl;
+  return requireValidSiteUrlForBuild(
+    process.env.NUXT_SITE_URL,
+    isProductionBuild,
+  );
 }
 
 // A missing or too-short pepper here would bake an empty/weak value into the
