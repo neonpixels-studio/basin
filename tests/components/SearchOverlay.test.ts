@@ -151,6 +151,14 @@ describe("SearchOverlay", () => {
     expect(wrapper.text()).not.toContain("No matches");
   });
 
+  it("shows the error state when a result item has no id, instead of crashing the row key", async () => {
+    const wrapper = await runSearch(
+      vi.fn().mockResolvedValue({ items: [null], nextOffset: null }),
+    );
+    expect(wrapper.find(".search-error").exists()).toBe(true);
+    expect(wrapper.text()).not.toContain("No matches");
+  });
+
   it("shows 'No matches', not the error state, on a successful empty result", async () => {
     const wrapper = await runSearch(vi.fn().mockResolvedValue(emptyPage()));
     expect(wrapper.find(".search-error").exists()).toBe(false);
@@ -396,8 +404,13 @@ describe("SearchOverlay", () => {
     await wrapper.vm.$nextTick();
 
     // Loaded results survive, the whole-panel error state is not shown, and the
-    // load-more button is still there to retry through.
-    expect(wrapper.find(".search-load-more-error").exists()).toBe(true);
+    // load-more button is still there to retry through. The error region
+    // (role="status") stays mounted even with no error — see isEmpty below —
+    // so an AT client has it in the DOM before this text appears; assert on
+    // its text rather than .exists().
+    expect(wrapper.find(".search-load-more-error").text()).toContain(
+      "Couldn't load more results",
+    );
     expect(wrapper.find(".search-error").exists()).toBe(false);
     expect(wrapper.findAll(".sr-item")).toHaveLength(2);
     expect(wrapper.find(".search-load-more").exists()).toBe(true);
@@ -407,9 +420,39 @@ describe("SearchOverlay", () => {
     await wrapper.vm.$nextTick();
 
     expect(fetchMock).toHaveBeenCalledTimes(3);
-    expect(wrapper.find(".search-load-more-error").exists()).toBe(false);
+    expect(wrapper.find(".search-load-more-error").text()).toBe("");
     expect(wrapper.findAll(".sr-item")).toHaveLength(3);
     expect(wrapper.find(".search-load-more").exists()).toBe(false);
+  });
+
+  // A never-settling load-more request must time out rather than wedge the
+  // button in "Loading more…" forever with no way to retry.
+  it("times out a never-settling load-more request and re-enables the button", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(pageOf([1, 2], 20))
+      .mockImplementationOnce(() => new Promise(() => {}));
+    const wrapper = await runSearch(fetchMock);
+
+    await wrapper.find(".search-load-more").trigger("click");
+    await wrapper.vm.$nextTick();
+    expect(wrapper.find(".search-load-more").attributes("aria-busy")).toBe(
+      "true",
+    );
+
+    // SEARCH_TIMEOUT_MS in the component.
+    await vi.advanceTimersByTimeAsync(15000);
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.find(".search-load-more-error").text()).toContain(
+      "Couldn't load more results",
+    );
+    expect(wrapper.find(".search-load-more").attributes("aria-busy")).toBe(
+      "false",
+    );
+    expect(wrapper.find(".search-load-more").attributes("aria-disabled")).toBe(
+      "false",
+    );
   });
 
   it("keeps the overlay open when Enter is pressed on Load more, though a bare window Enter would close it", async () => {

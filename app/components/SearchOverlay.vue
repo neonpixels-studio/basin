@@ -1,9 +1,15 @@
 <script setup>
 import { computed, watch, ref, nextTick, onMounted, onUnmounted } from "vue";
 import { SOURCES } from "~/lib/icons";
+import { $fetchWithTimeout } from "~/utils/fetchWithTimeout";
 
 const { state, closeSearch, moveCursor } = useSearch();
 const feedStore = useFeedStore();
+
+// Matches feed.ts's per-call timeout constants (e.g. FEED_ITEMS_TIMEOUT_MS):
+// without this, a hung /api/search response wedges searchLoading/loadingMore
+// forever — nothing else ever settles the promise to clear them.
+const SEARCH_TIMEOUT_MS = 15000;
 
 const PAGES = [
   { kind: "page", id: "/", title: "Dashboard", sub: "Your unified feed" },
@@ -68,9 +74,15 @@ const searchFlat = computed(() => searchGroups.value.flatMap((g) => g.rows));
 const srcVar = (type) => `var(--${SOURCES[type]?.cls ?? "accent"})`;
 const srcLabel = (type) => SOURCES[type]?.label ?? type;
 
-// Treat a body without an items array as a failure so a malformed 2xx response
-// surfaces the error state instead of crashing the searchGroups computed on .map.
-const isSearchPage = (page) => page && Array.isArray(page.items);
+// Treat a body without an items array, or with an id-less item, as a failure
+// so a malformed 2xx response surfaces the error state instead of crashing
+// the ":i" + row.ref.id template key (or collapsing every undefined-id row
+// into one in appendSearchPage's seenIds dedupe). Mirrors feed.ts's
+// applyItemsResponse malformed check.
+const isSearchPage = (page) =>
+  page &&
+  Array.isArray(page.items) &&
+  page.items.every((item) => item?.id !== undefined);
 
 // The cursor must move strictly forward; a server that echoes back the same (or
 // an earlier) offset would otherwise loop us on a page we already hold, so treat
@@ -143,9 +155,11 @@ async function fetchSearchResults(query) {
   searchError.value = null;
 
   try {
-    const page = await $fetch(`/api/search?q=${encodeURIComponent(query)}`, {
-      signal: controller.signal,
-    });
+    const page = await $fetchWithTimeout(
+      `/api/search?q=${encodeURIComponent(query)}`,
+      SEARCH_TIMEOUT_MS,
+      { signal: controller.signal },
+    );
 
     if (!isSearchPage(page)) {
       throw new Error("Malformed search response");
@@ -216,8 +230,9 @@ async function loadMoreResults() {
   loadMoreError.value = null;
 
   try {
-    const page = await $fetch(
+    const page = await $fetchWithTimeout(
       `/api/search?q=${encodeURIComponent(query)}&offset=${currentOffset}`,
+      SEARCH_TIMEOUT_MS,
       { signal: controller.signal },
     );
     if (!isSearchPage(page)) {
@@ -404,12 +419,18 @@ onUnmounted(() => {
               {{ loadingMore ? "Loading more…" : "Load more" }}
             </button>
 
+            <!-- Stays mounted (rather than v-if on the whole element) so the
+            live region already exists in the DOM before its text changes —
+            AT generally won't announce a region created and populated in the
+            same patch. -->
             <div
-              v-if="loadMoreError"
               class="search-load-more-error"
+              :class="{ 'is-empty': !loadMoreError }"
               role="status"
             >
-              Couldn't load more results — press Load more to try again.
+              <template v-if="loadMoreError">
+                Couldn't load more results — press Load more to try again.
+              </template>
             </div>
           </template>
 
@@ -572,6 +593,9 @@ onUnmounted(() => {
   padding: 16px 0;
   font-size: 12.5px;
   color: var(--danger);
+}
+.search-load-more-error.is-empty {
+  padding: 0;
 }
 .search-foot {
   display: flex;
