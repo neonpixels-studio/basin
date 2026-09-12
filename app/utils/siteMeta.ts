@@ -34,6 +34,16 @@ function isValidSiteOrigin(parsedSiteUrl: URL): boolean {
 // ogUrl/canonical in that case instead of shipping a wrong one; unlike
 // getConfiguredSiteUrl, this degrades quietly rather than failing the page.
 export function canonicalUrl(path: string): string | undefined {
+  // normalizeRoutePath returns "" for a non-string route path (see its own
+  // guard comment), and any caller could otherwise pass a value that isn't
+  // rooted at "/" — joining that straight onto the origin would emit a
+  // canonical for the wrong page ("" → the homepage) or a malformed URL
+  // ("pricing" → "https://reader.examplepricing"). Treat both as "no known
+  // path" the same way a missing/invalid site URL is treated.
+  if (!path.startsWith("/")) {
+    return undefined;
+  }
+
   const { siteUrl } = useRuntimeConfig().public ?? {};
   if (!siteUrl) {
     return undefined;

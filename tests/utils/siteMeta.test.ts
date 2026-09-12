@@ -73,4 +73,20 @@ describe("canonicalUrl", () => {
     }));
     expect(canonicalUrl("/pricing")).toBeUndefined();
   });
+
+  it("returns undefined for an empty path rather than canonicalizing to the homepage", () => {
+    // normalizeRoutePath returns "" for a non-string route path — canonicalUrl
+    // must not silently treat that as "/".
+    vi.stubGlobal("useRuntimeConfig", () => ({
+      public: { siteUrl: "https://reader.example" },
+    }));
+    expect(canonicalUrl("")).toBeUndefined();
+  });
+
+  it("returns undefined for a path missing its leading slash rather than concatenating a malformed URL", () => {
+    vi.stubGlobal("useRuntimeConfig", () => ({
+      public: { siteUrl: "https://reader.example" },
+    }));
+    expect(canonicalUrl("pricing")).toBeUndefined();
+  });
 });
