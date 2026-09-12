@@ -159,6 +159,21 @@ describe("SearchOverlay", () => {
     expect(wrapper.text()).not.toContain("No matches");
   });
 
+  it("shows the error state when a result item has a null id, not just a missing one", async () => {
+    // A bare `!== undefined` check would let `id: null` through — it would
+    // still collide every such row on the ":inull" template key and collapse
+    // them in appendSearchPage's seenIds dedupe, so the guard must check the
+    // type, not just presence.
+    const wrapper = await runSearch(
+      vi.fn().mockResolvedValue({
+        items: [{ ...resultItem(1), id: null }],
+        nextOffset: null,
+      }),
+    );
+    expect(wrapper.find(".search-error").exists()).toBe(true);
+    expect(wrapper.text()).not.toContain("No matches");
+  });
+
   it("shows 'No matches', not the error state, on a successful empty result", async () => {
     const wrapper = await runSearch(vi.fn().mockResolvedValue(emptyPage()));
     expect(wrapper.find(".search-error").exists()).toBe(false);
@@ -423,6 +438,61 @@ describe("SearchOverlay", () => {
     expect(wrapper.find(".search-load-more-error").text()).toBe("");
     expect(wrapper.findAll(".sr-item")).toHaveLength(3);
     expect(wrapper.find(".search-load-more").exists()).toBe(false);
+  });
+
+  it("clears a stale load-more error the moment the query changes", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(pageOf([1, 2], 20))
+      .mockRejectedValueOnce(new Error("network down"))
+      .mockResolvedValueOnce(pageOf([4, 5], null));
+    const wrapper = await runSearch(fetchMock);
+
+    await wrapper.find(".search-load-more").trigger("click");
+    await flushPromises();
+    await wrapper.vm.$nextTick();
+    expect(wrapper.find(".search-load-more-error").text()).toContain(
+      "Couldn't load more results",
+    );
+
+    await typeQuery(wrapper, `${NO_PAGE_MATCH_QUERY}x`);
+    await wrapper.vm.$nextTick();
+
+    // resetPagination() must clear loadMoreError on every fresh first-page
+    // fetch — otherwise a stale banner from the old query sits under the new
+    // query's results forever.
+    expect(wrapper.find(".search-load-more-error").text()).toBe("");
+  });
+
+  it("keeps focus on the Load more button when more pages remain, not just on the last page", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(pageOf([1, 2], 20))
+      .mockResolvedValueOnce(pageOf([3], 40));
+    vi.stubGlobal("$fetch", fetchMock);
+    const wrapper = shallowMount(SearchOverlay, { attachTo: document.body });
+    state.open = true;
+    await typeQuery(wrapper, NO_PAGE_MATCH_QUERY);
+
+    const button = wrapper.find(".search-load-more");
+    button.element.focus();
+    expect(document.activeElement).toBe(button.element);
+
+    await button.trigger("click");
+    await flushPromises();
+    await vi.runAllTimersAsync();
+    await wrapper.vm.$nextTick();
+
+    // Another page remains → the button stays mounted → focus must not be
+    // yanked to the search input on every load-more, only on the final page
+    // (see "returns focus to the search input…" below).
+    expect(wrapper.find(".search-load-more").exists()).toBe(true);
+    expect(document.activeElement).toBe(
+      wrapper.find(".search-load-more").element,
+    );
+
+    wrapper.unmount();
   });
 
   // A never-settling load-more request must time out rather than wedge the

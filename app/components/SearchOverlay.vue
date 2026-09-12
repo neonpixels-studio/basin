@@ -74,15 +74,18 @@ const searchFlat = computed(() => searchGroups.value.flatMap((g) => g.rows));
 const srcVar = (type) => `var(--${SOURCES[type]?.cls ?? "accent"})`;
 const srcLabel = (type) => SOURCES[type]?.label ?? type;
 
-// Treat a body without an items array, or with an id-less item, as a failure
-// so a malformed 2xx response surfaces the error state instead of crashing
-// the ":i" + row.ref.id template key (or collapsing every undefined-id row
-// into one in appendSearchPage's seenIds dedupe). Mirrors feed.ts's
+// Treat a body without an items array, or with a non-numeric-id item, as a
+// failure so a malformed 2xx response surfaces the error state instead of
+// crashing the ":i" + row.ref.id template key (or collapsing every bad-id row
+// into one in appendSearchPage's seenIds dedupe). Checks the type, not just
+// presence — `id: null` clears an `!== undefined` check but still collides
+// the same way. mapSearchRow always produces a numeric id, so this doesn't
+// reject anything the real contract can produce. Mirrors feed.ts's
 // applyItemsResponse malformed check.
 const isSearchPage = (page) =>
   page &&
   Array.isArray(page.items) &&
-  page.items.every((item) => item?.id !== undefined);
+  page.items.every((item) => typeof item?.id === "number");
 
 // The cursor must move strictly forward; a server that echoes back the same (or
 // an earlier) offset would otherwise loop us on a page we already hold, so treat
