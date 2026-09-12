@@ -12,11 +12,16 @@ export function formatRelativeTime(date: Date | null): string {
     return "";
   }
 
+  // Single "now" read shared by the relative-day math below and the
+  // absolute-date year check, so the two can't disagree about the year
+  // when a call happens to straddle midnight on Dec 31.
+  const now = new Date();
+
   // Clamp to 0 so a future-dated item (timezone-skewed RSS pubDates,
   // publish-ahead scheduling) floors at "0m" instead of a negative token
   // like "-125m", which the relative-time pattern would misread as an
   // absolute date.
-  const diffMs = Math.max(0, Date.now() - date.getTime());
+  const diffMs = Math.max(0, now.getTime() - date.getTime());
   const diffMinutes = Math.floor(diffMs / 60_000);
   const diffHours = Math.floor(diffMs / 3_600_000);
   const diffDays = Math.floor(diffMs / 86_400_000);
@@ -31,7 +36,22 @@ export function formatRelativeTime(date: Date | null): string {
     return `${diffDays}d`;
   }
 
-  return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  return formatAbsoluteDate(date, now);
+}
+
+// "Jan 5" for the current year; "Jan 5, 2024" once the item crosses into a
+// prior year, so an old item is never mistaken for one from this January.
+function formatAbsoluteDate(date: Date, now: Date): string {
+  const dateOptions: Intl.DateTimeFormatOptions = {
+    month: "short",
+    day: "numeric",
+  };
+
+  if (date.getFullYear() !== now.getFullYear()) {
+    dateOptions.year = "numeric";
+  }
+
+  return date.toLocaleDateString("en-US", dateOptions);
 }
 
 export function isRelativeTime(time: string): boolean {
