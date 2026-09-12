@@ -8,7 +8,11 @@ import { getConfiguredSiteUrl } from "../utils/siteUrl";
 function resolveSiteUrlOrUndefined(): string | undefined {
   try {
     return getConfiguredSiteUrl();
-  } catch {
+  } catch (error) {
+    console.warn(
+      "robots.txt: site URL unavailable, omitting Sitemap directive",
+      error,
+    );
     return undefined;
   }
 }

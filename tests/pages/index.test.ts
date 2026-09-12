@@ -5,6 +5,11 @@ import IndexPage from "~/pages/index.vue";
 describe("home page (/)", () => {
   beforeEach(() => {
     vi.mocked(globalThis.useMarketingSeo).mockClear();
+    vi.stubGlobal("useRoute", () => ({
+      path: "/",
+      params: {},
+      query: {},
+    }));
   });
 
   // The og/twitter/canonical shape is asserted once, in

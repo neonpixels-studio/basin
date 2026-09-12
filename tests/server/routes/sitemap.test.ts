@@ -7,6 +7,11 @@ const runtimeConfigValue: { value: Record<string, string> } = {
   value: { siteUrl: "https://reader.example" },
 };
 
+// NOTE: ESM hoists the `import` below above these stubGlobal calls, so
+// server/routes/sitemap.xml is evaluated first. That's safe only because the
+// route module reads setHeader/useRuntimeConfig/createError inside its
+// handler function (invocation time), not at module scope — if it ever reads
+// a global at module scope, these stubs must move into beforeAll/beforeEach.
 vi.stubGlobal("setHeader", mockSetHeader);
 vi.stubGlobal("useRuntimeConfig", () => runtimeConfigValue.value);
 vi.stubGlobal(
