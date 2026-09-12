@@ -85,16 +85,17 @@ describe("App", () => {
       expect(wrapper.find(".app-shell").classes()).toContain("app-ready");
     });
 
-    // appearanceStore.init() must run post-mount (not eagerly at store-setup
-    // time) so its cache/DB apply can't race Nuxt's SSR state hydration —
-    // see the store's init() for why. This guards against that call being
-    // dropped from onMounted, which would leave settings never loading at
-    // all while every other test here still passed.
-    it("calls appearanceStore.init() on mount", () => {
+    // app.vue must NOT call appearanceStore.init() itself — it's registered
+    // in app/plugins/appearance.client.ts instead, so it also runs on a
+    // cold fatal load where Nuxt renders error.vue (and skips app.vue's
+    // onMounted) instead of app.vue. This guards against the call
+    // regressing back into app.vue, which would silently re-break theming
+    // on error.vue while every other test here still passed.
+    it("does not call appearanceStore.init() itself", () => {
       stubRoute("/dashboard");
       const init = stubAppearanceReady(false);
       shallowMount(App);
-      expect(init).toHaveBeenCalledTimes(1);
+      expect(init).not.toHaveBeenCalled();
     });
   });
 });
