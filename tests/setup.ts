@@ -84,7 +84,7 @@ globalThis.useSeoMeta = vi.fn();
 // app/utils/siteMeta.ts). Tests that care about a specific siteUrl override
 // with vi.stubGlobal.
 globalThis.useRuntimeConfig = vi.fn(() => ({
-  public: { siteUrl: "https://basin.example" },
+  public: { siteUrl: "https://reader.example" },
 }));
 
 // Nuxt / Nitro handler wrappers — identity so the inner function is what gets exported

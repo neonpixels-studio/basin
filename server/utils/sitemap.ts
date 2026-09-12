@@ -4,16 +4,7 @@
 // handler that wires it to a response.
 
 import { MARKETING_ROUTES } from "#shared/utils/marketingRoutes";
-
-function escapeXmlEntities(value: string): string {
-  return value
-    .split("&")
-    .join("&amp;")
-    .split("<")
-    .join("&lt;")
-    .split(">")
-    .join("&gt;");
-}
+import { escapeXmlEntities } from "./xml";
 
 // Exported so escaping is directly testable — MARKETING_ROUTES is a fixed,
 // hardcoded list today with nothing to escape, but this guards against a
