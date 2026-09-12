@@ -193,7 +193,7 @@ describe("SearchOverlay", () => {
       const searchResult = mapSearchRow(mockSearchResultRow({ readAt: null }));
 
       const wrapper = await runSearch(
-        vi.fn().mockResolvedValue([searchResult]),
+        vi.fn().mockResolvedValue({ items: [searchResult], nextOffset: null }),
         "found",
       );
       await wrapper.find(".sr-item").trigger("click");
@@ -217,7 +217,7 @@ describe("SearchOverlay", () => {
       );
 
       const wrapper = await runSearch(
-        vi.fn().mockResolvedValue([searchResult]),
+        vi.fn().mockResolvedValue({ items: [searchResult], nextOffset: null }),
         "found",
       );
       await wrapper.find(".sr-item").trigger("click");
