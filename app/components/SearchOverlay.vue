@@ -1,9 +1,15 @@
 <script setup>
-import { computed, watch, ref, onMounted, onUnmounted } from "vue";
+import { computed, watch, ref, nextTick, onMounted, onUnmounted } from "vue";
 import { SOURCES } from "~/lib/icons";
+import { $fetchWithTimeout } from "~/utils/fetchWithTimeout";
 
 const { state, closeSearch, moveCursor } = useSearch();
 const feedStore = useFeedStore();
+
+// Matches feed.ts's per-call timeout constants (e.g. FEED_ITEMS_TIMEOUT_MS):
+// without this, a hung /api/search response wedges searchLoading/loadingMore
+// forever — nothing else ever settles the promise to clear them.
+const SEARCH_TIMEOUT_MS = 15000;
 
 const PAGES = [
   { kind: "page", id: "/", title: "Dashboard", sub: "Your unified feed" },
@@ -19,6 +25,15 @@ const PAGES = [
 const serverResults = ref([]);
 const searchLoading = ref(false);
 const searchError = ref(null);
+// Server pagination cursor for /api/search. Null means the first page hasn't
+// loaded yet or the last page returned no further offset (end of results).
+const nextOffset = ref(null);
+const loadingMore = ref(false);
+// A load-more failure is tracked separately from searchError: searchError
+// replaces the whole results panel, which would hide already-loaded results,
+// whereas a load-more failure must leave loaded results visible and only show
+// an inline retry near the load-more control.
+const loadMoreError = ref(null);
 
 const pageMatchesQuery = (page, query) =>
   !query ||
@@ -59,9 +74,36 @@ const searchFlat = computed(() => searchGroups.value.flatMap((g) => g.rows));
 const srcVar = (type) => `var(--${SOURCES[type]?.cls ?? "accent"})`;
 const srcLabel = (type) => SOURCES[type]?.label ?? type;
 
-// Tracks the AbortController for the current in-flight /api/search request.
-// Replaced each time a new request is fired so older responses are ignored.
+// Treat a body without an items array, or with a non-numeric-id item, as a
+// failure so a malformed 2xx response surfaces the error state instead of
+// crashing the ":i" + row.ref.id template key (or collapsing every bad-id row
+// into one in appendSearchPage's seenIds dedupe). Checks the type, not just
+// presence — `id: null` clears an `!== undefined` check but still collides
+// the same way. mapSearchRow always produces a numeric id, so this doesn't
+// reject anything the real contract can produce. Mirrors feed.ts's
+// applyItemsResponse malformed check.
+const isSearchPage = (page) =>
+  page &&
+  Array.isArray(page.items) &&
+  page.items.every((item) => typeof item?.id === "number");
+
+// The cursor must move strictly forward; a server that echoes back the same (or
+// an earlier) offset would otherwise loop us on a page we already hold, so treat
+// any non-advancing cursor as end-of-results. Mirrors feed.ts's resolveNextOffset.
+function resolveNextOffset(rawNext, currentOffset) {
+  if (typeof rawNext !== "number") {
+    return null;
+  }
+  return rawNext > currentOffset ? rawNext : null;
+}
+
+// Tracks the AbortController for the current in-flight first-page /api/search
+// request. Replaced each time a new request is fired so older responses are
+// ignored.
 let activeAbortController = null;
+// Separate controller for an in-flight load-more request. A query change must
+// cancel this too, so a stale append can't land after the query moved on.
+let loadMoreAbortController = null;
 
 function cancelPendingSearch() {
   if (activeAbortController) {
@@ -70,8 +112,37 @@ function cancelPendingSearch() {
   }
 }
 
+function cancelPendingLoadMore() {
+  if (loadMoreAbortController) {
+    loadMoreAbortController.abort();
+    loadMoreAbortController = null;
+  }
+  loadingMore.value = false;
+}
+
+function resetPagination() {
+  nextOffset.value = null;
+  loadMoreError.value = null;
+  cancelPendingLoadMore();
+}
+
+// Append a fetched page's items, dropping ids already loaded so a rank tie or a
+// feed sync shifting offsets between pages can't render a duplicate row (which
+// would also collide on the ':i' + id key). Mirrors feed.ts's appendPage.
+function appendSearchPage(page, currentOffset) {
+  const seenIds = new Set(serverResults.value.map((result) => result.id));
+  serverResults.value = [
+    ...serverResults.value,
+    ...page.items.filter((item) => !seenIds.has(item.id)),
+  ];
+  nextOffset.value = resolveNextOffset(page.nextOffset, currentOffset);
+}
+
 async function fetchSearchResults(query) {
   cancelPendingSearch();
+  // A fresh first page replaces the whole result set, so drop any in-flight
+  // load-more and reset the cursor before it starts.
+  resetPagination();
 
   if (!query) {
     serverResults.value = [];
@@ -87,30 +158,103 @@ async function fetchSearchResults(query) {
   searchError.value = null;
 
   try {
-    const results = await $fetch(`/api/search?q=${encodeURIComponent(query)}`, {
-      signal: controller.signal,
-    });
+    const page = await $fetchWithTimeout(
+      `/api/search?q=${encodeURIComponent(query)}`,
+      SEARCH_TIMEOUT_MS,
+      { signal: controller.signal },
+    );
 
-    // Treat a non-array body as a failure so a malformed 2xx response surfaces
-    // the error state instead of crashing the searchGroups computed on .map.
-    if (!Array.isArray(results)) {
+    if (!isSearchPage(page)) {
       throw new Error("Malformed search response");
     }
 
     // Only commit if this controller is still the active one (i.e. not superseded).
     if (activeAbortController === controller) {
-      serverResults.value = results;
+      serverResults.value = page.items;
+      nextOffset.value = resolveNextOffset(page.nextOffset, 0);
     }
   } catch (error) {
     if (activeAbortController === controller) {
       console.error("Search request failed", error);
       searchError.value = error;
       serverResults.value = [];
+      nextOffset.value = null;
     }
   } finally {
     if (activeAbortController === controller) {
       searchLoading.value = false;
       activeAbortController = null;
+    }
+  }
+}
+
+const SEARCH_INPUT_ID = "reader-search-input";
+
+// Bound to the button via `ref="loadMoreButtonEl"` below rather than
+// detecting focus by CSS class, so a future styling rename can't silently
+// break focus restoration.
+const loadMoreButtonEl = ref(null);
+
+const loadMoreButtonHasFocus = () =>
+  loadMoreButtonEl.value !== null &&
+  document.activeElement === loadMoreButtonEl.value;
+
+// When the final page removes the Load more button, focus would otherwise fall
+// to <body>, where a stray Enter hits the window handler and opens/closes a
+// result. Send it back to the search input so keyboard flow stays inside the
+// overlay.
+function returnFocusToSearchInput() {
+  nextTick(() => {
+    document.getElementById(SEARCH_INPUT_ID)?.focus();
+  });
+}
+
+// Commit a fetched load-more page, unless a query change (or overlay close)
+// superseded it — that would graft stale rows onto the newer query's results.
+// If the final page removes the button while it held focus, hand focus back to
+// the input so keyboard flow stays in the overlay.
+function commitLoadMorePage(page, currentOffset, controller) {
+  if (loadMoreAbortController !== controller) {
+    return;
+  }
+  const buttonHadFocus = loadMoreButtonHasFocus();
+  appendSearchPage(page, currentOffset);
+  if (buttonHadFocus && nextOffset.value === null) {
+    returnFocusToSearchInput();
+  }
+}
+
+async function loadMoreResults() {
+  const query = state.query.trim();
+  if (nextOffset.value === null || loadingMore.value || !query) {
+    return;
+  }
+
+  const currentOffset = nextOffset.value;
+  const controller = new AbortController();
+  loadMoreAbortController = controller;
+  loadingMore.value = true;
+  loadMoreError.value = null;
+
+  try {
+    const page = await $fetchWithTimeout(
+      `/api/search?q=${encodeURIComponent(query)}&offset=${currentOffset}`,
+      SEARCH_TIMEOUT_MS,
+      { signal: controller.signal },
+    );
+    if (!isSearchPage(page)) {
+      throw new Error("Malformed search response");
+    }
+    commitLoadMorePage(page, currentOffset, controller);
+  } catch (error) {
+    if (loadMoreAbortController === controller) {
+      console.error("Load more search results failed", error);
+      loadMoreError.value = error;
+    }
+  } finally {
+    if (loadMoreAbortController === controller) {
+      loadingMore.value = false;
+      loadMoreAbortController = null;
     }
   }
 }
@@ -162,8 +306,10 @@ watch(
     searchError.value = null;
     clearTimeout(debounceTimer);
     // Cancel any in-flight request immediately so it cannot overwrite results
-    // for the new query while the debounce delay is pending.
+    // for the new query while the debounce delay is pending. Also drop any
+    // in-flight load-more and reset the cursor so a stale append can't land.
     cancelPendingSearch();
+    resetPagination();
     debounceTimer = setTimeout(() => {
       fetchSearchResults(newQuery.trim());
     }, 300);
@@ -176,6 +322,7 @@ watch(
     if (!isOpen) {
       clearTimeout(debounceTimer);
       cancelPendingSearch();
+      resetPagination();
       serverResults.value = [];
       searchError.value = null;
       searchLoading.value = false;
@@ -188,6 +335,7 @@ onUnmounted(() => {
   window.removeEventListener("keydown", onKey);
   clearTimeout(debounceTimer);
   cancelPendingSearch();
+  cancelPendingLoadMore();
 });
 </script>
 
@@ -257,6 +405,40 @@ onUnmounted(() => {
               <span class="sr-arrow"
                 ><RIcon name="arrowRight" :size="16"
               /></span>
+            </div>
+          </template>
+
+          <template v-if="serverResults.length">
+            <!-- One button stays mounted while more pages remain: it toggles to
+            a busy label rather than unmounting, so keyboard focus never falls
+            back to <body> (where a stray Enter would open a result and close
+            the overlay). aria-disabled (not disabled) keeps it focusable while
+            loading; loadMoreResults already no-ops a click mid-flight. -->
+            <button
+              v-if="nextOffset !== null"
+              ref="loadMoreButtonEl"
+              type="button"
+              class="search-load-more"
+              :aria-disabled="loadingMore"
+              :aria-busy="loadingMore"
+              @keydown.enter.stop
+              @click="loadMoreResults"
+            >
+              {{ loadingMore ? "Loading more…" : "Load more" }}
+            </button>
+
+            <!-- Stays mounted (rather than v-if on the whole element) so the
+            live region already exists in the DOM before its text changes —
+            AT generally won't announce a region created and populated in the
+            same patch. -->
+            <div
+              class="search-load-more-error"
+              :class="{ 'is-empty': !loadMoreError }"
+              role="status"
+            >
+              <template v-if="loadMoreError">
+                Couldn't load more results — press Load more to try again.
+              </template>
             </div>
           </template>
 
@@ -398,6 +580,30 @@ onUnmounted(() => {
 }
 .search-error .btn {
   flex: none;
+}
+.search-load-more {
+  display: block;
+  margin: 12px auto;
+  padding: 8px 18px;
+  font-size: 12.5px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.search-load-more[aria-busy="true"] {
+  color: var(--muted);
+  cursor: default;
+}
+.search-load-more-error {
+  text-align: center;
+  padding: 16px 0;
+  font-size: 12.5px;
+  color: var(--danger);
+}
+.search-load-more-error.is-empty {
+  padding: 0;
 }
 .search-foot {
   display: flex;
