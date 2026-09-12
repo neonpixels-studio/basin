@@ -40,9 +40,11 @@ redirect URI on that one client (localhost, the preview alias, and the
 production origin), and the YouTube connect flow must be started from the
 configured origin — the state cookie and callback have to share a host, so
 Netlify preview deploys must be reached via the pinned `.env.dev` alias, not a
-per-deploy hostname. A missing or malformed `NUXT_SITE_URL` makes the OAuth and
-billing routes return a 500 until it is set. See [`.env.example`](.env.example)
-for the full variable reference and where to obtain each value.
+per-deploy hostname. `npm run build` and `npm run build:dev` fail outright if
+`NUXT_SITE_URL` is missing, malformed, or not https for that environment —
+both must have a real value set before building, not just `.env`/`.env.e2e`.
+See [`.env.example`](.env.example) for the full variable reference and where
+to obtain each value.
 
 **First-time setup:** restore `.env.keys` from your password manager, then point
 local dev at your own Neon branch so it never touches production data:

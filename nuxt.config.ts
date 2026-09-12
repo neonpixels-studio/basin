@@ -1,5 +1,6 @@
 import tailwindcss from "@tailwindcss/vite";
 import { fileURLToPath } from "node:url";
+import { requireValidSiteUrlForBuild } from "./server/utils/siteUrlValidation";
 
 const mainCss = fileURLToPath(
   new URL("./app/assets/css/main.css", import.meta.url),
@@ -53,6 +54,19 @@ function requireTokenEncryptionKeyForBuild(): string {
   return key;
 }
 
+// Fails a bad NUXT_SITE_URL at deploy time instead of the first OAuth Connect
+// click or billing redirect — see ./server/utils/siteUrlValidation for the
+// rule set and why the guard logic (and its tests) live there rather than
+// here. Only blocks an actual deployable build, matching
+// requireTokenEncryptionKeyForBuild and requireTombstonePepperForBuild
+// above/below, so `nuxt dev` still works without a site URL set.
+function requireSiteUrlForBuild(): string {
+  return requireValidSiteUrlForBuild(
+    process.env.NUXT_SITE_URL,
+    isProductionBuild,
+  );
+}
+
 // A missing or too-short pepper here would bake an empty/weak value into the
 // server bundle (same nitro.replace mechanism as the encryption key below) and
 // silently ship deletion tombstones that store guessable hashes — fail the
@@ -103,8 +117,11 @@ export default defineNuxtConfig({
     // post-billing bounce (see server/utils/siteUrl.ts, which throws a 500 if it
     // is unset or malformed at request time). Read INLINE like the values below
     // so dotenvx-decrypted values bake into the server bundle at build time.
-    // Must be set per environment in the dotenvx files.
-    siteUrl: process.env.NUXT_SITE_URL || "",
+    // Must be set per environment in the dotenvx files. Read through
+    // requireSiteUrlForBuild() rather than raw process.env so a missing or
+    // malformed value fails the build instead of only the first request that
+    // needs it (see requireSiteUrlForBuild above).
+    siteUrl: requireSiteUrlForBuild(),
     googleClientId: process.env.NUXT_GOOGLE_CLIENT_ID || "",
     googleClientSecret: process.env.NUXT_GOOGLE_CLIENT_SECRET || "",
     disableSignups: process.env.NUXT_DISABLE_SIGNUPS || "",

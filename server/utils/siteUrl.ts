@@ -7,19 +7,13 @@
 // request's Host header lets a forged Host steer the post-billing bounce to an
 // attacker's domain, so we read a configured value instead and never trust the
 // request.
-
-const ALLOWED_SITE_URL_PROTOCOLS = new Set(["http:", "https:"]);
-
-function parseAbsoluteSiteUrl(rawUrl: string): URL {
-  try {
-    return new URL(rawUrl);
-  } catch {
-    throw createError({
-      statusCode: 500,
-      statusMessage: "Site URL is not configured as a valid absolute URL",
-    });
-  }
-}
+//
+// The actual URL-shape rules (missing/malformed/wrong-protocol/non-bare-origin)
+// live in ./siteUrlValidation, a plain module with no Nuxt auto-imports, so
+// nuxt.config.ts can run the identical checks at build time (see
+// requireSiteUrlForBuild there) and fail the deploy instead of only surfacing
+// here on the first request that needs a site URL.
+import { isSecureSiteOrigin, validateSiteUrl } from "./siteUrlValidation";
 
 // Returns the configured site origin (scheme://host[:port], no trailing path)
 // so callers can join redirect paths onto a trusted base. Throws a 500 when the
@@ -27,39 +21,14 @@ function parseAbsoluteSiteUrl(rawUrl: string): URL {
 // request host.
 export function getConfiguredSiteUrl(): string {
   const { siteUrl } = useRuntimeConfig();
-  if (!siteUrl) {
+  const validationResult = validateSiteUrl(siteUrl);
+  if (!validationResult.valid) {
     throw createError({
       statusCode: 500,
-      statusMessage: "Site URL is not configured: missing NUXT_SITE_URL",
+      statusMessage: validationResult.message,
     });
   }
-  const parsedSiteUrl = parseAbsoluteSiteUrl(siteUrl);
-  if (!ALLOWED_SITE_URL_PROTOCOLS.has(parsedSiteUrl.protocol)) {
-    throw createError({
-      statusCode: 500,
-      statusMessage: "Site URL must use the http or https protocol",
-    });
-  }
-  // Reject rather than silently strip anything beyond the origin: callers join
-  // their own redirect paths onto this origin, so a configured base like
-  // https://basin.example/app would drop `/app` and bounce to the wrong place,
-  // and embedded credentials (user:pass@host) would likewise vanish. Fail loud
-  // so the misconfiguration surfaces instead of producing a subtly broken
-  // redirect. A bare origin with a root path ("/") is allowed.
-  const hasExtraneousParts =
-    parsedSiteUrl.pathname !== "/" ||
-    parsedSiteUrl.search !== "" ||
-    parsedSiteUrl.hash !== "" ||
-    parsedSiteUrl.username !== "" ||
-    parsedSiteUrl.password !== "";
-  if (hasExtraneousParts) {
-    throw createError({
-      statusCode: 500,
-      statusMessage:
-        "Site URL must be a bare origin with no path, query, fragment, or credentials",
-    });
-  }
-  return parsedSiteUrl.origin;
+  return validationResult.origin;
 }
 
 // Whether the configured site origin is https. Cookies that must not travel
@@ -77,7 +46,7 @@ export function getConfiguredSiteUrl(): string {
 // "Invalid OAuth state" 400 on the callback (mirrors the NODE_ENV production
 // guard in nuxt.config.ts).
 export function isConfiguredSiteUrlSecure(): boolean {
-  const isSecureOrigin = getConfiguredSiteUrl().startsWith("https:");
+  const isSecureOrigin = isSecureSiteOrigin(getConfiguredSiteUrl());
   if (process.env.NODE_ENV === "production" && !isSecureOrigin) {
     throw createError({
       statusCode: 500,
