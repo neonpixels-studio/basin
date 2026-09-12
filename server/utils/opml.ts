@@ -8,6 +8,8 @@
 // content we care about), so a tag-scoped regex is sufficient and avoids
 // pulling in a general-purpose XML parser for a narrow, well-defined shape.
 
+import { escapeXmlEntities } from "./xml";
+
 export interface OpmlFeedEntry {
   xmlUrl: string;
   title: string | null;
@@ -63,20 +65,6 @@ function unescapeXmlEntities(value: string): string {
   // Decode &amp; last so "&amp;lt;" round-trips to the literal text "&lt;"
   // rather than being mistaken for a doubly-escaped "<".
   return unescaped.split("&amp;").join("&");
-}
-
-function escapeXmlEntities(value: string): string {
-  return value
-    .split("&")
-    .join("&amp;")
-    .split("<")
-    .join("&lt;")
-    .split(">")
-    .join("&gt;")
-    .split('"')
-    .join("&quot;")
-    .split("'")
-    .join("&apos;");
 }
 
 function extractAttribute(

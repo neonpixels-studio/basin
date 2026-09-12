@@ -26,6 +26,7 @@ import {
   useReverification,
   isReverificationCancelledError,
 } from "../app/composables/useReverification.ts";
+import { useMarketingSeo } from "../app/composables/useMarketingSeo.ts";
 
 globalThis.useToast = useToast;
 globalThis.useSearch = useSearch;
@@ -40,6 +41,12 @@ globalThis.usePodcastPlayer = usePodcastPlayer;
 // (mirrors Nuxt auto-import; both read whatever useClerk a test stubs).
 globalThis.useReverification = useReverification;
 globalThis.isReverificationCancelledError = isReverificationCancelledError;
+// Real composable as a global, wrapped in vi.fn so page tests can assert on
+// the title/description each page passed in without re-asserting the full
+// og/twitter/canonical shape per page (that shape has its own dedicated
+// suite: tests/composables/useMarketingSeo.test.ts). Reads whatever
+// useRoute/useRuntimeConfig a test stubs (called at invocation time).
+globalThis.useMarketingSeo = vi.fn(useMarketingSeo);
 
 // Default stub for useUserSettings — returns defaults, no-ops on save.
 // Individual tests can override this with vi.stubGlobal if needed.
@@ -72,10 +79,18 @@ globalThis.useRouter = vi.fn(() => ({
 globalThis.definePageMeta = vi.fn();
 globalThis.useHead = vi.fn();
 globalThis.useSeoMeta = vi.fn();
+// Default runtime config — mirrors nuxt.config.ts's runtimeConfig.public
+// shape closely enough for the marketing pages' canonicalUrl() (see
+// app/utils/siteMeta.ts). Tests that care about a specific siteUrl override
+// with vi.stubGlobal.
+globalThis.useRuntimeConfig = vi.fn(() => ({
+  public: { siteUrl: "https://reader.example" },
+}));
 
 // Nuxt / Nitro handler wrappers — identity so the inner function is what gets exported
 globalThis.defineNuxtRouteMiddleware = (fn: Function) => fn;
 globalThis.defineEventHandler = (fn: Function) => fn;
+globalThis.defineNuxtPlugin = (fn: Function) => fn;
 
 // H3 / Nitro server globals used by API handlers under test
 globalThis.createError = ({

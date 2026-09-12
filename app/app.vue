@@ -64,10 +64,10 @@ function onKey(e) {
   handleSlash(e);
 }
 
+// appearanceStore.init() runs from app/plugins/appearance.client.ts, not
+// here — see that file for why. app.vue only reads appearanceStore.ready
+// below (for the cloak).
 onMounted(() => {
-  // Must run post-mount, not at store-setup time — see appearanceStore's
-  // init() for why (it races Nuxt's SSR state hydration otherwise).
-  appearanceStore.init();
   setupWatchers();
   window.addEventListener("keydown", onKey);
 });

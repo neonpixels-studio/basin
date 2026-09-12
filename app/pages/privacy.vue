@@ -3,16 +3,10 @@ import { ref, onMounted, onBeforeUnmount } from "vue";
 
 definePageMeta({ layout: "marketing" });
 
-useHead({
-  title: "Reader — privacy",
-  meta: [
-    {
-      name: "description",
-      content:
-        "How Reader handles your data — written to be read, not skimmed past.",
-    },
-  ],
-});
+useMarketingSeo(
+  "Reader — privacy",
+  "How Reader handles your data — written to be read, not skimmed past.",
+);
 
 const sections = [
   { id: "overview", label: "Overview" },

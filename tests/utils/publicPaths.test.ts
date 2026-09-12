@@ -1,51 +1,12 @@
 import { describe, it, expect } from "vitest";
-import {
-  PUBLIC_PATHS,
-  normalizePath,
-  isPublicPath,
-  isCloakExemptPath,
-} from "~/utils/publicPaths";
+import { MARKETING_ROUTES } from "#shared/utils/marketingRoutes";
+import { isCloakExemptPath } from "~/utils/publicPaths";
 
-describe("normalizePath", () => {
-  it("strips a single trailing slash", () => {
-    expect(normalizePath("/pricing/")).toBe("/pricing");
-  });
-
-  it("leaves a path without a trailing slash unchanged", () => {
-    expect(normalizePath("/pricing")).toBe("/pricing");
-  });
-
-  it("leaves the root path unchanged", () => {
-    expect(normalizePath("/")).toBe("/");
-  });
-
-  it("returns an empty string for a non-string input instead of throwing", () => {
-    expect(normalizePath(undefined as unknown as string)).toBe("");
-    expect(normalizePath(null as unknown as string)).toBe("");
-  });
-});
-
-describe("isPublicPath", () => {
-  it.each(PUBLIC_PATHS)("returns true for %s", (path) => {
-    expect(isPublicPath(path)).toBe(true);
-  });
-
-  it("returns true for a public path with a trailing slash", () => {
-    expect(isPublicPath("/pricing/")).toBe(true);
-  });
-
-  it("returns false for /login", () => {
-    expect(isPublicPath("/login")).toBe(false);
-  });
-
-  it("returns false for an authenticated route", () => {
-    expect(isPublicPath("/dashboard")).toBe(false);
-    expect(isPublicPath("/settings")).toBe(false);
-  });
-});
-
+// normalizeRoutePath/isMarketingRoute's own behavior (trailing slash,
+// non-string input) is covered by tests/shared/utils/marketingRoutes.test.ts
+// — this file only asserts the cloak-exemption composition on top of it.
 describe("isCloakExemptPath", () => {
-  it.each(PUBLIC_PATHS)("returns true for public path %s", (path) => {
+  it.each(MARKETING_ROUTES)("returns true for public path %s", (path) => {
     expect(isCloakExemptPath(path)).toBe(true);
   });
 

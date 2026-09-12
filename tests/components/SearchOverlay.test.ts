@@ -6,6 +6,7 @@ import {
 } from "@vue/test-utils";
 import SearchOverlay from "~/components/SearchOverlay.vue";
 import { useSearch } from "~/composables/useSearch";
+import { mapSearchRow } from "../../server/utils/search";
 
 const { state } = useSearch();
 
@@ -154,6 +155,76 @@ describe("SearchOverlay", () => {
     const wrapper = await runSearch(vi.fn().mockResolvedValue(emptyPage()));
     expect(wrapper.find(".search-error").exists()).toBe(false);
     expect(wrapper.text()).toContain("No matches");
+  });
+
+  // Regression: #247. This is the seam that actually broke — chooseRow()
+  // hands the raw /api/search row to feedStore.openItem() — so it stubs the
+  // wire response with a real mapSearchRow() output (what the API route
+  // actually serializes) and asserts the sync fires from a click, not just
+  // that the store function behaves correctly in isolation.
+  describe("opening a search result", () => {
+    const mockSearchResultRow = (overrides = {}) => ({
+      id: 9001,
+      feedId: 7,
+      feedSource: "rss",
+      feedTitle: "Test Feed",
+      guid: "guid-overlay-result",
+      title: "Found via search",
+      url: null,
+      author: null,
+      imageUrl: null,
+      content: null,
+      tags: null,
+      publishedAt: null,
+      readAt: null,
+      starred: false,
+      savedAt: null,
+      createdAt: null,
+      updatedAt: null,
+      ...overrides,
+    });
+
+    it("marks an unread search result read and fires the sync when opened", async () => {
+      const queueAction = vi.fn().mockResolvedValue(undefined);
+      vi.stubGlobal(
+        "useSyncQueue",
+        vi.fn(() => ({ queueAction })),
+      );
+      const searchResult = mapSearchRow(mockSearchResultRow({ readAt: null }));
+
+      const wrapper = await runSearch(
+        vi.fn().mockResolvedValue([searchResult]),
+        "found",
+      );
+      await wrapper.find(".sr-item").trigger("click");
+      await flushPromises();
+
+      expect(queueAction).toHaveBeenCalledOnce();
+      const [action, payload] = queueAction.mock.calls[0];
+      expect(action).toBe("markRead");
+      expect(payload.feedId).toBe(7);
+      expect(payload.guid).toBe("guid-overlay-result");
+    });
+
+    it("does not fire the sync when an already-read search result is opened", async () => {
+      const queueAction = vi.fn().mockResolvedValue(undefined);
+      vi.stubGlobal(
+        "useSyncQueue",
+        vi.fn(() => ({ queueAction })),
+      );
+      const searchResult = mapSearchRow(
+        mockSearchResultRow({ readAt: new Date("2026-01-01T00:00:00Z") }),
+      );
+
+      const wrapper = await runSearch(
+        vi.fn().mockResolvedValue([searchResult]),
+        "found",
+      );
+      await wrapper.find(".sr-item").trigger("click");
+      await flushPromises();
+
+      expect(queueAction).not.toHaveBeenCalled();
+    });
   });
 
   it("clears a stale error the moment the query changes, before the retry fires", async () => {

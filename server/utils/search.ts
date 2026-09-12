@@ -128,6 +128,50 @@ export interface SearchResult {
   savedAt: Date | null;
   createdAt: Date | null;
   updatedAt: Date | null;
+  // Derived the same way as FeedItemResult.unread (feedItems.ts) so any
+  // consumer that keys off `unread` — e.g. the feed store's openItem — behaves
+  // identically whether the item came from the dashboard feed or search.
+  unread: boolean;
+}
+
+// Exported so tests can build a typo-safe fixture (Partial<SearchRow>)
+// instead of a bare Record<string, unknown>, which would silently accept a
+// misspelled field name.
+export interface SearchRow {
+  id: number;
+  feedId: number;
+  feedSource: string;
+  feedTitle: string | null;
+  guid: string;
+  title: string;
+  url: string | null;
+  author: string | null;
+  imageUrl: string | null;
+  content: string | null;
+  tags: string[] | null;
+  publishedAt: Date | null;
+  readAt: Date | null;
+  starred: boolean | null;
+  savedAt: Date | null;
+  createdAt: Date | null;
+  updatedAt: Date | null;
+}
+
+// Extracted so tests (and any future caller) can exercise the exact
+// row-to-SearchResult derivation — including `unread` — without standing up
+// the drizzle query chain. Mirrors feedItems.ts's mapRow.
+export function mapSearchRow({
+  feedSource,
+  feedTitle,
+  ...item
+}: SearchRow): SearchResult {
+  return {
+    ...item,
+    type: FEED_SOURCE_TO_ITEM_TYPE[feedSource] ?? feedSource,
+    source: feedTitle?.trim() || feedSource,
+    time: formatRelativeTime(item.publishedAt),
+    unread: item.readAt === null,
+  };
 }
 
 export async function searchFeedItems(
@@ -190,12 +234,7 @@ export async function searchFeedItems(
   const pageRows = hasMore ? rows.slice(0, limit) : rows;
   const nextOffset = hasMore ? offset + limit : null;
 
-  const items = pageRows.map(({ feedSource, feedTitle, ...item }) => ({
-    ...item,
-    type: FEED_SOURCE_TO_ITEM_TYPE[feedSource] ?? feedSource,
-    source: feedTitle?.trim() || feedSource,
-    time: formatRelativeTime(item.publishedAt),
-  }));
+  const items = pageRows.map(mapSearchRow);
 
   return { items, nextOffset };
 }
