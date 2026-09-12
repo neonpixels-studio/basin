@@ -190,10 +190,14 @@ async function fetchSearchResults(query) {
 
 const SEARCH_INPUT_ID = "reader-search-input";
 
+// Bound to the button via `ref="loadMoreButtonEl"` below rather than
+// detecting focus by CSS class, so a future styling rename can't silently
+// break focus restoration.
+const loadMoreButtonEl = ref(null);
+
 const loadMoreButtonHasFocus = () =>
-  typeof document !== "undefined" &&
-  document.activeElement instanceof HTMLElement &&
-  document.activeElement.classList.contains("search-load-more");
+  loadMoreButtonEl.value !== null &&
+  document.activeElement === loadMoreButtonEl.value;
 
 // When the final page removes the Load more button, focus would otherwise fall
 // to <body>, where a stray Enter hits the window handler and opens/closes a
@@ -412,6 +416,7 @@ onUnmounted(() => {
             loading; loadMoreResults already no-ops a click mid-flight. -->
             <button
               v-if="nextOffset !== null"
+              ref="loadMoreButtonEl"
               type="button"
               class="search-load-more"
               :aria-disabled="loadingMore"
