@@ -7,6 +7,7 @@ import {
   MARK_ALL_READ_TIMEOUT_MS,
 } from "~/stores/feed";
 import { VALID_MARK_ALL_READ_FILTERS } from "../../server/utils/markAllRead";
+import { mapSearchRow, type SearchRow } from "../../server/utils/search";
 import { makeFeed, makeConnection } from "../fixtures";
 
 const item = (overrides: Record<string, unknown> = {}) => ({
@@ -1147,6 +1148,60 @@ describe("useFeedStore", () => {
         expect(showToast).toHaveBeenCalledWith(
           "Could not queue change for sync",
         );
+      });
+
+      // Regression: #247 — search results omitted `unread`, so opening one
+      // never fired the markRead sync. Uses the real mapSearchRow() (what
+      // searchFeedItems() applies to every DB row) rather than a hand-set
+      // fixture, so this fails if the derivation regresses.
+      describe("with a real mapSearchRow() payload", () => {
+        const mockDbRow = (overrides: Partial<SearchRow> = {}): SearchRow => ({
+          id: 501,
+          feedId: 42,
+          feedSource: "rss",
+          feedTitle: "Test Feed",
+          guid: "guid-search",
+          title: "Found via search",
+          url: null,
+          author: null,
+          imageUrl: null,
+          content: null,
+          tags: null,
+          publishedAt: null,
+          readAt: null,
+          starred: false,
+          savedAt: null,
+          createdAt: null,
+          updatedAt: null,
+          ...overrides,
+        });
+
+        it("enqueues a markRead action when opening an unread search result", async () => {
+          const searchResult = mapSearchRow(mockDbRow({ readAt: null }));
+          expect(searchResult.unread).toBe(true);
+
+          await feed.openItem(searchResult);
+
+          expect(queueAction).toHaveBeenCalledOnce();
+          const [action, payload] = queueAction.mock.calls[0];
+          expect(action).toBe("markRead");
+          expect(payload.feedId).toBe(42);
+          expect(payload.guid).toBe("guid-search");
+          expect(typeof payload.readAt).toBe("string");
+        });
+
+        it("does not enqueue a markRead action when opening an already-read search result", async () => {
+          const searchResult = mapSearchRow(
+            mockDbRow({ readAt: new Date("2026-01-01T00:00:00Z") }),
+          );
+          // Asserted directly, not just via the queueAction side effect, so
+          // this fails on a dropped `unread` field, not only a falsy one.
+          expect(searchResult.unread).toBe(false);
+
+          await feed.openItem(searchResult);
+
+          expect(queueAction).not.toHaveBeenCalled();
+        });
       });
     });
   });

@@ -75,6 +75,7 @@ const expectedResult = {
   type: "article",
   source: "Test Feed",
   time: "",
+  unread: true,
 };
 
 describe("searchFeedItems", () => {
@@ -166,6 +167,18 @@ describe("searchFeedItems", () => {
     const results = await searchFeedItems(1, "testing");
 
     expect(results[0].source).toBe("rss");
+  });
+
+  // Regression: #247. The null-readAt -> unread=true case is already pinned
+  // by "returns matching feed items…" above; only the non-null case adds
+  // signal here.
+  it("derives unread=false from a non-null readAt, matching feedItems.ts", async () => {
+    const readRow = { ...mockRow, readAt: new Date("2026-01-01T00:00:00Z") };
+    mockLimit.mockResolvedValue([readRow]);
+
+    const results = await searchFeedItems(1, "testing");
+
+    expect(results[0].unread).toBe(false);
   });
 
   it("returns an empty array when there are no matches", async () => {
