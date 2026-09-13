@@ -102,35 +102,27 @@ test.describe("Global search", () => {
     page,
   }) => {
     // Held open past the second query's response so a real race exists:
-    // without the component's AbortController cancellation, this stale
-    // response would land (and, without the isSuperseded checks in
-    // fetchSearchResults, overwrite the newer render) after "second" already
-    // resolved. Resolved once the handler has fully settled (fulfilled or
-    // caught an abort) so the test can assert on the state *after* the stale
-    // response had its chance to land, not just before it was sent.
+    // without the component actually calling AbortController#abort(), the
+    // browser would never cancel this request on the wire, and without the
+    // isSuperseded checks in fetchSearchResults a late response would go on
+    // to overwrite the newer render. The route handler still attempts
+    // fulfill() after the delay for either outcome — Playwright resolves that
+    // call whether or not the underlying request was already aborted, so it
+    // can't itself prove cancellation — the page's "requestfailed" event
+    // (net::ERR_ABORTED) below is the actual signal that the browser cut the
+    // request rather than merely ignoring its response.
     const STALE_HOLD_MS = 1_000;
-    let staleRequestSettled: () => void;
-    const staleRequestHandled = new Promise<void>((resolve) => {
-      staleRequestSettled = resolve;
-    });
 
     await page.route("**/api/search**", async (route) => {
       const url = new URL(route.request().url());
       const query = url.searchParams.get("q");
       if (query === "first") {
         await new Promise((resolve) => setTimeout(resolve, STALE_HOLD_MS));
-        try {
-          await route.fulfill({
-            status: 200,
-            contentType: "application/json",
-            body: searchPageBody([mockSearchResult(1, "Stale first result")]),
-          });
-        } catch {
-          // The browser already aborted the underlying request — expected
-          // once fulfill races against fetchSearchResults' cancelPendingSearch.
-        } finally {
-          staleRequestSettled();
-        }
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: searchPageBody([mockSearchResult(1, "Stale first result")]),
+        });
         return;
       }
       await route.fulfill({
@@ -153,34 +145,43 @@ test.describe("Global search", () => {
     // keystrokes, not that a live request gets aborted.
     await staleRequestSent;
 
+    // Attach before the query change that triggers the cancellation.
+    const staleRequestAborted = page.waitForEvent("requestfailed", {
+      predicate: (request) => request.url().includes("q=first"),
+      timeout: 5_000,
+    });
+
     await page.locator(SEARCH_INPUT).fill("second");
     await expect(page.getByText("Fresh second result")).toBeVisible({
       timeout: 5_000,
     });
 
-    // Wait for the stale response to have had its chance to land, then assert
-    // it never overwrote (or appended to) the fresh render.
-    await staleRequestHandled;
+    // Proves the component actually called AbortController#abort() (a real
+    // network cancellation), not just that the render happens to be correct.
+    const abortedRequest = await staleRequestAborted;
+    expect(abortedRequest.failure()?.errorText).toContain("ABORTED");
+
+    // Wait past the stale response's hold time so it has had its chance to
+    // land, then assert it never overwrote (or appended to) the fresh render.
+    await page.waitForTimeout(STALE_HOLD_MS + DEBOUNCE_SETTLE_MS);
     await expect(page.getByText("Stale first result")).toHaveCount(0);
     await expect(page.getByText("Fresh second result")).toBeVisible();
   });
 
   test("moves the highlighted row with the arrow keys", async ({ page }) => {
     await openSearchOverlay(page);
-    const cursorTitle = () => {
-      return page.locator(".sr-item.cursor .sr-title").innerText();
-    };
+    const cursorTitle = page.locator(".sr-item.cursor .sr-title");
 
     // Pages always render first and in fixed order (Dashboard, Settings, Sign
     // in) when the query is empty, so the cursor's starting position and the
     // arrow-key destinations are deterministic regardless of recent items.
-    await expect.poll(cursorTitle).toBe("Dashboard");
+    await expect(cursorTitle).toHaveText("Dashboard");
 
     await page.keyboard.press("ArrowDown");
-    await expect.poll(cursorTitle).toBe("Settings");
+    await expect(cursorTitle).toHaveText("Settings");
 
     await page.keyboard.press("ArrowUp");
-    await expect.poll(cursorTitle).toBe("Dashboard");
+    await expect(cursorTitle).toHaveText("Dashboard");
   });
 
   test("Enter navigates to the highlighted page and closes the overlay", async ({
@@ -204,27 +205,34 @@ test.describe("Global search", () => {
   test("Enter opens the highlighted search result and closes the overlay", async ({
     page,
   }) => {
-    // Uses the real seeded feed items (e2e/seed.ts) and the real /api/search
-    // endpoint, exercising the exact regression called out in #266/#247:
-    // chooseRow() must hand a real search row to feedStore.openItem().
-    await openSearchOverlay(page);
-    await page.locator(SEARCH_INPUT).fill("Article");
+    // Mocked rather than run against the real seeded feed items: opening a
+    // result calls feedStore.openItem(), which persists a real markRead sync
+    // action (server/db) for an unread row. e2e/seed.ts only seeds once per
+    // run (globalSetup, not per test) and every spec shares that data, so
+    // consuming a real seeded item here would leave it permanently read for
+    // every test that runs after this one in the same invocation. The mocked
+    // row is already read (unread: false), so opening it fires no sync call.
+    //
+    // Still exercises the exact regression called out in #266/#247:
+    // chooseRow() must hand the /api/search row shape straight through to
+    // feedStore.openItem() without SearchOverlay.vue reshaping it first.
+    const RESULT_TITLE = "Mocked search result for e2e";
+    await page.route("**/api/search**", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: searchPageBody([mockSearchResult(1, RESULT_TITLE)]),
+      });
+    });
 
-    // "Article" matches no page title/sub, so the Pages group renders no rows
-    // at all — but scope to rows following the "Results" label via the CSS
-    // sibling combinator (the template renders .sr-group/.sr-item as flat
-    // siblings, not nested) rather than assuming index 0 lands there, and
-    // assert the cursor is actually on one of those rows before pressing
-    // Enter.
-    const resultRows = page.locator(".sr-group:has-text('Results') ~ .sr-item");
-    await expect(resultRows.first()).toBeVisible({ timeout: 5_000 });
-    const highlightedTitle = await resultRows
-      .first()
-      .locator(".sr-title")
-      .innerText();
-    await expect(page.locator(".sr-item.cursor .sr-title")).toHaveText(
-      highlightedTitle,
-    );
+    await openSearchOverlay(page);
+    // A query with no page-title/sub match keeps the Pages group empty, so
+    // the Results group is the only group rendered and index 0 is
+    // unambiguously the mocked row's cursor position.
+    await page.locator(SEARCH_INPUT).fill("zzz-no-page-match-zzz");
+
+    const cursorTitle = page.locator(".sr-item.cursor .sr-title");
+    await expect(cursorTitle).toHaveText(RESULT_TITLE, { timeout: 5_000 });
 
     await page.keyboard.press("Enter");
 
@@ -232,6 +240,7 @@ test.describe("Global search", () => {
     await expect(page.locator(".detail-sheet")).toBeVisible({
       timeout: 5_000,
     });
+    await expect(page.locator(".detail-sheet")).toContainText(RESULT_TITLE);
   });
 
   test("shows an error state on a failed search and recovers on retry", async ({
