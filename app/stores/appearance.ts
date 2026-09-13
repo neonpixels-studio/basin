@@ -92,16 +92,48 @@ export const useAppearanceStore = defineStore("appearance", () => {
     root.style.setProperty("--accent-soft-ink", accentColors.a);
   }
 
-  function applyDbSettings(dbSettings: Record<string, unknown>) {
-    state.theme = (dbSettings.theme as string) ?? DEFAULTS.theme;
-    state.accent = (dbSettings.accentColor as string) ?? DEFAULTS.accent;
-    state.reading = (dbSettings.readingFont as string) ?? DEFAULTS.reading;
-    state.density = (dbSettings.spacing as string) ?? DEFAULTS.density;
-    state.radius = (dbSettings.radius as string) ?? DEFAULTS.radius;
-    state.autoplay =
-      (dbSettings.autoplayMediaPreviews as boolean) ?? DEFAULTS.autoplay;
-    state.compactNotif =
-      (dbSettings.compactNotifications as boolean) ?? DEFAULTS.compactNotif;
+  // `loadingStyle` is a local-only preference (never read from or written to
+  // the DB — see buildPatch below), so it's deliberately excluded from this
+  // type: it was never part of applyDbSettings before this change either.
+  type PersistedAppearanceKey =
+    | "theme"
+    | "accent"
+    | "reading"
+    | "density"
+    | "radius"
+    | "autoplay"
+    | "compactNotif";
+
+  // Maps each persisted local state key to the DB response key it's read
+  // from. applyDbSettings loops over this instead of one branch per field,
+  // which is what keeps that function's complexity flat as fields are added.
+  const DB_FIELD_KEYS: Record<PersistedAppearanceKey, string> = {
+    theme: "theme",
+    accent: "accentColor",
+    reading: "readingFont",
+    density: "spacing",
+    radius: "radius",
+    autoplay: "autoplayMediaPreviews",
+    compactNotif: "compactNotifications",
+  };
+
+  // `editedKeys` is per-key rather than a single flag: a visitor who only
+  // touched (say) accent while the DB fetch was in flight should still get
+  // every *other* field applied from the DB response. Skipping the whole
+  // apply on any single edit silently reverts untouched fields to whatever
+  // the cache/defaults happened to hold.
+  function applyDbSettings(
+    dbSettings: Record<string, unknown>,
+    editedKeys: ReadonlySet<PersistedAppearanceKey> = new Set(),
+  ) {
+    const stateRecord = state as unknown as Record<string, unknown>;
+    (Object.keys(DB_FIELD_KEYS) as PersistedAppearanceKey[]).forEach((key) => {
+      if (editedKeys.has(key)) {
+        return;
+      }
+      const dbKey = DB_FIELD_KEYS[key];
+      stateRecord[key] = dbSettings[dbKey] ?? DEFAULTS[key];
+    });
   }
 
   function buildPatch() {
@@ -116,10 +148,10 @@ export const useAppearanceStore = defineStore("appearance", () => {
     };
   }
 
-  // Stops the deep persistence watcher started by loadFromDb() — captured so
-  // a sign-out (or an account switch) mid-session can tear it down instead
-  // of leaving it saving one account's in-memory state under the next
-  // account's auth token.
+  // Stops the per-key persistence watchers started by loadFromDb() —
+  // captured so a sign-out (or an account switch) mid-session can tear them
+  // down instead of leaving them saving one account's in-memory state under
+  // the next account's auth token.
   let stopPersisting: (() => void) | null = null;
 
   // Tracks which account's settings are currently loaded: a user id once
@@ -165,28 +197,62 @@ export const useAppearanceStore = defineStore("appearance", () => {
 
     const { load, save } = useUserSettings();
 
-    // Flips once the visitor changes a setting locally. Registered before
-    // the DB fetch below so that edit is saved rather than being clobbered
-    // when the fetch resolves and would otherwise re-apply the stale value.
-    let dirty = false;
-    stopPersisting = watch(
-      state,
-      () => {
-        dirty = true;
-        applyToDom();
-        const patch = buildPatch();
-        save(patch);
-        writeCachedSettings(userId, patch);
-      },
-      { deep: true },
+    // Tracks which fields the visitor has changed locally while the DB fetch
+    // below is in flight, keyed by state property name (not a single
+    // boolean) — see applyDbSettings for why per-key matters.
+    const editedKeys = new Set<PersistedAppearanceKey>();
+
+    // Set around the DB response applying to `state` further down so the
+    // per-key watchers registered next don't mistake that remote write for a
+    // local edit and PATCH the value straight back to where it came from.
+    let applyingRemote = false;
+
+    function persist() {
+      applyToDom();
+      const patch = buildPatch();
+      save(patch);
+      writeCachedSettings(userId, patch);
+    }
+
+    // One watcher per field rather than a single deep watch over `state` —
+    // that's what lets a change be attributed to the specific key that
+    // changed (recorded in editedKeys) instead of only ever knowing "the
+    // object as a whole is dirty". Registered before the DB fetch below so a
+    // change made during that round-trip is still saved.
+    // `flush: "sync"` matters here: applyDbSettings() below flips
+    // applyingRemote back to false in a synchronous `finally` right after
+    // mutating every field. Vue's default ("pre") flush would defer these
+    // callbacks to the next microtask — by which point applyingRemote would
+    // already be back to false, and the remote apply would be
+    // misattributed as a local edit and re-PATCHed.
+    const stopWatchers = (
+      Object.keys(DB_FIELD_KEYS) as PersistedAppearanceKey[]
+    ).map((key) =>
+      watch(
+        () => state[key],
+        () => {
+          if (applyingRemote) {
+            return;
+          }
+          editedKeys.add(key);
+          persist();
+        },
+        { flush: "sync" },
+      ),
     );
+    stopPersisting = () => {
+      stopWatchers.forEach((stop) => stop());
+    };
 
     try {
       const dbSettings = await load();
-      if (!dirty) {
-        applyDbSettings(dbSettings);
+      applyingRemote = true;
+      try {
+        applyDbSettings(dbSettings, editedKeys);
         applyToDom();
         writeCachedSettings(userId, buildPatch());
+      } finally {
+        applyingRemote = false;
       }
     } catch (error) {
       // useUserSettings().load() already falls back to defaults internally
