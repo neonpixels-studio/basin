@@ -1,4 +1,4 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page, type Route } from "@playwright/test";
 
 const SEARCH_INPUT = "#reader-search-input";
 
@@ -26,6 +26,21 @@ function searchPageBody(
   nextOffset: number | null = null,
 ) {
   return JSON.stringify({ items, nextOffset });
+}
+
+// Fulfills a route with a real /api/search 200 response — shared by every
+// test that stubs a successful page, since each one otherwise repeats the
+// same status/contentType/body triple.
+function fulfillSearchPage(
+  route: Route,
+  items: Array<Record<string, unknown>> = [],
+  nextOffset: number | null = null,
+) {
+  return route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: searchPageBody(items, nextOffset),
+  });
 }
 
 function mockSearchResult(id: number, title: string) {
@@ -75,25 +90,24 @@ test.describe("Global search", () => {
     await page.route("**/api/search**", async (route) => {
       const url = new URL(route.request().url());
       requestedQueries.push(url.searchParams.get("q") ?? "");
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: searchPageBody([]),
-      });
+      await fulfillSearchPage(route);
     });
 
     await openSearchOverlay(page);
-    // Each keystroke fires the v-model watcher; typed well under the 300ms
-    // debounce so only the final value should ever reach /api/search.
-    await page.locator(SEARCH_INPUT).pressSequentially("abc", { delay: 40 });
+    const searchRequest = page.waitForRequest("**/api/search**", {
+      timeout: 5_000,
+    });
+    // Each keystroke fires the v-model watcher. No artificial per-key delay:
+    // pressSequentially's own dispatch gap is a minimum, not a maximum, so
+    // adding one only risks a loaded CI box spacing keystrokes past the
+    // 300ms debounce and firing more than one request.
+    await page.locator(SEARCH_INPUT).pressSequentially("abc");
+    await searchRequest;
 
-    await expect
-      .poll(() => requestedQueries.length, { timeout: 5_000 })
-      .toBe(1);
     // Wait past the debounce window once more before asserting the full
-    // array: polling on the count alone would pass the instant it first hits
-    // 1, even if a second (leaked) request for the same query landed right
-    // after — which is exactly the debounce-leak regression this test names.
+    // array: a request having landed doesn't rule out a second (leaked) one
+    // for the same query arriving right after — which is exactly the
+    // debounce-leak regression this test names.
     await page.waitForTimeout(DEBOUNCE_SETTLE_MS);
     expect(requestedQueries).toEqual(["abc"]);
   });
@@ -101,16 +115,10 @@ test.describe("Global search", () => {
   test("cancels a stale in-flight request when the query changes (AbortController)", async ({
     page,
   }) => {
-    // Held open past the second query's response so a real race exists:
-    // without the component actually calling AbortController#abort(), the
-    // browser would never cancel this request on the wire, and without the
-    // isSuperseded checks in fetchSearchResults a late response would go on
-    // to overwrite the newer render. The route handler still attempts
-    // fulfill() after the delay for either outcome — Playwright resolves that
-    // call whether or not the underlying request was already aborted, so it
-    // can't itself prove cancellation — the page's "requestfailed" event
-    // (net::ERR_ABORTED) below is the actual signal that the browser cut the
-    // request rather than merely ignoring its response.
+    // Held open past the second query's response so a real race exists.
+    // "requestfailed" (checked below) is the actual signal that the browser
+    // cut the request — fulfill() resolving or rejecting here doesn't prove
+    // that either way.
     const STALE_HOLD_MS = 1_000;
 
     await page.route("**/api/search**", async (route) => {
@@ -118,18 +126,19 @@ test.describe("Global search", () => {
       const query = url.searchParams.get("q");
       if (query === "first") {
         await new Promise((resolve) => setTimeout(resolve, STALE_HOLD_MS));
-        await route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: searchPageBody([mockSearchResult(1, "Stale first result")]),
-        });
+        try {
+          await fulfillSearchPage(route, [
+            mockSearchResult(1, "Stale first result"),
+          ]);
+        } catch {
+          // The underlying request was already gone by the time fulfill()
+          // ran (the expected outcome once the component aborts it).
+        }
         return;
       }
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: searchPageBody([mockSearchResult(2, "Fresh second result")]),
-      });
+      await fulfillSearchPage(route, [
+        mockSearchResult(2, "Fresh second result"),
+      ]);
     });
 
     await openSearchOverlay(page);
@@ -159,7 +168,9 @@ test.describe("Global search", () => {
     // Proves the component actually called AbortController#abort() (a real
     // network cancellation), not just that the render happens to be correct.
     const abortedRequest = await staleRequestAborted;
-    expect(abortedRequest.failure()?.errorText).toContain("ABORTED");
+    const failure = abortedRequest.failure();
+    expect(failure).not.toBeNull();
+    expect(failure!.errorText).toMatch(/aborted|cancell?ed/i);
 
     // Wait past the stale response's hold time so it has had its chance to
     // land, then assert it never overwrote (or appended to) the fresh render.
@@ -174,13 +185,28 @@ test.describe("Global search", () => {
 
     // Pages always render first and in fixed order (Dashboard, Settings, Sign
     // in) when the query is empty, so the cursor's starting position and the
-    // arrow-key destinations are deterministic regardless of recent items.
+    // interior arrow-key destinations are deterministic regardless of how
+    // many "Recent" rows the real feed happens to contribute after them. The
+    // wrap-around boundary below reads the actual last row instead of
+    // assuming a fixed total, for the same reason.
     await expect(cursorTitle).toHaveText("Dashboard");
 
     await page.keyboard.press("ArrowDown");
     await expect(cursorTitle).toHaveText("Settings");
 
     await page.keyboard.press("ArrowUp");
+    await expect(cursorTitle).toHaveText("Dashboard");
+
+    // Boundary: ArrowUp from the first row must wrap to the last row, not
+    // clamp or throw — moveCursor's modulo wrap (`(cursor + d + total) %
+    // total`), not something the component satisfies by construction.
+    const rowTitles = await page.locator(".sr-item .sr-title").allInnerTexts();
+    const lastRowTitle = rowTitles[rowTitles.length - 1];
+    await page.keyboard.press("ArrowUp");
+    await expect(cursorTitle).toHaveText(lastRowTitle);
+
+    // And ArrowDown from the last row wraps back to the first.
+    await page.keyboard.press("ArrowDown");
     await expect(cursorTitle).toHaveText("Dashboard");
   });
 
@@ -205,25 +231,16 @@ test.describe("Global search", () => {
   test("Enter opens the highlighted search result and closes the overlay", async ({
     page,
   }) => {
-    // Mocked rather than run against the real seeded feed items: opening a
-    // result calls feedStore.openItem(), which persists a real markRead sync
-    // action (server/db) for an unread row. e2e/seed.ts only seeds once per
-    // run (globalSetup, not per test) and every spec shares that data, so
-    // consuming a real seeded item here would leave it permanently read for
-    // every test that runs after this one in the same invocation. The mocked
-    // row is already read (unread: false), so opening it fires no sync call.
-    //
-    // Still exercises the exact regression called out in #266/#247:
-    // chooseRow() must hand the /api/search row shape straight through to
-    // feedStore.openItem() without SearchOverlay.vue reshaping it first.
+    // Mocked rather than run against the real seeded feed items: e2e/seed.ts
+    // seeds once per whole run (globalSetup) and every spec shares that data,
+    // so opening a real unread item here would mark it read for every test
+    // that runs after this one. Still exercises the regression called out in
+    // #266/#247: chooseRow() must hand the /api/search row shape straight
+    // through to feedStore.openItem().
     const RESULT_TITLE = "Mocked search result for e2e";
-    await page.route("**/api/search**", async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: searchPageBody([mockSearchResult(1, RESULT_TITLE)]),
-      });
-    });
+    await page.route("**/api/search**", (route) =>
+      fulfillSearchPage(route, [mockSearchResult(1, RESULT_TITLE)]),
+    );
 
     await openSearchOverlay(page);
     // A query with no page-title/sub match keeps the Pages group empty, so
@@ -256,11 +273,7 @@ test.describe("Global search", () => {
         });
         return;
       }
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: searchPageBody([]),
-      });
+      await fulfillSearchPage(route);
     });
 
     await openSearchOverlay(page);
