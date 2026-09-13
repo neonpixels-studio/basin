@@ -1,18 +1,9 @@
 import { defineStore } from "pinia";
-import { reactive, ref, computed, watch } from "vue";
+import { reactive, ref, computed, watch, type Ref } from "vue";
 import type {
   UserSettings,
   UserSettingsPatch,
 } from "~/composables/useUserSettings";
-
-// A macrotask scheduler — see schedulePersist()'s comment for why this needs
-// to run after the microtask queue (including Vue's own watcher flushes)
-// has fully drained, which queueMicrotask does not guarantee. setImmediate
-// is Node-only (used here so tests share vue-test-utils' flushPromises()
-// scheduler and get deterministic ordering); the browser runtime this store
-// actually ships to always falls back to setTimeout.
-const scheduleMacrotask =
-  typeof setImmediate === "function" ? setImmediate : setTimeout;
 
 // Caches the last-applied appearance settings client-side so a returning,
 // signed-in visitor can uncloak immediately instead of waiting on the
@@ -197,6 +188,7 @@ export const useAppearanceStore = defineStore("appearance", () => {
   function startPersistenceWatchers(
     userId: string,
     save: (_patch: UserSettingsPatch) => Promise<UserSettings | null>,
+    saveError: Ref<string | null>,
   ) {
     const editedKeys = new Set<PersistedAppearanceKey>();
     let applyingRemote = false;
@@ -207,10 +199,20 @@ export const useAppearanceStore = defineStore("appearance", () => {
     // would PATCH the old account's state using the new account's token.
     let tornDown = false;
 
-    function persist() {
+    // save() already swallows its own request error internally (see
+    // useUserSettings) and reports it via `saveError` instead of rejecting —
+    // caching on every call regardless would make a failed PATCH invisible:
+    // the visitor would see the change stick locally, then watch it silently
+    // revert on the next load once the DB turns out to still hold the old
+    // value.
+    async function persist() {
       applyToDom();
       const patch = buildPatch();
-      save(patch);
+      const result = await save(patch);
+      if (!result) {
+        console.error("Failed to persist appearance settings", saveError.value);
+        return;
+      }
       writeCachedSettings(userId, patch);
     }
 
@@ -221,7 +223,7 @@ export const useAppearanceStore = defineStore("appearance", () => {
     // collapse into a single call, same as the old deep watcher's
     // default-flush batching did.
     //
-    // A macrotask (scheduleMacrotask), not queueMicrotask, is what makes the
+    // A macrotask (setTimeout), not queueMicrotask, is what makes the
     // `tornDown` check above actually reliable: Vue's own watchers (like the
     // auth watcher in init() that drives teardownLoadedAccount()) flush on
     // a microtask too, and a microtask this code schedules synchronously
@@ -237,13 +239,13 @@ export const useAppearanceStore = defineStore("appearance", () => {
         return;
       }
       persistScheduled = true;
-      scheduleMacrotask(() => {
+      setTimeout(() => {
         persistScheduled = false;
         if (tornDown) {
           return;
         }
-        persist();
-      });
+        void persist();
+      }, 0);
     }
 
     // Registered before the DB fetch in loadFromDb so a change made during
@@ -277,6 +279,15 @@ export const useAppearanceStore = defineStore("appearance", () => {
       schedulePersist,
       setApplyingRemote(value: boolean) {
         applyingRemote = value;
+      },
+      // Lets loadFromDb() recognize its own in-flight `load()` resolving
+      // *after* this account has already been torn down (a sign-out or
+      // account switch that landed while the fetch was still pending) — so
+      // it can discard that stale response instead of writing it into
+      // `state` and, via whichever account's watchers are live now, PATCHing
+      // it to the server under the wrong account's token.
+      get isTornDown() {
+        return tornDown;
       },
       stop() {
         tornDown = true;
@@ -332,12 +343,22 @@ export const useAppearanceStore = defineStore("appearance", () => {
       }
     }
 
-    const { load, save } = useUserSettings();
-    const persistence = startPersistenceWatchers(userId, save);
+    const { load, save, error: saveError } = useUserSettings();
+    const persistence = startPersistenceWatchers(userId, save, saveError);
     stopPersisting = persistence.stop;
 
     try {
       const dbSettings = await load();
+      if (persistence.isTornDown) {
+        // This account was torn down (sign-out or account switch) while
+        // load() was still in flight. loadFromDb() for whichever account is
+        // actually loaded now already owns `state` and `stopPersisting` —
+        // applying this stale response would write a no-longer-loaded
+        // account's DB values into the *new* account's shared `state`, and
+        // that account's own (live) watchers would treat it as a local edit
+        // and PATCH it to the server under the new account's token.
+        return;
+      }
       persistence.setApplyingRemote(true);
       try {
         applyDbSettings(dbSettings, persistence.editedKeys);
@@ -361,9 +382,15 @@ export const useAppearanceStore = defineStore("appearance", () => {
       // and shouldn't reject — this only guards against a future change (or
       // an unexpected throw) leaving the cloak stuck down. Clear the claim so
       // a later auth re-fire retries instead of assuming this account is
-      // already loaded.
-      console.error("Failed to load appearance settings", error);
-      loadedUserId = undefined;
+      // already loaded — but only if this account is still the loaded one:
+      // if it was already torn down (see the isTornDown check above), a
+      // newer account may have claimed `loadedUserId` since, and clobbering
+      // that claim would make the auth watcher re-run teardown for an
+      // account that's already loaded.
+      if (!persistence.isTornDown) {
+        console.error("Failed to load appearance settings", error);
+        loadedUserId = undefined;
+      }
     } finally {
       ready.value = true;
     }

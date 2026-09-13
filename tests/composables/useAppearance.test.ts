@@ -8,11 +8,21 @@ import { USER_SETTINGS_DEFAULTS } from "~/composables/useUserSettings";
 // Deferred promise so a test can control exactly when `load()` resolves,
 // letting it inject a local edit while the DB fetch is still in flight.
 function createDeferred<T>() {
-  let resolve!: (_value: T) => void;
-  const promise = new Promise<T>((res) => {
-    resolve = res;
+  let resolveDeferred!: (_value: T) => void;
+  const promise = new Promise<T>((resolve) => {
+    resolveDeferred = resolve;
   });
-  return { promise, resolve };
+  return { promise, resolve: resolveDeferred };
+}
+
+// Waits for a persist scheduled via the store's schedulePersist() (a
+// setTimeout(0) macrotask — see that function's comment) to actually fire.
+// flushPromises() (@vue/test-utils) isn't reliable for this: it resolves via
+// setImmediate, and Node doesn't guarantee ordering between a setImmediate
+// and a setTimeout(0) scheduled around the same turn. Using the same kind
+// of macrotask here as the source does is what makes the wait deterministic.
+function flushScheduledPersist() {
+  return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 // Stubs useAuth/useUserSettings and drives store.init() through the
@@ -29,7 +39,14 @@ function setupSignedInLoad() {
   }));
 
   const deferredLoad = createDeferred<Record<string, unknown>>();
-  const save = vi.fn().mockResolvedValue(null);
+  // Echoes the patch back as the "saved" settings by default — a truthy
+  // result is what tells the store's persist() the PATCH succeeded (see
+  // the "does not cache a failed save" test for the opposite case).
+  const save = vi
+    .fn()
+    .mockImplementation((patch) =>
+      Promise.resolve({ ...USER_SETTINGS_DEFAULTS, ...patch }),
+    );
   vi.stubGlobal("useUserSettings", () => ({
     loading: ref(false),
     error: ref(null),
@@ -193,7 +210,7 @@ describe("useAppearanceStore", () => {
       await flushPromises();
 
       store.state.accent = "teal";
-      await flushPromises();
+      await flushScheduledPersist();
       expect(save).toHaveBeenCalledTimes(1);
       // This mid-flight patch only knows the edit — every other field is
       // still whatever cache/defaults held, not yet the DB's true values.
@@ -207,11 +224,10 @@ describe("useAppearanceStore", () => {
         accentColor: "blue",
         readingFont: "mono",
       });
-      // Two flushes: the DB response's continuation (which schedules the
-      // reconciling persist as a macrotask) and the scheduled persist itself
-      // each need their own turn.
+      // The DB response's continuation (which schedules the reconciling
+      // persist) and the scheduled persist itself each need their own turn.
       await flushPromises();
-      await flushPromises();
+      await flushScheduledPersist();
 
       // A second save reconciles the server with the corrected merged
       // state — this is not the remote-apply watcher re-firing (that's
@@ -232,12 +248,84 @@ describe("useAppearanceStore", () => {
       save.mockClear();
 
       store.state.accent = "rose";
-      await flushPromises();
+      await flushScheduledPersist();
 
       expect(save).toHaveBeenCalledTimes(1);
       expect(save).toHaveBeenLastCalledWith(
         expect.objectContaining({ accentColor: "rose" }),
       );
+    });
+
+    it("does not cache a failed save, so a rejected PATCH can't make a stale value look confirmed", async () => {
+      const { deferredLoad, save } = setupSignedInLoad();
+      save.mockResolvedValue(null);
+      store.init();
+      await flushPromises();
+      deferredLoad.resolve({ ...USER_SETTINGS_DEFAULTS });
+      await flushPromises();
+      save.mockClear();
+      localStorage.clear();
+
+      store.state.accent = "rose";
+      await flushScheduledPersist();
+
+      expect(save).toHaveBeenCalledTimes(1);
+      expect(
+        localStorage.getItem(`basin-appearance-cache:user_dirty_flag_test`),
+      ).toBeNull();
+    });
+
+    it("discards a stale load() response for an account that's already been switched away from, instead of writing it into the new account's state and PATCHing it under the new account's token", async () => {
+      const {
+        deferredLoad: deferredLoadA,
+        save: saveA,
+        userId,
+      } = setupSignedInLoad();
+      store.init();
+      await flushPromises();
+      // Account A's load() is still in flight when the switch to B happens
+      // below.
+
+      const deferredLoadB = createDeferred<Record<string, unknown>>();
+      const saveB = vi
+        .fn()
+        .mockImplementation((patch) =>
+          Promise.resolve({ ...USER_SETTINGS_DEFAULTS, ...patch }),
+        );
+      vi.stubGlobal("useUserSettings", () => ({
+        loading: ref(false),
+        error: ref(null),
+        load: vi.fn().mockReturnValue(deferredLoadB.promise),
+        save: saveB,
+      }));
+
+      // Switching the same userId ref the auth watcher is already watching
+      // tears down account A (stopping its watchers) and starts loading
+      // account B — whose loadFromDb() call picks up the freshly-stubbed
+      // useUserSettings() above.
+      userId.value = "user_account_b";
+      await flushPromises();
+
+      // Account A's fetch resolves only now, after B has already taken over.
+      deferredLoadA.resolve({
+        ...USER_SETTINGS_DEFAULTS,
+        theme: "dark",
+        accentColor: "blue",
+      });
+      await flushPromises();
+      await flushScheduledPersist();
+
+      // A's stale response must not have landed in the shared `state`...
+      expect(store.state.theme).not.toBe("dark");
+      expect(store.state.accent).not.toBe("blue");
+      // ...and must not have been PATCHed under either account's token.
+      expect(saveA).not.toHaveBeenCalled();
+      expect(saveB).not.toHaveBeenCalled();
+
+      // B's own (still pending) load resolves normally afterward.
+      deferredLoadB.resolve({ ...USER_SETTINGS_DEFAULTS, theme: "light" });
+      await flushPromises();
+      expect(store.state.theme).toBe("light");
     });
 
     it("cancels a persist queued moments before sign-out, instead of PATCHing the old account's state under the new account's token", async () => {
@@ -255,7 +343,7 @@ describe("useAppearanceStore", () => {
       store.state.accent = "teal";
       isSignedIn.value = false;
       userId.value = null;
-      await flushPromises();
+      await flushScheduledPersist();
 
       expect(save).not.toHaveBeenCalled();
     });
