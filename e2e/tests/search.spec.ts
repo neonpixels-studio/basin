@@ -2,11 +2,18 @@ import { test, expect, type Page } from "@playwright/test";
 
 const SEARCH_INPUT = "#reader-search-input";
 
+// Comfortably past SearchOverlay.vue's 300ms query debounce, used wherever a
+// test needs to prove no further request arrives after the one it already saw.
+const DEBOUNCE_SETTLE_MS = 600;
+
 // Opens the overlay via the real keyboard shortcut (app.vue's isCmdK handler)
 // and confirms the input actually receives focus, matching useSearch's
 // openSearch() behavior rather than just checking the overlay is in the DOM.
 async function openSearchOverlay(page: Page) {
-  await page.keyboard.press("Control+k");
+  // Playwright maps this to Meta on macOS and Control everywhere else,
+  // matching app.vue's isCmdK handler (`e.metaKey || e.ctrlKey`) on whichever
+  // platform the test actually runs on.
+  await page.keyboard.press("ControlOrMeta+k");
   await expect(page.locator(".search-scrim")).toBeVisible({ timeout: 5_000 });
   await expect(page.locator(SEARCH_INPUT)).toBeFocused();
 }
@@ -83,20 +90,35 @@ test.describe("Global search", () => {
     await expect
       .poll(() => requestedQueries.length, { timeout: 5_000 })
       .toBe(1);
-    expect(requestedQueries[0]).toBe("abc");
+    // Wait past the debounce window once more before asserting the full
+    // array: polling on the count alone would pass the instant it first hits
+    // 1, even if a second (leaked) request for the same query landed right
+    // after — which is exactly the debounce-leak regression this test names.
+    await page.waitForTimeout(DEBOUNCE_SETTLE_MS);
+    expect(requestedQueries).toEqual(["abc"]);
   });
 
   test("cancels a stale in-flight request when the query changes (AbortController)", async ({
     page,
   }) => {
+    // Held open past the second query's response so a real race exists:
+    // without the component's AbortController cancellation, this stale
+    // response would land (and, without the isSuperseded checks in
+    // fetchSearchResults, overwrite the newer render) after "second" already
+    // resolved. Resolved once the handler has fully settled (fulfilled or
+    // caught an abort) so the test can assert on the state *after* the stale
+    // response had its chance to land, not just before it was sent.
+    const STALE_HOLD_MS = 1_000;
+    let staleRequestSettled: () => void;
+    const staleRequestHandled = new Promise<void>((resolve) => {
+      staleRequestSettled = resolve;
+    });
+
     await page.route("**/api/search**", async (route) => {
       const url = new URL(route.request().url());
       const query = url.searchParams.get("q");
       if (query === "first") {
-        // Held open well past the second query's response so a real race
-        // exists: without the AbortController cancellation this stale
-        // response would land after "second" already rendered.
-        await new Promise((resolve) => setTimeout(resolve, 3_000));
+        await new Promise((resolve) => setTimeout(resolve, STALE_HOLD_MS));
         try {
           await route.fulfill({
             status: 200,
@@ -106,6 +128,8 @@ test.describe("Global search", () => {
         } catch {
           // The browser already aborted the underlying request — expected
           // once fulfill races against fetchSearchResults' cancelPendingSearch.
+        } finally {
+          staleRequestSettled();
         }
         return;
       }
@@ -117,25 +141,35 @@ test.describe("Global search", () => {
     });
 
     await openSearchOverlay(page);
+    // Attach the waiter before the action that triggers it, so a slow
+    // debounce can't let the request fire unobserved.
+    const staleRequestSent = page.waitForRequest(
+      (request) => request.url().includes("q=first"),
+      { timeout: 5_000 },
+    );
     await page.locator(SEARCH_INPUT).fill("first");
     // Confirm the debounced request for "first" is actually in flight before
     // superseding it — otherwise this would only prove the debounce coalesces
     // keystrokes, not that a live request gets aborted.
-    await page.waitForRequest((request) => request.url().includes("q=first"), {
-      timeout: 5_000,
-    });
+    await staleRequestSent;
 
     await page.locator(SEARCH_INPUT).fill("second");
     await expect(page.getByText("Fresh second result")).toBeVisible({
       timeout: 5_000,
     });
+
+    // Wait for the stale response to have had its chance to land, then assert
+    // it never overwrote (or appended to) the fresh render.
+    await staleRequestHandled;
     await expect(page.getByText("Stale first result")).toHaveCount(0);
+    await expect(page.getByText("Fresh second result")).toBeVisible();
   });
 
   test("moves the highlighted row with the arrow keys", async ({ page }) => {
     await openSearchOverlay(page);
-    const cursorTitle = () =>
-      page.locator(".sr-item.cursor .sr-title").innerText();
+    const cursorTitle = () => {
+      return page.locator(".sr-item.cursor .sr-title").innerText();
+    };
 
     // Pages always render first and in fixed order (Dashboard, Settings, Sign
     // in) when the query is empty, so the cursor's starting position and the
@@ -176,10 +210,21 @@ test.describe("Global search", () => {
     await openSearchOverlay(page);
     await page.locator(SEARCH_INPUT).fill("Article");
 
-    await expect(page.locator(".sr-group", { hasText: "Results" })).toBeVisible(
-      { timeout: 5_000 },
+    // "Article" matches no page title/sub, so the Pages group renders no rows
+    // at all — but scope to rows following the "Results" label via the CSS
+    // sibling combinator (the template renders .sr-group/.sr-item as flat
+    // siblings, not nested) rather than assuming index 0 lands there, and
+    // assert the cursor is actually on one of those rows before pressing
+    // Enter.
+    const resultRows = page.locator(".sr-group:has-text('Results') ~ .sr-item");
+    await expect(resultRows.first()).toBeVisible({ timeout: 5_000 });
+    const highlightedTitle = await resultRows
+      .first()
+      .locator(".sr-title")
+      .innerText();
+    await expect(page.locator(".sr-item.cursor .sr-title")).toHaveText(
+      highlightedTitle,
     );
-    await expect(page.locator(".sr-item").first()).toBeVisible();
 
     await page.keyboard.press("Enter");
 
