@@ -141,12 +141,23 @@ export const useFeedStore = defineStore("feed", () => {
 
   async function loadSettingsFromDb() {
     const { load } = useUserSettings();
-    // load() resolves the raw $fetch response (null on an empty/204 reply)
-    // and can also reject (network failure, expired auth). Either way this
-    // must not throw out of setupWatchers() — a caller that awaits it once
-    // and never retries would otherwise leave the layout/unreadOnly/filter
-    // watchers below permanently unregistered for the rest of the session.
-    const settings = await load().catch(() => null);
+    // A genuine empty/204 response resolves null and means "no saved
+    // settings yet" — falling back to defaults is correct. A rejection
+    // (network failure, expired auth) tells us nothing about the user's
+    // real settings, so it must neither clobber whatever's already in
+    // state nor throw out of setupWatchers() — the latter would leave the
+    // layout/unreadOnly/filter watchers below permanently unregistered for
+    // the rest of the session, since setupWatchers() only ever runs once.
+    let settings;
+    try {
+      settings = await load();
+    } catch (error) {
+      console.error(
+        "Failed to load user settings; keeping current values",
+        error,
+      );
+      return;
+    }
     state.layout = settings?.layout ?? "timeline";
     state.unreadOnly = settings?.showUnreadOnly ?? false;
   }
