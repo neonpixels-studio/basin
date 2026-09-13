@@ -14,6 +14,7 @@ const mockInsert = vi.fn();
 const mockUpdate = vi.fn();
 const mockUpdateSet = vi.fn();
 const mockUpdateWhere = vi.fn();
+const mockFeedsFindFirst = vi.fn();
 
 // 32 bytes of hex — a valid AES-256-GCM key so encryptToken (a real
 // server/utils/crypto call, auto-imported the same way as createBlueskySession)
@@ -22,7 +23,11 @@ const TEST_TOKEN_ENCRYPTION_KEY = randomBytes(32).toString("hex");
 
 vi.stubGlobal("readBody", mockReadBody);
 vi.stubGlobal("createBlueskySession", mockCreateBlueskySession);
-vi.stubGlobal("useDb", () => ({ insert: mockInsert, update: mockUpdate }));
+vi.stubGlobal("useDb", () => ({
+  insert: mockInsert,
+  update: mockUpdate,
+  query: { feeds: { findFirst: mockFeedsFindFirst } },
+}));
 // encryptToken is a real server/utils/crypto call (Nitro auto-imports
 // server/utils/* into server/api routes; vitest doesn't run that transform,
 // so it's shimmed here as a global backed by the real implementation) —
@@ -66,6 +71,10 @@ describe("POST /api/auth/bluesky", () => {
       appPassword: "xxxx-xxxx-xxxx-xxxx",
     });
     mockAssertWithinFeedLimit.mockResolvedValue(undefined);
+    // No existing bluesky feed by default — most tests exercise the
+    // first-connect (insert) path; the reconnect (update-in-place) path is
+    // covered by its own dedicated test below.
+    mockFeedsFindFirst.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -229,5 +238,25 @@ describe("POST /api/auth/bluesky", () => {
     const result = await handler(event);
 
     expect(result).toEqual({ ok: true, handle: "you.bsky.social" });
+  });
+
+  it("updates the existing bluesky feed in place on reconnect, instead of inserting a duplicate", async () => {
+    // A handle rename or reconnecting a different Bluesky account must reuse
+    // the single existing bluesky feed row rather than leaving a stale one
+    // behind that keeps double-syncing the same timeline.
+    mockFeedsFindFirst.mockResolvedValue({ id: 42 });
+    const event = { context: { user: { id: 1 } } };
+
+    await handler(event);
+
+    // Only the integration insert — no second feed insert.
+    expect(mockInsert).toHaveBeenCalledTimes(1);
+    expect(mockUpdate).toHaveBeenCalledTimes(2);
+    expect(mockUpdateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        url: "https://bsky.app/profile/you.bsky.social",
+        title: "you.bsky.social",
+      }),
+    );
   });
 });

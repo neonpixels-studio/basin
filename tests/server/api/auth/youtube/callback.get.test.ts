@@ -22,6 +22,11 @@ const mockInsert = vi.fn();
 const mockUpdate = vi.fn();
 const mockUpdateSet = vi.fn();
 const mockUpdateWhere = vi.fn();
+const mockFeedsFindMany = vi.fn();
+const mockCount = vi.fn();
+const mockSelectWhere = vi.fn(() => mockCount());
+const mockSelectFrom = vi.fn(() => ({ where: mockSelectWhere }));
+const mockSelect = vi.fn(() => ({ from: mockSelectFrom }));
 
 // 32 bytes of hex — a valid AES-256-GCM key so encryptToken (a real
 // server/utils/crypto call, auto-imported the same way as exchangeCodeForTokens)
@@ -36,7 +41,12 @@ vi.stubGlobal("sendRedirect", mockSendRedirect);
 vi.stubGlobal("buildYouTubeCallbackUrl", mockBuildYouTubeCallbackUrl);
 vi.stubGlobal("exchangeCodeForTokens", mockExchangeCodeForTokens);
 vi.stubGlobal("getYouTubeChannelHandle", mockGetYouTubeChannelHandle);
-vi.stubGlobal("useDb", () => ({ insert: mockInsert, update: mockUpdate }));
+vi.stubGlobal("useDb", () => ({
+  insert: mockInsert,
+  update: mockUpdate,
+  select: mockSelect,
+  query: { feeds: { findMany: mockFeedsFindMany } },
+}));
 // encryptToken is a real server/utils/crypto call (Nitro auto-imports
 // server/utils/* into server/api routes; vitest doesn't run that transform,
 // so it's shimmed here as a global backed by the real implementation) —
@@ -45,22 +55,23 @@ vi.stubGlobal("encryptToken", encryptToken);
 
 // The connect flow also creates feeds rows from the account's subscriptions
 // (see integrationFeedCreation.ts) — mocking its own external-service and
-// plan-cap dependencies here (rather than the whole module) lets that real
+// plan-lookup dependencies here (rather than the whole module) lets that real
 // orchestration logic run end-to-end, the same way createFeedForUser's own
 // dependencies are mocked in feeds.post.test.ts.
 vi.mock("../../../../../server/utils/youtubeAdapter", () => ({
-  fetchSubscriptionChannelIds: vi.fn(),
+  fetchYouTubeSubscriptions: vi.fn(),
 }));
-vi.mock("../../../../../server/utils/feedLimit", () => ({
-  assertWithinFeedLimit: vi.fn(),
+vi.mock("../../../../../server/utils/subscriptions", () => ({
+  getAccountPlan: vi.fn(),
 }));
 
 import handler from "../../../../../server/api/auth/youtube/callback.get";
-import { fetchSubscriptionChannelIds } from "../../../../../server/utils/youtubeAdapter";
-import { assertWithinFeedLimit } from "../../../../../server/utils/feedLimit";
+import { fetchYouTubeSubscriptions } from "../../../../../server/utils/youtubeAdapter";
+import { getAccountPlan } from "../../../../../server/utils/subscriptions";
+import { FREE_PLAN_FEED_LIMIT } from "../../../../../server/utils/planLimits";
 
-const mockFetchSubscriptionChannelIds = vi.mocked(fetchSubscriptionChannelIds);
-const mockAssertWithinFeedLimit = vi.mocked(assertWithinFeedLimit);
+const mockFetchYouTubeSubscriptions = vi.mocked(fetchYouTubeSubscriptions);
+const mockGetAccountPlan = vi.mocked(getAccountPlan);
 
 const mockTokens = {
   access_token: "access-abc",
@@ -90,9 +101,19 @@ describe("GET /api/auth/youtube/callback", () => {
     mockExchangeCodeForTokens.mockResolvedValue(mockTokens);
     // No subscriptions by default so existing assertions on insert/update call
     // counts (which predate feed creation) keep holding; tests below override
-    // this to exercise feed creation itself.
-    mockFetchSubscriptionChannelIds.mockResolvedValue([]);
-    mockAssertWithinFeedLimit.mockResolvedValue(undefined);
+    // this to exercise feed creation itself. Plan defaults to "pro" so the
+    // (unused, in the default case) free-plan capacity queries never need
+    // their own setup unless a test opts into them.
+    mockFetchYouTubeSubscriptions.mockResolvedValue([]);
+    mockGetAccountPlan.mockResolvedValue({
+      plan: "pro",
+      status: "active",
+      trialEnd: null,
+      currentPeriodEnd: null,
+      cancelAtPeriodEnd: false,
+    });
+    mockFeedsFindMany.mockResolvedValue([]);
+    mockCount.mockResolvedValue([{ value: 0 }]);
   });
 
   afterEach(() => {
@@ -299,13 +320,16 @@ describe("GET /api/auth/youtube/callback", () => {
     // This is the crux of the "connecting never creates a feed" bug: without
     // wiring createYouTubeFeedsForUser into the callback, only the
     // integrations insert below ever happens and this assertion fails.
-    mockFetchSubscriptionChannelIds.mockResolvedValue(["UC1", "UC2"]);
+    mockFetchYouTubeSubscriptions.mockResolvedValue([
+      { channelId: "UC1", title: "Channel One" },
+      { channelId: "UC2", title: "Channel Two" },
+    ]);
     const event = { context: { user: { id: 1 } } };
     mockGetQuery.mockReturnValue({ code: "auth-code", state: "state123" });
     mockGetCookie.mockReturnValue("state123");
     await handler(event);
 
-    expect(mockFetchSubscriptionChannelIds).toHaveBeenCalledWith(
+    expect(mockFetchYouTubeSubscriptions).toHaveBeenCalledWith(
       mockTokens.access_token,
     );
     // One insert for the integrations row, one per subscribed channel.
@@ -319,12 +343,19 @@ describe("GET /api/auth/youtube/callback", () => {
   });
 
   it("skips a channel over the free-plan cap without failing the redirect", async () => {
-    mockFetchSubscriptionChannelIds.mockResolvedValue(["UC1", "UC2"]);
-    mockAssertWithinFeedLimit.mockImplementation(async (_userId, url) => {
-      if (url === "UC2") {
-        throw Object.assign(new Error("cap exceeded"), { statusCode: 403 });
-      }
+    mockFetchYouTubeSubscriptions.mockResolvedValue([
+      { channelId: "UC1", title: "Channel One" },
+      { channelId: "UC2", title: "Channel Two" },
+    ]);
+    mockGetAccountPlan.mockResolvedValue({
+      plan: "free",
+      status: "none",
+      trialEnd: null,
+      currentPeriodEnd: null,
+      cancelAtPeriodEnd: false,
     });
+    // Already one under the cap, so only the first channel fits.
+    mockCount.mockResolvedValue([{ value: FREE_PLAN_FEED_LIMIT - 1 }]);
     const event = { context: { user: { id: 1 } } };
     mockGetQuery.mockReturnValue({ code: "auth-code", state: "state123" });
     mockGetCookie.mockReturnValue("state123");
@@ -340,7 +371,7 @@ describe("GET /api/auth/youtube/callback", () => {
   });
 
   it("still redirects when fetching subscriptions fails", async () => {
-    mockFetchSubscriptionChannelIds.mockRejectedValue(
+    mockFetchYouTubeSubscriptions.mockRejectedValue(
       new Error("Subscriptions API error: 500"),
     );
     const event = { context: { user: { id: 1 } } };

@@ -15,6 +15,7 @@ vi.stubGlobal("fetch", mockFetch);
 import {
   isTokenExpired,
   refreshAccessToken,
+  fetchYouTubeSubscriptions,
   fetchSubscriptionChannelIds,
   fetchChannelRssXml,
   filterItemsByWatermark,
@@ -234,6 +235,76 @@ describe("refreshAccessToken", () => {
     const expiryMs = result.expiresAt.getTime();
     expect(expiryMs).toBeGreaterThanOrEqual(before + 7200_000);
     expect(expiryMs).toBeLessThanOrEqual(after + 7200_000);
+  });
+});
+
+// --- fetchYouTubeSubscriptions ---
+
+describe("fetchYouTubeSubscriptions", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("returns channel id and title pairs from a single page of subscriptions", async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          items: [
+            {
+              snippet: {
+                resourceId: { channelId: "UC111" },
+                title: "Channel A",
+              },
+            },
+            {
+              snippet: {
+                resourceId: { channelId: "UC222" },
+                title: "Channel B",
+              },
+            },
+          ],
+        }),
+    });
+
+    const subscriptions = await fetchYouTubeSubscriptions("access-token");
+    expect(subscriptions).toEqual([
+      { channelId: "UC111", title: "Channel A" },
+      { channelId: "UC222", title: "Channel B" },
+    ]);
+  });
+
+  it("paginates across multiple pages", async () => {
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            items: [
+              {
+                snippet: { resourceId: { channelId: "UC001" }, title: "Ch 1" },
+              },
+            ],
+            nextPageToken: "page2token",
+          }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            items: [
+              {
+                snippet: { resourceId: { channelId: "UC002" }, title: "Ch 2" },
+              },
+            ],
+          }),
+      });
+
+    const subscriptions = await fetchYouTubeSubscriptions("access-token");
+    expect(subscriptions).toEqual([
+      { channelId: "UC001", title: "Ch 1" },
+      { channelId: "UC002", title: "Ch 2" },
+    ]);
   });
 });
 

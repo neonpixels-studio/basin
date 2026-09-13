@@ -113,10 +113,21 @@ export async function refreshAccessToken(
   return { accessToken: data.access_token, expiresAt };
 }
 
-export async function fetchSubscriptionChannelIds(
+export interface YouTubeSubscription {
+  channelId: string;
+  title: string;
+}
+
+// Fetches the account's full subscription list, one page at a time. Exported
+// (rather than kept private under fetchSubscriptionChannelIds below) so a
+// caller that needs the channel title — e.g. integrationFeedCreation.ts,
+// which uses it as the created feed's display name — doesn't have to
+// re-fetch and re-paginate the same endpoint just to get a field this
+// function already read off the response.
+export async function fetchYouTubeSubscriptions(
   accessToken: string,
-): Promise<string[]> {
-  const channelIds: string[] = [];
+): Promise<YouTubeSubscription[]> {
+  const subscriptions: YouTubeSubscription[] = [];
   let pageToken: string | undefined;
 
   do {
@@ -144,13 +155,23 @@ export async function fetchSubscriptionChannelIds(
     const page = (await response.json()) as SubscriptionsPage;
 
     for (const item of page.items ?? []) {
-      channelIds.push(item.snippet.resourceId.channelId);
+      subscriptions.push({
+        channelId: item.snippet.resourceId.channelId,
+        title: item.snippet.title,
+      });
     }
 
     pageToken = page.nextPageToken;
   } while (pageToken);
 
-  return channelIds;
+  return subscriptions;
+}
+
+export async function fetchSubscriptionChannelIds(
+  accessToken: string,
+): Promise<string[]> {
+  const subscriptions = await fetchYouTubeSubscriptions(accessToken);
+  return subscriptions.map((subscription) => subscription.channelId);
 }
 
 export async function fetchChannelRssXml(channelId: string): Promise<string> {

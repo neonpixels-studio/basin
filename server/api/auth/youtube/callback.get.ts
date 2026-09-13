@@ -75,11 +75,25 @@ export default defineEventHandler(async (event) => {
   // must not undo an already-successful connect, so it's logged rather than
   // thrown — the user can retry a sync-triggering action later.
   try {
-    await createYouTubeFeedsForUser(
+    const { created, skipped } = await createYouTubeFeedsForUser(
       db,
       event.context.user.id,
       tokens.access_token,
     );
+    if (skipped.length > 0) {
+      // Not an error — most commonly the Free-plan cap reached partway
+      // through a large subscription list — but worth an operator-visible
+      // trail since the user only sees "Connected", not which channels never
+      // got a feed.
+      console.error(
+        "Some YouTube channels were skipped during feed creation:",
+        {
+          userId: event.context.user.id,
+          created,
+          skipped,
+        },
+      );
+    }
   } catch (error) {
     console.error("Failed to create YouTube feeds from subscriptions:", error);
   }
