@@ -129,6 +129,21 @@ export const useAppearanceStore = defineStore("appearance", () => {
   // reach `ready.value = true` below instead of being read as a no-op.
   let loadedUserId: string | null | undefined;
 
+  // Identifies which loadFromDb() call is the current one, so its pending
+  // `await load()` can tell a stale continuation apart from a live one.
+  // Comparing against loadedUserId alone isn't enough: an A → B → A switch
+  // (or a sign-out followed by signing back in as the same account) reuses
+  // the same id, so a stale call from the *first* "A" load would pass an
+  // id-only check even though a newer "A" load has since taken over.
+  // Incremented by every loadFromDb() call and by teardownLoadedAccount(),
+  // so a sign-out invalidates an in-flight load too, not just a switch to a
+  // different account.
+  let loadGeneration = 0;
+
+  function isStaleLoad(generation: number) {
+    return generation !== loadGeneration;
+  }
+
   // Does the real work of loading `userId`'s settings: applies any cached
   // snapshot immediately (so the cloak can lift before the network
   // round-trip resolves), registers the persistence watcher up front — so a
@@ -139,6 +154,7 @@ export const useAppearanceStore = defineStore("appearance", () => {
   // right after teardownLoadedAccount(), so there's no previous account's
   // state left to guard against here.
   async function loadFromDb(userId: string) {
+    const generation = ++loadGeneration;
     loadedUserId = userId;
 
     const cached = readCachedSettings(userId);
@@ -163,26 +179,43 @@ export const useAppearanceStore = defineStore("appearance", () => {
       }
     }
 
-    const { load, save } = useUserSettings();
-
-    // Flips once the visitor changes a setting locally. Registered before
-    // the DB fetch below so that edit is saved rather than being clobbered
-    // when the fetch resolves and would otherwise re-apply the stale value.
-    let dirty = false;
-    stopPersisting = watch(
-      state,
-      () => {
-        dirty = true;
-        applyToDom();
-        const patch = buildPatch();
-        save(patch);
-        writeCachedSettings(userId, patch);
-      },
-      { deep: true },
-    );
-
     try {
+      // useUserSettings() and the watch() registration below live inside this
+      // try (not ahead of it) so that a throw from either — not just a
+      // rejection of load() itself — still lands in the catch/finally below
+      // instead of leaving loadedUserId claimed with no persistence watcher
+      // and no way to retry.
+      const { load, save } = useUserSettings();
+
+      // Flips once the visitor changes a setting locally. Registered before
+      // the DB fetch below so that edit is saved rather than being clobbered
+      // when the fetch resolves and would otherwise re-apply the stale value.
+      let dirty = false;
+      stopPersisting = watch(
+        state,
+        () => {
+          dirty = true;
+          applyToDom();
+          const patch = buildPatch();
+          save(patch);
+          writeCachedSettings(userId, patch);
+        },
+        { deep: true },
+      );
+
       const dbSettings = await load();
+      // teardownLoadedAccount() (sign-out) or a newer loadFromDb() (account
+      // switch, or a switch away and back to this same account) can run to
+      // completion while this fetch is still in flight, moving on to a later
+      // generation than the one this call started with. Applying dbSettings
+      // here would be this stale continuation clobbering whatever load is
+      // now actually current — and the persistence watcher it would trigger
+      // would re-PATCH those stale settings back under the current account's
+      // auth token. Bail out instead; the current generation's own call owns
+      // applying its settings and flipping `ready`.
+      if (isStaleLoad(generation)) {
+        return;
+      }
       if (!dirty) {
         applyDbSettings(dbSettings);
         applyToDom();
@@ -191,13 +224,28 @@ export const useAppearanceStore = defineStore("appearance", () => {
     } catch (error) {
       // useUserSettings().load() already falls back to defaults internally
       // and shouldn't reject — this only guards against a future change (or
-      // an unexpected throw) leaving the cloak stuck down. Clear the claim so
-      // a later auth re-fire retries instead of assuming this account is
-      // already loaded.
+      // an unexpected throw) leaving the cloak stuck down. Logged
+      // unconditionally, even for a stale generation: the outgoing account's
+      // fetch genuinely failed and that's worth knowing regardless of whether
+      // anyone is still waiting on it.
       console.error("Failed to load appearance settings", error);
+      // Same staleness check as the success branch above: if a newer load has
+      // already taken over, this call has no claim left to clear — resetting
+      // loadedUserId to undefined here would erase the *current* generation's
+      // claim instead, making init()'s watcher think nothing is loaded and
+      // re-fire loadFromDb for an account that's already loaded.
+      if (isStaleLoad(generation)) {
+        return;
+      }
       loadedUserId = undefined;
     } finally {
-      ready.value = true;
+      // A stale continuation skips this too: flipping `ready` here would be
+      // this call declaring the load done on the current generation's
+      // behalf while its own fetch is still pending. That load's own
+      // finally is what owns setting ready once it actually lands.
+      if (!isStaleLoad(generation)) {
+        ready.value = true;
+      }
     }
   }
 
@@ -210,6 +258,17 @@ export const useAppearanceStore = defineStore("appearance", () => {
   // account's first edit from saving the old account's in-memory theme
   // under the new account's auth token.
   function teardownLoadedAccount() {
+    // Invalidates any loadFromDb() call still in flight for the account being
+    // torn down, even if the next thing loaded turns out to be that same
+    // account again (see loadGeneration's comment) — a sign-out must retire
+    // the outgoing load's claim just as surely as a switch to someone else.
+    loadGeneration += 1;
+    // Re-cloaks the UI for whatever comes next: without this, a mid-session
+    // switch away from an already-loaded (ready === true) account would
+    // render the DEFAULTS this function is about to apply as if they were
+    // the incoming account's real settings, instead of staying cloaked until
+    // that account's own cache hit or fetch lands.
+    ready.value = false;
     stopPersisting?.();
     stopPersisting = null;
     loadedUserId = null;
