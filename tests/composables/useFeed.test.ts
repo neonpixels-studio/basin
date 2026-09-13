@@ -1,10 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { nextTick } from "vue";
 import { setActivePinia, createPinia } from "pinia";
 import {
   useFeedStore,
   FEED_SYNC_TIMEOUT_MS,
   FEED_ITEMS_TIMEOUT_MS,
   MARK_ALL_READ_TIMEOUT_MS,
+  INITIAL_REVEAL_DELAY_MS,
 } from "~/stores/feed";
 import { VALID_MARK_ALL_READ_FILTERS } from "../../server/utils/markAllRead";
 import { mapSearchRow, type SearchRow } from "../../server/utils/search";
@@ -1406,34 +1408,41 @@ describe("useFeedStore", () => {
   // `define: { "import.meta.client": true }` to plain import.meta.<prop>
   // chains, so `!import.meta.client` was always true and this whole
   // function returned before doing anything. The Vitest 5 upgrade fixed
-  // that transform, but nothing asserted it — this suite is the regression
-  // guard plus the first real coverage of the client-gated init path.
+  // that transform (verified directly below and exercised by every other
+  // test in this suite, which would fail loudly if it regressed) — this
+  // block is the first real coverage of the client-gated init path.
   describe("setupWatchers", () => {
+    // Shared shape for stubbing useUserSettings across this suite (rule of
+    // three: the same stub literal was being repeated per test).
+    function stubUserSettings(
+      settings: { layout?: string; showUnreadOnly?: boolean },
+      save = vi.fn(),
+    ) {
+      const load = vi.fn().mockResolvedValue(settings);
+      vi.stubGlobal(
+        "useUserSettings",
+        vi.fn(() => ({ loading: ref(false), error: ref(null), load, save })),
+      );
+      return { load, save };
+    }
+
     afterEach(() => {
       vi.unstubAllGlobals();
     });
 
-    it("runs its client-gated body instead of returning early", () => {
-      // If vitest.config.ts's define ever stops resolving import.meta.client,
-      // this is false and every assertion below silently no-ops instead of
-      // failing loudly.
+    it("documents that import.meta.client resolves via vitest.config.ts's define", () => {
+      // Vitest 5's transform correctly rewrites this static import.meta.client
+      // chain to the literal `true` configured in vitest.config.ts — the every
+      // test below exercises the resulting behavior and would fail if it ever
+      // stopped resolving.
       expect(import.meta.client).toBe(true);
     });
 
     it("loads persisted layout and unread-only settings from the db", async () => {
-      const load = vi.fn().mockResolvedValue({
+      const { load } = stubUserSettings({
         layout: "grid",
         showUnreadOnly: true,
       });
-      vi.stubGlobal(
-        "useUserSettings",
-        vi.fn(() => ({
-          loading: ref(false),
-          error: ref(null),
-          load,
-          save: vi.fn(),
-        })),
-      );
       state.layout = "timeline";
       state.unreadOnly = false;
 
@@ -1444,29 +1453,38 @@ describe("useFeedStore", () => {
       expect(state.unreadOnly).toBe(true);
     });
 
-    it("clears the loading flag after the initial reveal delay", async () => {
+    // useUserSettings().load() resolves whatever $fetch returns, which can be
+    // null on an empty/204 response — this must fall back to the same
+    // defaults as a missing field rather than throwing and leaving the
+    // watchers below unregistered.
+    it("falls back to defaults when load() resolves null", async () => {
+      stubUserSettings(null as never);
+      state.layout = "grid";
+      state.unreadOnly = true;
+
+      await feed.setupWatchers();
+
+      expect(state.layout).toBe("timeline");
+      expect(state.unreadOnly).toBe(false);
+    });
+
+    it("keeps the loading flag up until the initial reveal delay elapses", async () => {
+      stubUserSettings({ layout: "timeline", showUnreadOnly: false });
       state.loading = true;
 
       await feed.setupWatchers();
-      await vi.advanceTimersByTimeAsync(650);
+      await vi.advanceTimersByTimeAsync(INITIAL_REVEAL_DELAY_MS - 1);
+      expect(state.loading).toBe(true);
 
+      await vi.advanceTimersByTimeAsync(1);
       expect(state.loading).toBe(false);
     });
 
     it("only loads settings once across repeated calls", async () => {
-      const load = vi.fn().mockResolvedValue({
+      const { load } = stubUserSettings({
         layout: "grid",
         showUnreadOnly: true,
       });
-      vi.stubGlobal(
-        "useUserSettings",
-        vi.fn(() => ({
-          loading: ref(false),
-          error: ref(null),
-          load,
-          save: vi.fn(),
-        })),
-      );
 
       await feed.setupWatchers();
       await feed.setupWatchers();
@@ -1474,26 +1492,58 @@ describe("useFeedStore", () => {
       expect(load).toHaveBeenCalledTimes(1);
     });
 
-    it("persists a layout change through the watcher it registers", async () => {
-      const save = vi.fn();
-      vi.stubGlobal(
-        "useUserSettings",
-        vi.fn(() => ({
-          loading: ref(false),
-          error: ref(null),
-          load: vi.fn().mockResolvedValue({
-            layout: "timeline",
-            showUnreadOnly: false,
-          }),
-          save,
-        })),
-      );
+    it("persists a layout change through the watcher it registers, without an extra save from the initial load", async () => {
+      const { save } = stubUserSettings({
+        layout: "timeline",
+        showUnreadOnly: false,
+      });
 
       await feed.setupWatchers();
       state.layout = "grid";
+      await nextTick();
+
+      expect(save).toHaveBeenCalledTimes(1);
+      expect(save).toHaveBeenCalledWith({ layout: "grid" });
+    });
+
+    it("persists an unread-only change through the watcher it registers", async () => {
+      const { save } = stubUserSettings({
+        layout: "timeline",
+        showUnreadOnly: false,
+      });
+
+      await feed.setupWatchers();
+      state.unreadOnly = true;
+      await nextTick();
+
+      expect(save).toHaveBeenCalledTimes(1);
+      expect(save).toHaveBeenCalledWith({ showUnreadOnly: true });
+    });
+
+    // The filter watcher is the one carrying the load-bearing behavior change
+    // (server-side filter scoping): switching filters must refetch page one
+    // for the new filter, not just re-run the cosmetic reveal timer.
+    it("refetches the first page for the new filter through the watcher it registers", async () => {
+      stubUserSettings({ layout: "timeline", showUnreadOnly: false });
+      vi.mocked(globalThis.$fetch).mockReset();
+      vi.mocked(globalThis.$fetch).mockResolvedValue({
+        items: [],
+        total: 0,
+        nextOffset: null,
+      });
+
+      await feed.setupWatchers();
+      state.filter = "saved";
+      await nextTick();
+      // The watcher's loadItems() call is fire-and-forget (not awaited by the
+      // watcher itself), so its own internal awaits (buildAuthHeaders, the
+      // $fetchWithTimeout race) need another microtask flush beyond nextTick.
       await vi.advanceTimersByTimeAsync(0);
 
-      expect(save).toHaveBeenCalledWith({ layout: "grid" });
+      const itemsCall = vi
+        .mocked(globalThis.$fetch)
+        .mock.calls.find((call) => call[0] === "/api/feed-items");
+      expect(itemsCall?.[1]?.query).toEqual({ filter: "saved" });
     });
   });
 });

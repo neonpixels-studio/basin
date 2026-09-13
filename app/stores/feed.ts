@@ -35,6 +35,11 @@ export const MARK_ALL_READ_TIMEOUT_MS = 15000;
 // wedge the caller (loadCounts is best effort, but must still settle).
 const FEED_COUNTS_TIMEOUT_MS = 15000;
 
+// setupWatchers() keeps the loading skeleton up for this long after mount so
+// the reveal doesn't flash for a near-instant settings load. Exported so
+// tests advance their fake timers by the exact same value.
+export const INITIAL_REVEAL_DELAY_MS = 650;
+
 export const useFeedStore = defineStore("feed", () => {
   const { getToken } = useAuth();
 
@@ -136,9 +141,13 @@ export const useFeedStore = defineStore("feed", () => {
 
   async function loadSettingsFromDb() {
     const { load } = useUserSettings();
+    // load() resolves the raw $fetch response, which can be null on an
+    // empty/204 reply — optional-chain both fields so a null payload falls
+    // back to the same defaults as a missing field, instead of throwing and
+    // leaving setupWatchers() with its watchers never registered.
     const settings = await load();
-    state.layout = settings.layout ?? "timeline";
-    state.unreadOnly = settings.showUnreadOnly ?? false;
+    state.layout = settings?.layout ?? "timeline";
+    state.unreadOnly = settings?.showUnreadOnly ?? false;
   }
 
   async function buildAuthHeaders(): Promise<Record<string, string>> {
@@ -355,7 +364,7 @@ export const useFeedStore = defineStore("feed", () => {
     );
     setTimeout(() => {
       state.loading = false;
-    }, 650);
+    }, INITIAL_REVEAL_DELAY_MS);
   }
 
   function revealAfterLoad() {
