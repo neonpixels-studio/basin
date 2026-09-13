@@ -141,11 +141,12 @@ export const useFeedStore = defineStore("feed", () => {
 
   async function loadSettingsFromDb() {
     const { load } = useUserSettings();
-    // load() resolves the raw $fetch response, which can be null on an
-    // empty/204 reply — optional-chain both fields so a null payload falls
-    // back to the same defaults as a missing field, instead of throwing and
-    // leaving setupWatchers() with its watchers never registered.
-    const settings = await load();
+    // load() resolves the raw $fetch response (null on an empty/204 reply)
+    // and can also reject (network failure, expired auth). Either way this
+    // must not throw out of setupWatchers() — a caller that awaits it once
+    // and never retries would otherwise leave the layout/unreadOnly/filter
+    // watchers below permanently unregistered for the rest of the session.
+    const settings = await load().catch(() => null);
     state.layout = settings?.layout ?? "timeline";
     state.unreadOnly = settings?.showUnreadOnly ?? false;
   }
