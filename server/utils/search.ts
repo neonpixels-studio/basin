@@ -1,9 +1,14 @@
-import { sql, eq } from "drizzle-orm";
+import { sql, eq, desc } from "drizzle-orm";
 import { feedItems, feeds } from "../db/schema";
 import { FEED_SOURCE_TO_ITEM_TYPE } from "../../app/utils/feedSources";
 import { formatRelativeTime } from "../../app/utils/feedTime";
 
+// Default page size for a search request. No longer a hard ceiling on how many
+// results a query can ever surface — callers page past it via limit/offset.
 export const SEARCH_RESULT_LIMIT = 20;
+// Upper bound on a single page, mirroring FEED_ITEMS_MAX_LIMIT in feedItems.ts,
+// so a client can't ask for an unbounded page.
+export const SEARCH_RESULT_MAX_LIMIT = 100;
 
 // Splits the query on runs of anything that isn't a Unicode letter or digit
 // (whitespace, punctuation, and — importantly — tsquery operator characters
@@ -80,6 +85,27 @@ export function buildPrefixTsQuery(query: string): string {
     .join(" & ");
 }
 
+// Local to search (second occurrence of feedItems.ts's clamp pattern; the
+// rule of three says don't abstract until a third caller needs it).
+function clampSearchLimit(raw: number | undefined): number {
+  const resolved = raw ?? SEARCH_RESULT_LIMIT;
+  return Math.min(Math.max(1, resolved), SEARCH_RESULT_MAX_LIMIT);
+}
+
+function resolveSearchOffset(raw: number | undefined): number {
+  return Math.max(0, raw ?? 0);
+}
+
+export interface SearchOptions {
+  limit?: number;
+  offset?: number;
+}
+
+export interface SearchPage {
+  items: SearchResult[];
+  nextOffset: number | null;
+}
+
 export interface SearchResult {
   id: number;
   feedId: number;
@@ -151,13 +177,17 @@ export function mapSearchRow({
 export async function searchFeedItems(
   userId: number,
   query: string,
-): Promise<SearchResult[]> {
+  options: SearchOptions = {},
+): Promise<SearchPage> {
   const db = useDb();
 
   const tsQuery = buildPrefixTsQuery(query);
   if (!tsQuery) {
-    return [];
+    return { items: [], nextOffset: null };
   }
+
+  const limit = clampSearchLimit(options.limit);
+  const offset = resolveSearchOffset(options.offset);
 
   // Built once so the text-search config ('english') only appears in one
   // place and can't drift out of sync between the match and rank clauses.
@@ -188,8 +218,23 @@ export async function searchFeedItems(
     .where(
       sql`${feeds.userId} = ${userId} AND ${feedItems.searchVector} @@ ${tsQueryExpression}`,
     )
-    .orderBy(sql`ts_rank(${feedItems.searchVector}, ${tsQueryExpression}) DESC`)
-    .limit(SEARCH_RESULT_LIMIT);
+    .orderBy(
+      sql`ts_rank(${feedItems.searchVector}, ${tsQueryExpression}) DESC`,
+      // Deterministic tiebreaker: a short prefix query yields many equal ranks,
+      // and without a stable secondary sort limit/offset paging could repeat or
+      // skip rows across pages (same guard as feedItems.ts).
+      desc(feedItems.id),
+    )
+    .limit(limit + 1)
+    .offset(offset);
 
-  return rows.map(mapSearchRow);
+  // Fetch one extra row to detect a further page without a second count query
+  // (same trick as feedItems.ts). Trim it off before mapping.
+  const hasMore = rows.length > limit;
+  const pageRows = hasMore ? rows.slice(0, limit) : rows;
+  const nextOffset = hasMore ? offset + limit : null;
+
+  const items = pageRows.map(mapSearchRow);
+
+  return { items, nextOffset };
 }
