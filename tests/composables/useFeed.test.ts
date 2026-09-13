@@ -1400,4 +1400,100 @@ describe("useFeedStore", () => {
       expect(state.loading).toBe(false);
     });
   });
+
+  // setupWatchers() is gated on import.meta.client and was previously
+  // untested: an older Vitest (4.x) didn't apply vitest.config.ts's
+  // `define: { "import.meta.client": true }` to plain import.meta.<prop>
+  // chains, so `!import.meta.client` was always true and this whole
+  // function returned before doing anything. The Vitest 5 upgrade fixed
+  // that transform, but nothing asserted it — this suite is the regression
+  // guard plus the first real coverage of the client-gated init path.
+  describe("setupWatchers", () => {
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it("runs its client-gated body instead of returning early", () => {
+      // If vitest.config.ts's define ever stops resolving import.meta.client,
+      // this is false and every assertion below silently no-ops instead of
+      // failing loudly.
+      expect(import.meta.client).toBe(true);
+    });
+
+    it("loads persisted layout and unread-only settings from the db", async () => {
+      const load = vi.fn().mockResolvedValue({
+        layout: "grid",
+        showUnreadOnly: true,
+      });
+      vi.stubGlobal(
+        "useUserSettings",
+        vi.fn(() => ({
+          loading: ref(false),
+          error: ref(null),
+          load,
+          save: vi.fn(),
+        })),
+      );
+      state.layout = "timeline";
+      state.unreadOnly = false;
+
+      await feed.setupWatchers();
+
+      expect(load).toHaveBeenCalledTimes(1);
+      expect(state.layout).toBe("grid");
+      expect(state.unreadOnly).toBe(true);
+    });
+
+    it("clears the loading flag after the initial reveal delay", async () => {
+      state.loading = true;
+
+      await feed.setupWatchers();
+      await vi.advanceTimersByTimeAsync(650);
+
+      expect(state.loading).toBe(false);
+    });
+
+    it("only loads settings once across repeated calls", async () => {
+      const load = vi.fn().mockResolvedValue({
+        layout: "grid",
+        showUnreadOnly: true,
+      });
+      vi.stubGlobal(
+        "useUserSettings",
+        vi.fn(() => ({
+          loading: ref(false),
+          error: ref(null),
+          load,
+          save: vi.fn(),
+        })),
+      );
+
+      await feed.setupWatchers();
+      await feed.setupWatchers();
+
+      expect(load).toHaveBeenCalledTimes(1);
+    });
+
+    it("persists a layout change through the watcher it registers", async () => {
+      const save = vi.fn();
+      vi.stubGlobal(
+        "useUserSettings",
+        vi.fn(() => ({
+          loading: ref(false),
+          error: ref(null),
+          load: vi.fn().mockResolvedValue({
+            layout: "timeline",
+            showUnreadOnly: false,
+          }),
+          save,
+        })),
+      );
+
+      await feed.setupWatchers();
+      state.layout = "grid";
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(save).toHaveBeenCalledWith({ layout: "grid" });
+    });
+  });
 });
