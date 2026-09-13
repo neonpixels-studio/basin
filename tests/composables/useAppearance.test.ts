@@ -37,7 +37,10 @@ function setupSignedInLoad() {
     save,
   }));
 
-  return { deferredLoad, save };
+  // Returned so a test can drive a sign-out by flipping these after init()
+  // — mutating the same refs useAuth() handed the store's internal watch,
+  // rather than re-stubbing useAuth (init() only reads it once).
+  return { deferredLoad, save, isSignedIn, userId };
 }
 
 describe("useAppearanceStore", () => {
@@ -139,13 +142,12 @@ describe("useAppearanceStore", () => {
 
     it("preserves a field edited mid-fetch while still applying untouched fields from the DB response", async () => {
       const { deferredLoad } = setupSignedInLoad();
-      const freshStore = useAppearanceStore();
-      freshStore.init();
+      store.init();
       await flushPromises();
 
       // Simulate a visitor changing the accent while the DB fetch is still
       // in flight.
-      freshStore.state.accent = "teal";
+      store.state.accent = "teal";
       await flushPromises();
 
       deferredLoad.resolve({
@@ -157,17 +159,16 @@ describe("useAppearanceStore", () => {
       await flushPromises();
 
       // The in-flight edit wins for the field the visitor touched...
-      expect(freshStore.state.accent).toBe("teal");
+      expect(store.state.accent).toBe("teal");
       // ...but every untouched field still gets the DB's value, not silently
       // discarded back to whatever the cache/defaults held.
-      expect(freshStore.state.theme).toBe("dark");
-      expect(freshStore.state.reading).toBe("mono");
+      expect(store.state.theme).toBe("dark");
+      expect(store.state.reading).toBe("mono");
     });
 
     it("does not re-trigger the persistence PATCH when the DB response applies with no local edits", async () => {
       const { deferredLoad, save } = setupSignedInLoad();
-      const freshStore = useAppearanceStore();
-      freshStore.init();
+      store.init();
       await flushPromises();
 
       expect(save).not.toHaveBeenCalled();
@@ -180,19 +181,18 @@ describe("useAppearanceStore", () => {
       });
       await flushPromises();
 
-      expect(freshStore.state.theme).toBe("dark");
+      expect(store.state.theme).toBe("dark");
       // Applying the DB's own values back onto state is not a local edit —
       // it must not PATCH those values straight back to where they came from.
       expect(save).not.toHaveBeenCalled();
     });
 
-    it("only saves the user's own edit, not an echo of the DB response that landed after it", async () => {
+    it("only saves the user's own edit, not an echo of the DB response that landed after it, and keeps persisting later edits", async () => {
       const { deferredLoad, save } = setupSignedInLoad();
-      const freshStore = useAppearanceStore();
-      freshStore.init();
+      store.init();
       await flushPromises();
 
-      freshStore.state.accent = "teal";
+      store.state.accent = "teal";
       await flushPromises();
       expect(save).toHaveBeenCalledTimes(1);
 
@@ -205,6 +205,46 @@ describe("useAppearanceStore", () => {
       await flushPromises();
 
       expect(save).toHaveBeenCalledTimes(1);
+
+      // The remote apply must only have suppressed persistence for its own
+      // write — a genuine edit made afterward still has to save normally.
+      store.state.accent = "rose";
+      await flushPromises();
+      expect(save).toHaveBeenCalledTimes(2);
+    });
+
+    it("stops every per-key watcher on sign-out, not just one, so a post-sign-out edit never saves under the old account", async () => {
+      const { deferredLoad, save, isSignedIn, userId } = setupSignedInLoad();
+      store.init();
+      await flushPromises();
+      deferredLoad.resolve({ ...USER_SETTINGS_DEFAULTS });
+      await flushPromises();
+      save.mockClear();
+
+      // Drive the same auth refs init()'s watcher is already watching —
+      // this is what fires teardownLoadedAccount(), which stops every
+      // per-key persistence watcher before resetting state to defaults.
+      isSignedIn.value = false;
+      userId.value = null;
+      await flushPromises();
+
+      (
+        [
+          "theme",
+          "accent",
+          "reading",
+          "density",
+          "radius",
+          "autoplay",
+          "compactNotif",
+        ] as const
+      ).forEach((key) => {
+        store.state[key] =
+          typeof store.state[key] === "boolean" ? true : "changed";
+      });
+      await flushPromises();
+
+      expect(save).not.toHaveBeenCalled();
     });
   });
 });

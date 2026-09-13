@@ -1,5 +1,6 @@
 import { defineStore } from "pinia";
 import { reactive, ref, computed, watch } from "vue";
+import type { UserSettings } from "~/composables/useUserSettings";
 
 // Caches the last-applied appearance settings client-side so a returning,
 // signed-in visitor can uncloak immediately instead of waiting on the
@@ -92,9 +93,13 @@ export const useAppearanceStore = defineStore("appearance", () => {
     root.style.setProperty("--accent-soft-ink", accentColors.a);
   }
 
-  // `loadingStyle` is a local-only preference (never read from or written to
-  // the DB — see buildPatch below), so it's deliberately excluded from this
-  // type: it was never part of applyDbSettings before this change either.
+  // `loadingStyle` is a local-only preference: applyToDom() never reads it
+  // (it isn't a DOM attribute/CSS var like theme/reading/density/radius/
+  // accent are) and it's never sent to or read from the DB (see buildPatch
+  // below). It was never part of applyDbSettings before this change either,
+  // so excluding it from the persisted-key type below changes nothing
+  // observable — there's no persistence or DOM side effect tied to it to
+  // preserve.
   type PersistedAppearanceKey =
     | "theme"
     | "accent"
@@ -107,7 +112,9 @@ export const useAppearanceStore = defineStore("appearance", () => {
   // Maps each persisted local state key to the DB response key it's read
   // from. applyDbSettings loops over this instead of one branch per field,
   // which is what keeps that function's complexity flat as fields are added.
-  const DB_FIELD_KEYS: Record<PersistedAppearanceKey, string> = {
+  // Typed against UserSettings (not a bare `string`) so a typo'd or renamed
+  // DB column fails to compile instead of silently reading `undefined`.
+  const DB_FIELD_KEYS: Record<PersistedAppearanceKey, keyof UserSettings> = {
     theme: "theme",
     accent: "accentColor",
     reading: "readingFont",
@@ -214,6 +221,24 @@ export const useAppearanceStore = defineStore("appearance", () => {
       writeCachedSettings(userId, patch);
     }
 
+    // Coalesces persist() so a caller that sets several fields in the same
+    // synchronous pass (e.g. applying a preset) still produces one PATCH
+    // instead of one per field — each watcher below fires with flush: "sync",
+    // but scheduling the actual persist onto a microtask lets same-tick
+    // writes collapse into a single call, same as the old deep watcher's
+    // default-flush batching did.
+    let persistScheduled = false;
+    function schedulePersist() {
+      if (persistScheduled) {
+        return;
+      }
+      persistScheduled = true;
+      queueMicrotask(() => {
+        persistScheduled = false;
+        persist();
+      });
+    }
+
     // One watcher per field rather than a single deep watch over `state` —
     // that's what lets a change be attributed to the specific key that
     // changed (recorded in editedKeys) instead of only ever knowing "the
@@ -224,7 +249,9 @@ export const useAppearanceStore = defineStore("appearance", () => {
     // mutating every field. Vue's default ("pre") flush would defer these
     // callbacks to the next microtask — by which point applyingRemote would
     // already be back to false, and the remote apply would be
-    // misattributed as a local edit and re-PATCHed.
+    // misattributed as a local edit and re-PATCHed. Only the applyingRemote
+    // check and editedKeys bookkeeping need to run synchronously — the
+    // actual persist is deferred via schedulePersist() above.
     const stopWatchers = (
       Object.keys(DB_FIELD_KEYS) as PersistedAppearanceKey[]
     ).map((key) =>
@@ -235,7 +262,7 @@ export const useAppearanceStore = defineStore("appearance", () => {
             return;
           }
           editedKeys.add(key);
-          persist();
+          schedulePersist();
         },
         { flush: "sync" },
       ),
