@@ -13,7 +13,7 @@ const mockUpdateWhere = vi.fn();
 const mockUpdateSet = vi.fn(() => ({ where: mockUpdateWhere }));
 const mockUpdate = vi.fn(() => ({ set: mockUpdateSet }));
 
-const mockDb = {
+vi.stubGlobal("useDb", () => ({
   insert: mockInsert,
   select: mockSelect,
   update: mockUpdate,
@@ -23,13 +23,13 @@ const mockDb = {
       findFirst: mockFeedsFindFirst,
     },
   },
-} as unknown as ReturnType<typeof import("../../../server/utils/db").useDb>;
+}));
 
-// assertWithinFeedLimit is the one dependency worth stubbing out (it hits the
-// DB independently of the mockDb above, keyed on the ambient useDb() global
-// rather than an injected db). feedLimitExceededError/isFeedLimitDbError are
-// left real: they're pure and this module's cap-skip messaging and DB-trigger
-// translation (see upsertIntegrationFeed) depend on their actual behavior.
+// assertWithinFeedLimit is the one dependency worth stubbing out (it's
+// already unit-tested on its own in feedCreationLimit.test.ts).
+// feedLimitExceededError/isFeedLimitDbError are left real: they're pure and
+// this module's cap-skip messaging and DB-trigger translation (see
+// upsertIntegrationFeed) depend on their actual behavior.
 vi.mock("../../../server/utils/feedLimit", async (importOriginal) => {
   const actual =
     await importOriginal<typeof import("../../../server/utils/feedLimit")>();
@@ -62,6 +62,22 @@ const mockAssertWithinFeedLimit = vi.mocked(assertWithinFeedLimit);
 const mockGetAccountPlan = vi.mocked(getAccountPlan);
 const mockFetchYouTubeSubscriptions = vi.mocked(fetchYouTubeSubscriptions);
 
+const PRO_PLAN = {
+  plan: "pro" as const,
+  status: "active",
+  trialEnd: null,
+  currentPeriodEnd: null,
+  cancelAtPeriodEnd: false,
+};
+
+const FREE_PLAN = {
+  plan: "free" as const,
+  status: "none",
+  trialEnd: null,
+  currentPeriodEnd: null,
+  cancelAtPeriodEnd: false,
+};
+
 // Mirrors how the real Postgres cap trigger (migration
 // 0011_enforce_source_cap.sql) surfaces through drizzle's neon-http driver:
 // a DrizzleQueryError wrapping the raw Postgres error carrying the SQLSTATE
@@ -74,6 +90,8 @@ function makeCapDbError(): DrizzleQueryError {
   return new DrizzleQueryError("insert into feeds ...", [], pgError);
 }
 
+const CAP_MESSAGE = `Free plan is limited to ${FREE_PLAN_FEED_LIMIT} sources; upgrade to Pro for unlimited sources`;
+
 describe("createYouTubeFeedsForUser", () => {
   beforeEach(() => {
     vi.resetAllMocks();
@@ -81,37 +99,50 @@ describe("createYouTubeFeedsForUser", () => {
     mockValues.mockReturnValue({ onConflictDoUpdate: mockOnConflictDoUpdate });
     mockOnConflictDoUpdate.mockResolvedValue(undefined);
     mockAssertWithinFeedLimit.mockResolvedValue(undefined);
-    mockGetAccountPlan.mockResolvedValue({
-      plan: "pro",
-      status: "active",
-      trialEnd: null,
-      currentPeriodEnd: null,
-      cancelAtPeriodEnd: false,
-    });
+    mockGetAccountPlan.mockResolvedValue(PRO_PLAN);
   });
 
-  it("creates a feed for every subscribed channel, using the subscription title", async () => {
+  it("creates a feed for every subscribed channel in a single batched insert, using the subscription title", async () => {
     mockFetchYouTubeSubscriptions.mockResolvedValue([
       { channelId: "UC1", title: "Channel One" },
       { channelId: "UC2", title: "Channel Two" },
     ]);
 
-    const result = await createYouTubeFeedsForUser(mockDb, 1, "token-abc");
+    const result = await createYouTubeFeedsForUser(1, "token-abc");
 
-    expect(result).toEqual({ created: 2, skipped: [] });
-    expect(mockInsert).toHaveBeenCalledTimes(2);
-    expect(mockValues).toHaveBeenCalledWith({
-      userId: 1,
-      url: "UC1",
-      title: "Channel One",
-      source: "youtube",
-    });
-    expect(mockValues).toHaveBeenCalledWith({
-      userId: 1,
-      url: "UC2",
-      title: "Channel Two",
-      source: "youtube",
-    });
+    expect(result).toEqual({ created: 2, updated: 0, skipped: [] });
+    // One statement for the whole chunk, not one per channel.
+    expect(mockInsert).toHaveBeenCalledTimes(1);
+    expect(mockValues).toHaveBeenCalledWith([
+      { userId: 1, url: "UC1", title: "Channel One", source: "youtube" },
+      { userId: 1, url: "UC2", title: "Channel Two", source: "youtube" },
+    ]);
+  });
+
+  it("dedupes a channel returned twice (a page-boundary shift) before inserting", async () => {
+    mockFetchYouTubeSubscriptions.mockResolvedValue([
+      { channelId: "UC1", title: "Channel One" },
+      { channelId: "UC1", title: "Channel One" },
+    ]);
+
+    const result = await createYouTubeFeedsForUser(1, "token-abc");
+
+    expect(result).toEqual({ created: 1, updated: 0, skipped: [] });
+    expect(mockValues).toHaveBeenCalledWith([
+      { userId: 1, url: "UC1", title: "Channel One", source: "youtube" },
+    ]);
+  });
+
+  it("normalizes an empty subscription title to null instead of writing a blank source name", async () => {
+    mockFetchYouTubeSubscriptions.mockResolvedValue([
+      { channelId: "UC1", title: "" },
+    ]);
+
+    await createYouTubeFeedsForUser(1, "token-abc");
+
+    expect(mockValues).toHaveBeenCalledWith([
+      { userId: 1, url: "UC1", title: null, source: "youtube" },
+    ]);
   });
 
   it("does not check plan/capacity for a paid account (no cap applies)", async () => {
@@ -119,36 +150,32 @@ describe("createYouTubeFeedsForUser", () => {
       { channelId: "UC1", title: "Channel One" },
     ]);
 
-    await createYouTubeFeedsForUser(mockDb, 1, "token-abc");
+    await createYouTubeFeedsForUser(1, "token-abc");
 
     expect(mockGetAccountPlan).toHaveBeenCalledWith(1);
     expect(mockFeedsFindMany).not.toHaveBeenCalled();
     expect(mockSelect).not.toHaveBeenCalled();
   });
 
-  it("upserts on conflict so a reconnect resets sync backoff state without touching the title key", async () => {
+  it("upserts on conflict so a reconnect resets sync backoff state", async () => {
     mockFetchYouTubeSubscriptions.mockResolvedValue([
       { channelId: "UC1", title: "Channel One" },
     ]);
 
-    await createYouTubeFeedsForUser(mockDb, 1, "token-abc");
+    await createYouTubeFeedsForUser(1, "token-abc");
 
     expect(mockOnConflictDoUpdate).toHaveBeenCalledWith({
       target: expect.any(Array),
-      set: expect.objectContaining({
-        source: "youtube",
-        title: "Channel One",
-        nextRetryAt: null,
-      }),
+      set: expect.objectContaining({ nextRetryAt: null }),
     });
   });
 
   it("does nothing when the account has no subscriptions", async () => {
     mockFetchYouTubeSubscriptions.mockResolvedValue([]);
 
-    const result = await createYouTubeFeedsForUser(mockDb, 1, "token-abc");
+    const result = await createYouTubeFeedsForUser(1, "token-abc");
 
-    expect(result).toEqual({ created: 0, skipped: [] });
+    expect(result).toEqual({ created: 0, updated: 0, skipped: [] });
     expect(mockInsert).not.toHaveBeenCalled();
     expect(mockGetAccountPlan).not.toHaveBeenCalled();
   });
@@ -158,21 +185,29 @@ describe("createYouTubeFeedsForUser", () => {
       new Error("Subscriptions API error: 500"),
     );
 
-    await expect(
-      createYouTubeFeedsForUser(mockDb, 1, "token-abc"),
-    ).rejects.toThrow("Subscriptions API error: 500");
+    await expect(createYouTubeFeedsForUser(1, "token-abc")).rejects.toThrow(
+      "Subscriptions API error: 500",
+    );
     expect(mockInsert).not.toHaveBeenCalled();
+  });
+
+  it("splits work across multiple chunks for a large subscription list", async () => {
+    const subscriptions = Array.from({ length: 120 }, (_, index) => ({
+      channelId: `UC${index}`,
+      title: `Channel ${index}`,
+    }));
+    mockFetchYouTubeSubscriptions.mockResolvedValue(subscriptions);
+
+    const result = await createYouTubeFeedsForUser(1, "token-abc");
+
+    expect(result.created).toBe(120);
+    // Chunk size is 50, so 120 channels need 3 batched statements.
+    expect(mockInsert).toHaveBeenCalledTimes(3);
   });
 
   describe("on a Free plan", () => {
     beforeEach(() => {
-      mockGetAccountPlan.mockResolvedValue({
-        plan: "free",
-        status: "none",
-        trialEnd: null,
-        currentPeriodEnd: null,
-        cancelAtPeriodEnd: false,
-      });
+      mockGetAccountPlan.mockResolvedValue(FREE_PLAN);
       mockFeedsFindMany.mockResolvedValue([]);
       mockCount.mockResolvedValue([{ value: 0 }]);
     });
@@ -184,9 +219,9 @@ describe("createYouTubeFeedsForUser", () => {
       ]);
       mockCount.mockResolvedValue([{ value: 8 }]);
 
-      const result = await createYouTubeFeedsForUser(mockDb, 1, "token-abc");
+      const result = await createYouTubeFeedsForUser(1, "token-abc");
 
-      expect(result).toEqual({ created: 2, skipped: [] });
+      expect(result).toEqual({ created: 2, updated: 0, skipped: [] });
       // One capacity check total, not one per channel.
       expect(mockSelect).toHaveBeenCalledTimes(1);
       expect(mockFeedsFindMany).toHaveBeenCalledTimes(1);
@@ -201,79 +236,76 @@ describe("createYouTubeFeedsForUser", () => {
       // 9 existing feeds, cap is FREE_PLAN_FEED_LIMIT — only 1 slot left.
       mockCount.mockResolvedValue([{ value: FREE_PLAN_FEED_LIMIT - 1 }]);
 
-      const result = await createYouTubeFeedsForUser(mockDb, 1, "token-abc");
+      const result = await createYouTubeFeedsForUser(1, "token-abc");
 
       expect(result.created).toBe(1);
       expect(result.skipped).toEqual([
-        {
-          channelId: "UC2",
-          reason: `Free plan is limited to ${FREE_PLAN_FEED_LIMIT} sources; upgrade to Pro for unlimited sources`,
-        },
-        {
-          channelId: "UC3",
-          reason: `Free plan is limited to ${FREE_PLAN_FEED_LIMIT} sources; upgrade to Pro for unlimited sources`,
-        },
+        { channelId: "UC2", reason: CAP_MESSAGE },
+        { channelId: "UC3", reason: CAP_MESSAGE },
       ]);
-      expect(mockInsert).toHaveBeenCalledTimes(1);
+      expect(mockValues).toHaveBeenCalledWith([
+        { userId: 1, url: "UC1", title: "Channel One", source: "youtube" },
+      ]);
     });
 
-    it("does not count a channel already followed as a previous connect against the remaining budget", async () => {
+    it("reports an already-followed channel as updated, not created", async () => {
       mockFetchYouTubeSubscriptions.mockResolvedValue([
         { channelId: "UC1", title: "Channel One" },
         { channelId: "UC2", title: "Channel Two" },
       ]);
       // No slots left, but UC1 already has a feed row from a prior connect —
-      // it should still be reconciled (backoff reset), not skipped.
+      // it should still be reconciled (backoff reset), not skipped, and
+      // counted as an update rather than a new creation.
       mockCount.mockResolvedValue([{ value: FREE_PLAN_FEED_LIMIT }]);
       mockFeedsFindMany.mockResolvedValue([{ url: "UC1" }]);
 
-      const result = await createYouTubeFeedsForUser(mockDb, 1, "token-abc");
+      const result = await createYouTubeFeedsForUser(1, "token-abc");
 
-      expect(result.created).toBe(1);
+      expect(result.created).toBe(0);
+      expect(result.updated).toBe(1);
       expect(result.skipped).toEqual([
-        {
-          channelId: "UC2",
-          reason: `Free plan is limited to ${FREE_PLAN_FEED_LIMIT} sources; upgrade to Pro for unlimited sources`,
-        },
+        { channelId: "UC2", reason: CAP_MESSAGE },
       ]);
       expect(mockValues).toHaveBeenCalledWith(
-        expect.objectContaining({ url: "UC1" }),
+        expect.arrayContaining([expect.objectContaining({ url: "UC1" })]),
       );
     });
 
-    it("translates a raced DB-trigger cap rejection into the same clean 403 message", async () => {
-      mockFetchYouTubeSubscriptions.mockResolvedValue([
-        { channelId: "UC1", title: "Channel One" },
-      ]);
-      mockCount.mockResolvedValue([{ value: 0 }]);
-      mockOnConflictDoUpdate.mockRejectedValue(makeCapDbError());
-
-      const result = await createYouTubeFeedsForUser(mockDb, 1, "token-abc");
-
-      expect(result.created).toBe(0);
-      expect(result.skipped).toEqual([
-        {
-          channelId: "UC1",
-          reason: `Free plan is limited to ${FREE_PLAN_FEED_LIMIT} sources; upgrade to Pro for unlimited sources`,
-        },
-      ]);
-    });
-
-    it("still inserts the remaining channels when one insert fails for an unrelated reason", async () => {
+    it("translates a raced DB-trigger cap rejection into the same clean 403 message for the whole chunk", async () => {
       mockFetchYouTubeSubscriptions.mockResolvedValue([
         { channelId: "UC1", title: "Channel One" },
         { channelId: "UC2", title: "Channel Two" },
       ]);
       mockCount.mockResolvedValue([{ value: 0 }]);
+      mockOnConflictDoUpdate.mockRejectedValue(makeCapDbError());
+
+      const result = await createYouTubeFeedsForUser(1, "token-abc");
+
+      expect(result.created).toBe(0);
+      expect(result.skipped).toEqual([
+        { channelId: "UC1", reason: CAP_MESSAGE },
+        { channelId: "UC2", reason: CAP_MESSAGE },
+      ]);
+    });
+
+    it("falls back to per-row inserts for the chunk when the batch fails for an unrelated reason", async () => {
+      mockFetchYouTubeSubscriptions.mockResolvedValue([
+        { channelId: "UC1", title: "Channel One" },
+        { channelId: "UC2", title: "Channel Two" },
+      ]);
+      mockCount.mockResolvedValue([{ value: 0 }]);
+      // The batched attempt fails; the per-row fallback then succeeds for
+      // one channel and fails for the other.
       mockOnConflictDoUpdate
         .mockRejectedValueOnce(new Error("connection reset"))
+        .mockRejectedValueOnce(new Error("still broken"))
         .mockResolvedValueOnce(undefined);
 
-      const result = await createYouTubeFeedsForUser(mockDb, 1, "token-abc");
+      const result = await createYouTubeFeedsForUser(1, "token-abc");
 
       expect(result.created).toBe(1);
       expect(result.skipped).toEqual([
-        { channelId: "UC1", reason: "connection reset" },
+        { channelId: "UC1", reason: "still broken" },
       ]);
     });
   });
@@ -290,7 +322,7 @@ describe("createBlueskyFeedForUser", () => {
   });
 
   it("creates exactly one feed for the connected account's timeline on first connect", async () => {
-    await createBlueskyFeedForUser(mockDb, 1, "you.bsky.social");
+    await createBlueskyFeedForUser(1, "you.bsky.social");
 
     expect(mockAssertWithinFeedLimit).toHaveBeenCalledWith(
       1,
@@ -311,38 +343,49 @@ describe("createBlueskyFeedForUser", () => {
     );
 
     await expect(
-      createBlueskyFeedForUser(mockDb, 1, "you.bsky.social"),
+      createBlueskyFeedForUser(1, "you.bsky.social"),
     ).rejects.toMatchObject({ statusCode: 403 });
     expect(mockInsert).not.toHaveBeenCalled();
   });
 
-  it("updates the existing bluesky feed in place on reconnect instead of inserting a second row", async () => {
-    mockFeedsFindFirst.mockResolvedValue({ id: 42 });
+  it("updates the existing bluesky feed in place on reconnect with the same handle, preserving its sync watermark", async () => {
+    mockFeedsFindFirst.mockResolvedValue({
+      id: 42,
+      url: "https://bsky.app/profile/you.bsky.social",
+    });
 
-    await createBlueskyFeedForUser(mockDb, 1, "you.bsky.social");
+    await createBlueskyFeedForUser(1, "you.bsky.social");
 
     expect(mockInsert).not.toHaveBeenCalled();
     expect(mockAssertWithinFeedLimit).not.toHaveBeenCalled();
     expect(mockUpdate).toHaveBeenCalledTimes(1);
-    expect(mockUpdateSet).toHaveBeenCalledWith(
-      expect.objectContaining({
-        url: "https://bsky.app/profile/you.bsky.social",
-        title: "you.bsky.social",
-      }),
-    );
+    expect(mockUpdateSet).toHaveBeenCalledWith({
+      url: "https://bsky.app/profile/you.bsky.social",
+      title: "you.bsky.social",
+      syncStatus: "ok",
+      syncError: null,
+      syncFailedAt: null,
+      nextRetryAt: null,
+    });
     expect(mockUpdateWhere).toHaveBeenCalled();
   });
 
-  it("updates the same row (not a new one) when the handle has changed since last connect", async () => {
-    mockFeedsFindFirst.mockResolvedValue({ id: 42 });
+  it("resets the sync watermark when the handle (and so the underlying account) has changed", async () => {
+    // Otherwise a reconnect to a different Bluesky account inherits the
+    // previous account's lastFetched, and everything in the new account's
+    // timeline older than that watermark is silently never imported.
+    mockFeedsFindFirst.mockResolvedValue({
+      id: 42,
+      url: "https://bsky.app/profile/old-handle.bsky.social",
+    });
 
-    await createBlueskyFeedForUser(mockDb, 1, "new-handle.bsky.social");
+    await createBlueskyFeedForUser(1, "new-handle.bsky.social");
 
-    expect(mockInsert).not.toHaveBeenCalled();
     expect(mockUpdateSet).toHaveBeenCalledWith(
       expect.objectContaining({
         url: "https://bsky.app/profile/new-handle.bsky.social",
         title: "new-handle.bsky.social",
+        lastFetched: null,
       }),
     );
   });

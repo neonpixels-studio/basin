@@ -332,14 +332,13 @@ describe("GET /api/auth/youtube/callback", () => {
     expect(mockFetchYouTubeSubscriptions).toHaveBeenCalledWith(
       mockTokens.access_token,
     );
-    // One insert for the integrations row, one per subscribed channel.
-    expect(mockInsert).toHaveBeenCalledTimes(3);
-    expect(mockValues).toHaveBeenCalledWith(
-      expect.objectContaining({ userId: 1, source: "youtube", url: "UC1" }),
-    );
-    expect(mockValues).toHaveBeenCalledWith(
-      expect.objectContaining({ userId: 1, source: "youtube", url: "UC2" }),
-    );
+    // One insert for the integrations row, one batched insert for every
+    // subscribed channel (see integrationFeedCreation.ts's chunking).
+    expect(mockInsert).toHaveBeenCalledTimes(2);
+    expect(mockValues).toHaveBeenCalledWith([
+      { userId: 1, source: "youtube", url: "UC1", title: "Channel One" },
+      { userId: 1, source: "youtube", url: "UC2", title: "Channel Two" },
+    ]);
   });
 
   it("skips a channel over the free-plan cap without failing the redirect", async () => {
@@ -362,11 +361,13 @@ describe("GET /api/auth/youtube/callback", () => {
 
     await handler(event);
 
+    // The redirect surfaces the skip count so the connections page can
+    // eventually tell the user some channels didn't get a feed.
     expect(mockSendRedirect).toHaveBeenCalledWith(
       event,
-      "/settings/connections",
+      "/settings/connections?skippedChannels=1",
     );
-    // Integration insert plus only the one channel under the cap.
+    // Integration insert plus one batched insert for the channel under the cap.
     expect(mockInsert).toHaveBeenCalledTimes(2);
   });
 

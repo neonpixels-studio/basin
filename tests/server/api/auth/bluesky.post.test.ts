@@ -167,7 +167,11 @@ describe("POST /api/auth/bluesky", () => {
   it("returns ok and the Bluesky handle on success", async () => {
     const event = { context: { user: { id: 1 } } };
     const result = await handler(event);
-    expect(result).toEqual({ ok: true, handle: "you.bsky.social" });
+    expect(result).toEqual({
+      ok: true,
+      handle: "you.bsky.social",
+      feedCreated: true,
+    });
   });
 
   it("trims whitespace from handle and app password", async () => {
@@ -229,7 +233,7 @@ describe("POST /api/auth/bluesky", () => {
     });
   });
 
-  it("still returns ok when the free-plan feed cap blocks feed creation", async () => {
+  it("still returns ok, but flags feedCreated: false, when the free-plan feed cap blocks feed creation", async () => {
     mockAssertWithinFeedLimit.mockRejectedValue(
       Object.assign(new Error("cap exceeded"), { statusCode: 403 }),
     );
@@ -237,7 +241,11 @@ describe("POST /api/auth/bluesky", () => {
 
     const result = await handler(event);
 
-    expect(result).toEqual({ ok: true, handle: "you.bsky.social" });
+    expect(result).toEqual({
+      ok: true,
+      handle: "you.bsky.social",
+      feedCreated: false,
+    });
   });
 
   it("updates the existing bluesky feed in place on reconnect, instead of inserting a duplicate", async () => {

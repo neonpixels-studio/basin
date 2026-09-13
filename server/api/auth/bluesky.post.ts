@@ -78,12 +78,16 @@ export default defineEventHandler(async (event) => {
   // (netlify/functions/sync-feed.ts) only ever acts on feeds rows, and
   // nothing above this line ever created one. A failure here (the Free-plan
   // cap already reached) must not undo an already-verified, already-saved
-  // connection, so it's logged rather than thrown.
+  // connection, so it's logged rather than thrown — but `feedCreated` still
+  // tells the caller the account is connected without a feed yet, rather
+  // than silently returning the same "success" shape either way.
+  let feedCreated = true;
   try {
-    await createBlueskyFeedForUser(db, user.id, session.handle);
+    await createBlueskyFeedForUser(user.id, session.handle);
   } catch (error) {
+    feedCreated = false;
     console.error("Failed to create Bluesky feed for user:", error);
   }
 
-  return { ok: true, handle: session.handle };
+  return { ok: true, handle: session.handle, feedCreated };
 });

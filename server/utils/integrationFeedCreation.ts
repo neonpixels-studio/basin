@@ -7,9 +7,15 @@
 // feed-creation policy — one feed per subscribed YouTube channel, one feed
 // for the whole Bluesky timeline, both capped by the same Free-plan limit a
 // manual add respects — is unit-testable without a live DB.
-import { and, count, eq, inArray } from "drizzle-orm";
+//
+// Every query here goes through the ambient useDb() (matching
+// feedCreation.ts's own convention) rather than accepting an injected `db`
+// parameter: neon-http opens a fresh stateless connection per query either
+// way, so there is no pooling/transaction benefit to threading one through,
+// and a single convention keeps every query in this file — including
+// assertWithinFeedLimit's internal one — consistent.
+import { and, count, eq, inArray, sql } from "drizzle-orm";
 import { feeds } from "../db/schema";
-import { useDb } from "./db";
 import { BLUESKY_SOURCE } from "./blueskyAdapter";
 import {
   assertWithinFeedLimit,
@@ -33,7 +39,14 @@ const YOUTUBE_SOURCE = "youtube";
 // already uses for individual post links in blueskyAdapter.ts.
 const BLUESKY_PROFILE_URL_BASE = "https://bsky.app/profile";
 
-type Database = ReturnType<typeof useDb>;
+// Caps how many channels go into a single multi-row insert statement. Without
+// chunking, an account with hundreds of subscriptions would cost one DB round
+// trip per channel inside this synchronous OAuth callback, risking a function
+// timeout before the redirect — see the "on a Free plan" perf tests and the
+// PR description for the full reasoning. Chunking (rather than one statement
+// for everything) also bounds how much work is discarded if a single
+// statement fails for a reason unrelated to any specific row.
+const YOUTUBE_FEED_INSERT_CHUNK_SIZE = 50;
 
 export interface SkippedChannel {
   channelId: string;
@@ -42,6 +55,7 @@ export interface SkippedChannel {
 
 export interface CreateYouTubeFeedsResult {
   created: number;
+  updated: number;
   skipped: SkippedChannel[];
 }
 
@@ -62,6 +76,14 @@ function buildBlueskyProfileUrl(handle: string): string {
   return `${BLUESKY_PROFILE_URL_BASE}/${handle}`;
 }
 
+// Treats an empty title (YouTube returns "" for a deleted/private channel's
+// snippet.title) the same as a missing one, so it never gets written to the
+// title column — sync-feed.ts's `channelTitle ?? channelId` fallback only
+// catches null/undefined, not "".
+function normalizeTitle(title: string | null): string | null {
+  return title || null;
+}
+
 // Shares the dedupe (feeds_user_id_url_idx) and backoff-reset semantics the
 // manual add path uses (see upsertFeed in feedCreation.ts) — including
 // translating a raced DB-trigger cap rejection (migration
@@ -70,25 +92,26 @@ function buildBlueskyProfileUrl(handle: string): string {
 // feed's "url" is a channel id or profile link, not a fetchable RSS/Atom
 // document, so there is nothing to validate or auto-detect.
 //
-// `title` is omitted from the conflict `set` (rather than written as null)
-// when the caller has none, so a reconnect never blanks out a title a
-// previous connect (or the user) already set on this row.
+// `title` is left out of the conflict `set` (rather than written as null)
+// when there is none, so a reconnect never blanks out a title a previous
+// connect already set on this row.
 async function upsertIntegrationFeed(
-  db: Database,
   userId: number,
   source: string,
   url: string,
   title: string | null,
 ): Promise<void> {
-  const conflictSet = title === null ? {} : { title };
+  const normalizedTitle = normalizeTitle(title);
+  const conflictTitle =
+    normalizedTitle === null ? {} : { title: normalizedTitle };
 
   try {
-    await db
+    await useDb()
       .insert(feeds)
-      .values({ userId, url, title, source })
+      .values({ userId, url, title: normalizedTitle, source })
       .onConflictDoUpdate({
         target: [feeds.userId, feeds.url],
-        set: { ...UNGATED_SYNC_STATE, source, ...conflictSet },
+        set: { ...UNGATED_SYNC_STATE, source, ...conflictTitle },
       });
   } catch (error) {
     if (isFeedLimitDbError(error)) {
@@ -98,12 +121,34 @@ async function upsertIntegrationFeed(
   }
 }
 
+// A subscriptions page boundary can shift mid-pagination and hand back the
+// same channel twice; a batched multi-row insert would then fail outright
+// ("ON CONFLICT DO UPDATE command cannot affect row a second time"), so
+// dedupe before anything else touches the list.
+function dedupeSubscriptionsByChannelId(
+  subscriptions: YouTubeSubscription[],
+): YouTubeSubscription[] {
+  const byChannelId = new Map<string, YouTubeSubscription>();
+  for (const subscription of subscriptions) {
+    byChannelId.set(subscription.channelId, subscription);
+  }
+  return [...byChannelId.values()];
+}
+
+function chunk<T>(items: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+  return chunks;
+}
+
 // The per-item assertWithinFeedLimit check (three queries: plan, "already
 // subscribed", current count) is right for the single-add path it was built
 // for, but a YouTube account can carry hundreds of subscriptions — repeating
 // it per channel inside this synchronous OAuth callback risks running the
-// connect flow into a function timeout. Resolved once per connect instead:
-// a paid plan skips straight to "unlimited" with a single query, and a Free
+// connect flow into a function timeout. Resolved once per connect instead: a
+// paid plan skips straight to "unlimited" with a single query, and a Free
 // plan gets one query for its current feed count plus one query for which of
 // these specific channels it already follows (so a reconnect's already-owned
 // channels don't eat into the remaining budget).
@@ -113,7 +158,6 @@ interface YouTubeFeedCapacity {
 }
 
 async function resolveYouTubeFeedCapacity(
-  db: Database,
   userId: number,
   subscriptions: YouTubeSubscription[],
 ): Promise<YouTubeFeedCapacity> {
@@ -128,7 +172,7 @@ async function resolveYouTubeFeedCapacity(
   const channelIds = subscriptions.map(
     (subscription) => subscription.channelId,
   );
-  const existingRows = await db.query.feeds.findMany({
+  const existingRows = await useDb().query.feeds.findMany({
     where: and(
       eq(feeds.userId, userId),
       eq(feeds.source, YOUTUBE_SOURCE),
@@ -138,7 +182,7 @@ async function resolveYouTubeFeedCapacity(
   });
   const existingChannelIds = new Set(existingRows.map((row) => row.url));
 
-  const [countRow] = await db
+  const [countRow] = await useDb()
     .select({ value: count() })
     .from(feeds)
     .where(eq(feeds.userId, userId));
@@ -146,6 +190,140 @@ async function resolveYouTubeFeedCapacity(
   const remainingSlots = Math.max(FREE_PLAN_FEED_LIMIT - currentCount, 0);
 
   return { existingChannelIds, remainingSlots };
+}
+
+// Splits subscriptions into what fits the remaining Free-plan budget and what
+// doesn't, without any DB work — resolveYouTubeFeedCapacity already gathered
+// everything needed to decide this synchronously.
+function partitionByCapacity(
+  subscriptions: YouTubeSubscription[],
+  existingChannelIds: Set<string>,
+  remainingSlots: number,
+): { eligible: YouTubeSubscription[]; skipped: SkippedChannel[] } {
+  const eligible: YouTubeSubscription[] = [];
+  const skipped: SkippedChannel[] = [];
+  let remaining = remainingSlots;
+
+  for (const subscription of subscriptions) {
+    const isExistingFeed = existingChannelIds.has(subscription.channelId);
+    if (!isExistingFeed && remaining <= 0) {
+      skipped.push({
+        channelId: subscription.channelId,
+        reason: reasonFromError(feedLimitExceededError()),
+      });
+      continue;
+    }
+
+    eligible.push(subscription);
+    if (!isExistingFeed) {
+      remaining -= 1;
+    }
+  }
+
+  return { eligible, skipped };
+}
+
+// Attempts one channel in isolation — used both as the per-chunk fallback
+// below and directly by tests. Returns null on success or a human-readable
+// skip reason on failure, so the caller never has to catch/branch itself.
+async function upsertYouTubeChannelFeed(
+  userId: number,
+  subscription: YouTubeSubscription,
+): Promise<string | null> {
+  try {
+    await upsertIntegrationFeed(
+      userId,
+      YOUTUBE_SOURCE,
+      subscription.channelId,
+      subscription.title,
+    );
+    return null;
+  } catch (error) {
+    return reasonFromError(error);
+  }
+}
+
+interface ChunkResult {
+  succeededChannelIds: string[];
+  skipped: SkippedChannel[];
+}
+
+// Falls back to one insert per channel when the batched statement for a
+// chunk fails, so a single unrelated failure (a transient DB error, one row
+// tripping the DB-trigger cap on a raced concurrent add) doesn't discard the
+// rest of an otherwise-healthy chunk.
+async function upsertYouTubeChunkPerRow(
+  userId: number,
+  subscriptions: YouTubeSubscription[],
+): Promise<ChunkResult> {
+  const succeededChannelIds: string[] = [];
+  const skipped: SkippedChannel[] = [];
+
+  for (const subscription of subscriptions) {
+    const failureReason = await upsertYouTubeChannelFeed(userId, subscription);
+    if (failureReason === null) {
+      succeededChannelIds.push(subscription.channelId);
+      continue;
+    }
+    skipped.push({ channelId: subscription.channelId, reason: failureReason });
+  }
+
+  return { succeededChannelIds, skipped };
+}
+
+async function upsertYouTubeChunk(
+  userId: number,
+  subscriptions: YouTubeSubscription[],
+): Promise<ChunkResult> {
+  const rows = subscriptions.map((subscription) => ({
+    userId,
+    url: subscription.channelId,
+    title: normalizeTitle(subscription.title),
+    source: YOUTUBE_SOURCE,
+  }));
+
+  try {
+    await useDb()
+      .insert(feeds)
+      .values(rows)
+      .onConflictDoUpdate({
+        target: [feeds.userId, feeds.url],
+        set: {
+          ...UNGATED_SYNC_STATE,
+          // A batched multi-row statement can't apply the single-row
+          // "leave title alone when null" rule upsertIntegrationFeed uses
+          // (see above) on a per-row basis, so a channel whose title just
+          // went empty (deleted/private) can clobber a previously-known
+          // title in this path. Traded deliberately for cutting connect-time
+          // DB round trips from one per channel to one per chunk; a
+          // reconnect re-fetches and re-fills the title once it's non-empty
+          // again.
+          source: sql`excluded.source`,
+          title: sql`excluded.title`,
+        },
+      });
+    return {
+      succeededChannelIds: subscriptions.map(
+        (subscription) => subscription.channelId,
+      ),
+      skipped: [],
+    };
+  } catch (error) {
+    if (isFeedLimitDbError(error)) {
+      // The whole batch raced a concurrent add and lost — not attributable
+      // to any specific row, so surface the same skip reason for each rather
+      // than guessing which ones would have fit.
+      const reason = reasonFromError(feedLimitExceededError());
+      return {
+        succeededChannelIds: [],
+        skipped: subscriptions.map((subscription) => ({
+          channelId: subscription.channelId,
+          reason,
+        })),
+      };
+    }
+    return upsertYouTubeChunkPerRow(userId, subscriptions);
+  }
 }
 
 // One feed per subscribed channel, mirroring the youtube.readonly +
@@ -160,46 +338,44 @@ async function resolveYouTubeFeedCapacity(
 // fatal to the connect flow — it isn't, by convention, since the account is
 // already connected by the time this runs.
 export async function createYouTubeFeedsForUser(
-  db: Database,
   userId: number,
   accessToken: string,
 ): Promise<CreateYouTubeFeedsResult> {
-  const subscriptions = await fetchYouTubeSubscriptions(accessToken);
-  const skipped: SkippedChannel[] = [];
+  const subscriptions = dedupeSubscriptionsByChannelId(
+    await fetchYouTubeSubscriptions(accessToken),
+  );
 
   if (subscriptions.length === 0) {
-    return { created: 0, skipped };
+    return { created: 0, updated: 0, skipped: [] };
   }
 
   const { existingChannelIds, remainingSlots } =
-    await resolveYouTubeFeedCapacity(db, userId, subscriptions);
+    await resolveYouTubeFeedCapacity(userId, subscriptions);
+  const { eligible, skipped } = partitionByCapacity(
+    subscriptions,
+    existingChannelIds,
+    remainingSlots,
+  );
+
   let created = 0;
-  let remaining = remainingSlots;
+  let updated = 0;
 
-  for (const subscription of subscriptions) {
-    const { channelId, title } = subscription;
-    const isExistingFeed = existingChannelIds.has(channelId);
-
-    if (!isExistingFeed && remaining <= 0) {
-      skipped.push({
-        channelId,
-        reason: reasonFromError(feedLimitExceededError()),
-      });
-      continue;
-    }
-
-    try {
-      await upsertIntegrationFeed(db, userId, YOUTUBE_SOURCE, channelId, title);
-      created += 1;
-      if (!isExistingFeed) {
-        remaining -= 1;
+  for (const subscriptionChunk of chunk(
+    eligible,
+    YOUTUBE_FEED_INSERT_CHUNK_SIZE,
+  )) {
+    const chunkResult = await upsertYouTubeChunk(userId, subscriptionChunk);
+    for (const channelId of chunkResult.succeededChannelIds) {
+      if (existingChannelIds.has(channelId)) {
+        updated += 1;
+      } else {
+        created += 1;
       }
-    } catch (error) {
-      skipped.push({ channelId, reason: reasonFromError(error) });
     }
+    skipped.push(...chunkResult.skipped);
   }
 
-  return { created, skipped };
+  return { created, updated, skipped };
 }
 
 // Bluesky syncs the connected account's own home timeline (see
@@ -211,24 +387,38 @@ export async function createYouTubeFeedsForUser(
 // current handle, which would leave a stale row behind under either change
 // and double-sync the same timeline forever.
 export async function createBlueskyFeedForUser(
-  db: Database,
   userId: number,
   handle: string,
 ): Promise<void> {
   const url = buildBlueskyProfileUrl(handle);
-  const existingFeed = await db.query.feeds.findFirst({
+  const existingFeed = await useDb().query.feeds.findFirst({
     where: and(eq(feeds.userId, userId), eq(feeds.source, BLUESKY_SOURCE)),
-    columns: { id: true },
+    columns: { id: true, url: true },
   });
 
   if (existingFeed) {
-    await db
+    // A different url means either a renamed handle or a genuinely different
+    // reconnected account — either way, the sync watermark (feeds.lastFetched)
+    // must not carry over: sync-feed.ts feeds it straight to
+    // fetchNewBlueskyPosts, and a stale watermark from the old identity would
+    // silently skip everything in the new timeline older than it. Existing
+    // feedItems are left alone rather than deleted: they dedupe on
+    // (feedId, guid) against the new timeline, and deleting them outright
+    // risks losing the user's starred/saved posts over what is, in the
+    // common case, just a cosmetic handle rename.
+    const isDifferentIdentity = existingFeed.url !== url;
+    await useDb()
       .update(feeds)
-      .set({ url, title: handle, ...UNGATED_SYNC_STATE })
+      .set({
+        url,
+        title: handle,
+        ...UNGATED_SYNC_STATE,
+        ...(isDifferentIdentity ? { lastFetched: null } : {}),
+      })
       .where(eq(feeds.id, existingFeed.id));
     return;
   }
 
   await assertWithinFeedLimit(userId, url);
-  await upsertIntegrationFeed(db, userId, BLUESKY_SOURCE, url, handle);
+  await upsertIntegrationFeed(userId, BLUESKY_SOURCE, url, handle);
 }
