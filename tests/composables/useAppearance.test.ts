@@ -187,7 +187,7 @@ describe("useAppearanceStore", () => {
       expect(save).not.toHaveBeenCalled();
     });
 
-    it("only saves the user's own edit, not an echo of the DB response that landed after it, and keeps persisting later edits", async () => {
+    it("reconciles the server with the merged state after an in-flight edit, instead of leaving the server holding the stale mid-flight patch", async () => {
       const { deferredLoad, save } = setupSignedInLoad();
       store.init();
       await flushPromises();
@@ -195,6 +195,11 @@ describe("useAppearanceStore", () => {
       store.state.accent = "teal";
       await flushPromises();
       expect(save).toHaveBeenCalledTimes(1);
+      // This mid-flight patch only knows the edit — every other field is
+      // still whatever cache/defaults held, not yet the DB's true values.
+      expect(save).toHaveBeenLastCalledWith(
+        expect.objectContaining({ accentColor: "teal", theme: "system" }),
+      );
 
       deferredLoad.resolve({
         ...USER_SETTINGS_DEFAULTS,
@@ -202,15 +207,57 @@ describe("useAppearanceStore", () => {
         accentColor: "blue",
         readingFont: "mono",
       });
+      // Two flushes: the DB response's continuation (which schedules the
+      // reconciling persist as a macrotask) and the scheduled persist itself
+      // each need their own turn.
+      await flushPromises();
+      await flushPromises();
+
+      // A second save reconciles the server with the corrected merged
+      // state — this is not the remote-apply watcher re-firing (that's
+      // covered by the "does not re-trigger" test above); it's a deliberate
+      // follow-up so the server stops holding the stale first PATCH.
+      expect(save).toHaveBeenCalledTimes(2);
+      expect(save).toHaveBeenLastCalledWith(
+        expect.objectContaining({ accentColor: "teal", theme: "dark" }),
+      );
+    });
+
+    it("keeps persisting normally once the DB response has fully settled", async () => {
+      const { deferredLoad, save } = setupSignedInLoad();
+      store.init();
+      await flushPromises();
+      deferredLoad.resolve({ ...USER_SETTINGS_DEFAULTS });
+      await flushPromises();
+      save.mockClear();
+
+      store.state.accent = "rose";
       await flushPromises();
 
       expect(save).toHaveBeenCalledTimes(1);
+      expect(save).toHaveBeenLastCalledWith(
+        expect.objectContaining({ accentColor: "rose" }),
+      );
+    });
 
-      // The remote apply must only have suppressed persistence for its own
-      // write — a genuine edit made afterward still has to save normally.
-      store.state.accent = "rose";
+    it("cancels a persist queued moments before sign-out, instead of PATCHing the old account's state under the new account's token", async () => {
+      const { deferredLoad, save, isSignedIn, userId } = setupSignedInLoad();
+      store.init();
       await flushPromises();
-      expect(save).toHaveBeenCalledTimes(2);
+      deferredLoad.resolve({ ...USER_SETTINGS_DEFAULTS });
+      await flushPromises();
+      save.mockClear();
+
+      // Edit and sign-out land in the same synchronous pass — schedulePersist()
+      // has queued a macrotask, and teardownLoadedAccount() (fired by the auth
+      // watcher, also within this same pass) must mark it cancelled before
+      // that macrotask gets a turn to run.
+      store.state.accent = "teal";
+      isSignedIn.value = false;
+      userId.value = null;
+      await flushPromises();
+
+      expect(save).not.toHaveBeenCalled();
     });
 
     it("stops every per-key watcher on sign-out, not just one, so a post-sign-out edit never saves under the old account", async () => {
