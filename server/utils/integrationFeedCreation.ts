@@ -54,8 +54,13 @@ export interface SkippedChannel {
 }
 
 export interface CreateYouTubeFeedsResult {
-  created: number;
-  updated: number;
+  // Deliberately one counter, not created/updated split: resolveYouTubeFeedCapacity
+  // only computes existingChannelIds for a Free plan (a paid plan returns an
+  // empty set to skip that query entirely — see its own comment), so
+  // classifying success by "was this channelId already known" would silently
+  // report every paid-plan upsert as a "creation," reconnect or not. A single
+  // true number beats two of which one is routinely wrong.
+  upserted: number;
   skipped: SkippedChannel[];
 }
 
@@ -346,7 +351,7 @@ export async function createYouTubeFeedsForUser(
   );
 
   if (subscriptions.length === 0) {
-    return { created: 0, updated: 0, skipped: [] };
+    return { upserted: 0, skipped: [] };
   }
 
   const { existingChannelIds, remainingSlots } =
@@ -357,25 +362,18 @@ export async function createYouTubeFeedsForUser(
     remainingSlots,
   );
 
-  let created = 0;
-  let updated = 0;
+  let upserted = 0;
 
   for (const subscriptionChunk of chunk(
     eligible,
     YOUTUBE_FEED_INSERT_CHUNK_SIZE,
   )) {
     const chunkResult = await upsertYouTubeChunk(userId, subscriptionChunk);
-    for (const channelId of chunkResult.succeededChannelIds) {
-      if (existingChannelIds.has(channelId)) {
-        updated += 1;
-      } else {
-        created += 1;
-      }
-    }
+    upserted += chunkResult.succeededChannelIds.length;
     skipped.push(...chunkResult.skipped);
   }
 
-  return { created, updated, skipped };
+  return { upserted, skipped };
 }
 
 // Bluesky syncs the connected account's own home timeline (see

@@ -38,15 +38,37 @@ vi.stubGlobal("encryptToken", encryptToken);
 // integrationFeedCreation.ts) — mocking only its plan-cap dependency (rather
 // than the whole module) lets that real orchestration logic run end-to-end,
 // the same way createFeedForUser's own dependencies are mocked in
-// feeds.post.test.ts.
-vi.mock("../../../../server/utils/feedLimit", () => ({
-  assertWithinFeedLimit: vi.fn(),
-}));
+// feeds.post.test.ts. feedLimitExceededError and isFeedLimitDbError are left
+// real, since upsertIntegrationFeed (inside createBlueskyFeedForUser)
+// depends on their actual behavior to translate a raced DB-trigger cap
+// rejection into the same clean 403 — replacing the whole module (as a naive
+// `() => ({ assertWithinFeedLimit: vi.fn() })` factory would) leaves those
+// two undefined and silently untested.
+vi.mock("../../../../server/utils/feedLimit", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../../../../server/utils/feedLimit")>();
+  return { ...actual, assertWithinFeedLimit: vi.fn() };
+});
 
+import { DrizzleQueryError } from "drizzle-orm";
 import handler from "../../../../server/api/auth/bluesky.post";
-import { assertWithinFeedLimit } from "../../../../server/utils/feedLimit";
+import {
+  assertWithinFeedLimit,
+  FEED_LIMIT_DB_ERROR_MARKER,
+  FEED_LIMIT_SQLSTATE,
+} from "../../../../server/utils/feedLimit";
 
 const mockAssertWithinFeedLimit = vi.mocked(assertWithinFeedLimit);
+
+// Mirrors how the real Postgres cap trigger (migration
+// 0011_enforce_source_cap.sql) surfaces through drizzle's neon-http driver.
+function makeCapDbError(): DrizzleQueryError {
+  const pgError = Object.assign(
+    new Error(`insert violates constraint: ${FEED_LIMIT_DB_ERROR_MARKER}`),
+    { code: FEED_LIMIT_SQLSTATE },
+  );
+  return new DrizzleQueryError("insert into feeds ...", [], pgError);
+}
 
 const mockSession = {
   did: "did:plc:abc123",
@@ -167,11 +189,7 @@ describe("POST /api/auth/bluesky", () => {
   it("returns ok and the Bluesky handle on success", async () => {
     const event = { context: { user: { id: 1 } } };
     const result = await handler(event);
-    expect(result).toEqual({
-      ok: true,
-      handle: "you.bsky.social",
-      feedCreated: true,
-    });
+    expect(result).toEqual({ ok: true, handle: "you.bsky.social" });
   });
 
   it("trims whitespace from handle and app password", async () => {
@@ -233,7 +251,7 @@ describe("POST /api/auth/bluesky", () => {
     });
   });
 
-  it("still returns ok, but flags feedCreated: false, when the free-plan feed cap blocks feed creation", async () => {
+  it("still returns ok when the free-plan feed cap blocks feed creation", async () => {
     mockAssertWithinFeedLimit.mockRejectedValue(
       Object.assign(new Error("cap exceeded"), { statusCode: 403 }),
     );
@@ -241,11 +259,28 @@ describe("POST /api/auth/bluesky", () => {
 
     const result = await handler(event);
 
-    expect(result).toEqual({
-      ok: true,
-      handle: "you.bsky.social",
-      feedCreated: false,
-    });
+    expect(result).toEqual({ ok: true, handle: "you.bsky.social" });
+  });
+
+  it("still returns ok when the feed insert races the DB-trigger cap rejection", async () => {
+    // Exercises the real isFeedLimitDbError/feedLimitExceededError path
+    // inside upsertIntegrationFeed, not just the app-level pre-check above —
+    // see the comment on the feedLimit mock factory. Only the second
+    // onConflictDoUpdate call (the feed upsert) should reject; the first is
+    // the integration upsert above it, which must still succeed.
+    mockOnConflictDoUpdate
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(makeCapDbError());
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const event = { context: { user: { id: 1 } } };
+
+    const result = await handler(event);
+
+    expect(result).toEqual({ ok: true, handle: "you.bsky.social" });
+    expect(errorSpy).toHaveBeenCalledWith(
+      "Failed to create Bluesky feed for user:",
+      expect.objectContaining({ statusCode: 403 }),
+    );
   });
 
   it("updates the existing bluesky feed in place on reconnect, instead of inserting a duplicate", async () => {

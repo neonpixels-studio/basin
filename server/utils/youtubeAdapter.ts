@@ -118,17 +118,27 @@ export interface YouTubeSubscription {
   title: string;
 }
 
-// Fetches the account's full subscription list, one page at a time. Exported
-// (rather than kept private under fetchSubscriptionChannelIds below) so a
-// caller that needs the channel title — e.g. integrationFeedCreation.ts,
-// which uses it as the created feed's display name — doesn't have to
-// re-fetch and re-paginate the same endpoint just to get a field this
-// function already read off the response.
+// Bounds how many pages (50 subscriptions each) this fetches before giving up
+// and returning what it has. Without a cap, an account with hundreds of
+// subscriptions costs one sequential round trip per page inside whatever
+// synchronous request is calling this (the OAuth connect callback) — see
+// integrationFeedCreation.ts's own YOUTUBE_FEED_INSERT_CHUNK_SIZE comment for
+// the DB half of the same timeout risk. 1000 channels is comfortably above
+// any real account.
+const MAX_SUBSCRIPTION_PAGES = 20;
+
+// Fetches the account's subscription list, one page at a time, up to
+// MAX_SUBSCRIPTION_PAGES. Exported (rather than kept private under
+// fetchSubscriptionChannelIds below) so a caller that needs the channel
+// title — e.g. integrationFeedCreation.ts, which uses it as the created
+// feed's display name — doesn't have to re-fetch and re-paginate the same
+// endpoint just to get a field this function already read off the response.
 export async function fetchYouTubeSubscriptions(
   accessToken: string,
 ): Promise<YouTubeSubscription[]> {
   const subscriptions: YouTubeSubscription[] = [];
   let pageToken: string | undefined;
+  let pagesFetched = 0;
 
   do {
     const params = new URLSearchParams({
@@ -161,7 +171,15 @@ export async function fetchYouTubeSubscriptions(
       });
     }
 
+    pagesFetched += 1;
     pageToken = page.nextPageToken;
+
+    if (pageToken && pagesFetched >= MAX_SUBSCRIPTION_PAGES) {
+      console.error(
+        `fetchYouTubeSubscriptions: stopped after ${MAX_SUBSCRIPTION_PAGES} pages (${subscriptions.length} channels); more subscriptions remain unfetched.`,
+      );
+      break;
+    }
   } while (pageToken);
 
   return subscriptions;

@@ -73,24 +73,20 @@ export default defineEventHandler(async (event) => {
   // nothing above this line ever created one. A failure here (the
   // subscriptions API erroring, every channel hitting the Free-plan cap)
   // must not undo an already-successful connect, so it's logged rather than
-  // thrown — the user can retry a sync-triggering action later. A skipped
-  // count is surfaced as a query param (rather than only the server log) so
-  // the connections page can eventually tell the user some channels didn't
-  // get a feed instead of showing a bare "Connected" either way.
-  let skippedChannelCount = 0;
+  // thrown — the user can retry a sync-triggering action later. This is
+  // operator-visible only for now (no UI surfacing of a partial/failed feed
+  // creation yet) — see the PR's follow-up suggestions.
   try {
-    const { created, updated, skipped } = await createYouTubeFeedsForUser(
+    const { upserted, skipped } = await createYouTubeFeedsForUser(
       event.context.user.id,
       tokens.access_token,
     );
-    skippedChannelCount = skipped.length;
     if (skipped.length > 0) {
       console.error(
         "Some YouTube channels were skipped during feed creation:",
         {
           userId: event.context.user.id,
-          created,
-          updated,
+          upserted,
           skipped,
         },
       );
@@ -99,10 +95,5 @@ export default defineEventHandler(async (event) => {
     console.error("Failed to create YouTube feeds from subscriptions:", error);
   }
 
-  const redirectPath =
-    skippedChannelCount > 0
-      ? `/settings/connections?skippedChannels=${skippedChannelCount}`
-      : "/settings/connections";
-
-  return sendRedirect(event, redirectPath);
+  return sendRedirect(event, "/settings/connections");
 });

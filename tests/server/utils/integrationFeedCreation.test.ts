@@ -110,7 +110,7 @@ describe("createYouTubeFeedsForUser", () => {
 
     const result = await createYouTubeFeedsForUser(1, "token-abc");
 
-    expect(result).toEqual({ created: 2, updated: 0, skipped: [] });
+    expect(result).toEqual({ upserted: 2, skipped: [] });
     // One statement for the whole chunk, not one per channel.
     expect(mockInsert).toHaveBeenCalledTimes(1);
     expect(mockValues).toHaveBeenCalledWith([
@@ -127,7 +127,7 @@ describe("createYouTubeFeedsForUser", () => {
 
     const result = await createYouTubeFeedsForUser(1, "token-abc");
 
-    expect(result).toEqual({ created: 1, updated: 0, skipped: [] });
+    expect(result).toEqual({ upserted: 1, skipped: [] });
     expect(mockValues).toHaveBeenCalledWith([
       { userId: 1, url: "UC1", title: "Channel One", source: "youtube" },
     ]);
@@ -175,7 +175,7 @@ describe("createYouTubeFeedsForUser", () => {
 
     const result = await createYouTubeFeedsForUser(1, "token-abc");
 
-    expect(result).toEqual({ created: 0, updated: 0, skipped: [] });
+    expect(result).toEqual({ upserted: 0, skipped: [] });
     expect(mockInsert).not.toHaveBeenCalled();
     expect(mockGetAccountPlan).not.toHaveBeenCalled();
   });
@@ -200,7 +200,7 @@ describe("createYouTubeFeedsForUser", () => {
 
     const result = await createYouTubeFeedsForUser(1, "token-abc");
 
-    expect(result.created).toBe(120);
+    expect(result.upserted).toBe(120);
     // Chunk size is 50, so 120 channels need 3 batched statements.
     expect(mockInsert).toHaveBeenCalledTimes(3);
   });
@@ -221,7 +221,7 @@ describe("createYouTubeFeedsForUser", () => {
 
       const result = await createYouTubeFeedsForUser(1, "token-abc");
 
-      expect(result).toEqual({ created: 2, updated: 0, skipped: [] });
+      expect(result).toEqual({ upserted: 2, skipped: [] });
       // One capacity check total, not one per channel.
       expect(mockSelect).toHaveBeenCalledTimes(1);
       expect(mockFeedsFindMany).toHaveBeenCalledTimes(1);
@@ -238,7 +238,7 @@ describe("createYouTubeFeedsForUser", () => {
 
       const result = await createYouTubeFeedsForUser(1, "token-abc");
 
-      expect(result.created).toBe(1);
+      expect(result.upserted).toBe(1);
       expect(result.skipped).toEqual([
         { channelId: "UC2", reason: CAP_MESSAGE },
         { channelId: "UC3", reason: CAP_MESSAGE },
@@ -248,21 +248,20 @@ describe("createYouTubeFeedsForUser", () => {
       ]);
     });
 
-    it("reports an already-followed channel as updated, not created", async () => {
+    it("reconciles an already-followed channel (backoff reset) without spending a cap slot on it", async () => {
       mockFetchYouTubeSubscriptions.mockResolvedValue([
         { channelId: "UC1", title: "Channel One" },
         { channelId: "UC2", title: "Channel Two" },
       ]);
       // No slots left, but UC1 already has a feed row from a prior connect —
-      // it should still be reconciled (backoff reset), not skipped, and
-      // counted as an update rather than a new creation.
+      // it should still be reconciled (backoff reset), not skipped, since it
+      // isn't consuming a new slot.
       mockCount.mockResolvedValue([{ value: FREE_PLAN_FEED_LIMIT }]);
       mockFeedsFindMany.mockResolvedValue([{ url: "UC1" }]);
 
       const result = await createYouTubeFeedsForUser(1, "token-abc");
 
-      expect(result.created).toBe(0);
-      expect(result.updated).toBe(1);
+      expect(result.upserted).toBe(1);
       expect(result.skipped).toEqual([
         { channelId: "UC2", reason: CAP_MESSAGE },
       ]);
@@ -281,7 +280,7 @@ describe("createYouTubeFeedsForUser", () => {
 
       const result = await createYouTubeFeedsForUser(1, "token-abc");
 
-      expect(result.created).toBe(0);
+      expect(result.upserted).toBe(0);
       expect(result.skipped).toEqual([
         { channelId: "UC1", reason: CAP_MESSAGE },
         { channelId: "UC2", reason: CAP_MESSAGE },
@@ -303,7 +302,7 @@ describe("createYouTubeFeedsForUser", () => {
 
       const result = await createYouTubeFeedsForUser(1, "token-abc");
 
-      expect(result.created).toBe(1);
+      expect(result.upserted).toBe(1);
       expect(result.skipped).toEqual([
         { channelId: "UC1", reason: "still broken" },
       ]);

@@ -306,6 +306,33 @@ describe("fetchYouTubeSubscriptions", () => {
       { channelId: "UC002", title: "Ch 2" },
     ]);
   });
+
+  it("stops after MAX_SUBSCRIPTION_PAGES instead of paginating forever", async () => {
+    // A never-ending nextPageToken (every page always claims more exist)
+    // must not turn this into an unbounded loop inside the synchronous OAuth
+    // callback that calls it.
+    mockFetch.mockImplementation(() =>
+      Promise.resolve({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            items: [
+              { snippet: { resourceId: { channelId: "UC1" }, title: "Ch" } },
+            ],
+            nextPageToken: "always-more",
+          }),
+      }),
+    );
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const subscriptions = await fetchYouTubeSubscriptions("access-token");
+
+    expect(subscriptions).toHaveLength(20);
+    expect(mockFetch).toHaveBeenCalledTimes(20);
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("stopped after 20 pages"),
+    );
+  });
 });
 
 // --- fetchSubscriptionChannelIds ---

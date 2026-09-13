@@ -361,11 +361,9 @@ describe("GET /api/auth/youtube/callback", () => {
 
     await handler(event);
 
-    // The redirect surfaces the skip count so the connections page can
-    // eventually tell the user some channels didn't get a feed.
     expect(mockSendRedirect).toHaveBeenCalledWith(
       event,
-      "/settings/connections?skippedChannels=1",
+      "/settings/connections",
     );
     // Integration insert plus one batched insert for the channel under the cap.
     expect(mockInsert).toHaveBeenCalledTimes(2);
