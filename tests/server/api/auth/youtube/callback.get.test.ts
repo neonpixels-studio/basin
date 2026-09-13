@@ -43,7 +43,24 @@ vi.stubGlobal("useDb", () => ({ insert: mockInsert, update: mockUpdate }));
 // letting the genuine encryption run end-to-end is what the tests below verify.
 vi.stubGlobal("encryptToken", encryptToken);
 
+// The connect flow also creates feeds rows from the account's subscriptions
+// (see integrationFeedCreation.ts) — mocking its own external-service and
+// plan-cap dependencies here (rather than the whole module) lets that real
+// orchestration logic run end-to-end, the same way createFeedForUser's own
+// dependencies are mocked in feeds.post.test.ts.
+vi.mock("../../../../../server/utils/youtubeAdapter", () => ({
+  fetchSubscriptionChannelIds: vi.fn(),
+}));
+vi.mock("../../../../../server/utils/feedLimit", () => ({
+  assertWithinFeedLimit: vi.fn(),
+}));
+
 import handler from "../../../../../server/api/auth/youtube/callback.get";
+import { fetchSubscriptionChannelIds } from "../../../../../server/utils/youtubeAdapter";
+import { assertWithinFeedLimit } from "../../../../../server/utils/feedLimit";
+
+const mockFetchSubscriptionChannelIds = vi.mocked(fetchSubscriptionChannelIds);
+const mockAssertWithinFeedLimit = vi.mocked(assertWithinFeedLimit);
 
 const mockTokens = {
   access_token: "access-abc",
@@ -71,6 +88,11 @@ describe("GET /api/auth/youtube/callback", () => {
     mockBuildYouTubeCallbackUrl.mockReturnValue(CONFIGURED_CALLBACK_URL);
     mockGetYouTubeChannelHandle.mockResolvedValue("@testchannel");
     mockExchangeCodeForTokens.mockResolvedValue(mockTokens);
+    // No subscriptions by default so existing assertions on insert/update call
+    // counts (which predate feed creation) keep holding; tests below override
+    // this to exercise feed creation itself.
+    mockFetchSubscriptionChannelIds.mockResolvedValue([]);
+    mockAssertWithinFeedLimit.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -270,6 +292,65 @@ describe("GET /api/auth/youtube/callback", () => {
         syncError: null,
         syncFailedAt: null,
       }),
+    );
+  });
+
+  it("creates a feed for every subscribed YouTube channel on connect", async () => {
+    // This is the crux of the "connecting never creates a feed" bug: without
+    // wiring createYouTubeFeedsForUser into the callback, only the
+    // integrations insert below ever happens and this assertion fails.
+    mockFetchSubscriptionChannelIds.mockResolvedValue(["UC1", "UC2"]);
+    const event = { context: { user: { id: 1 } } };
+    mockGetQuery.mockReturnValue({ code: "auth-code", state: "state123" });
+    mockGetCookie.mockReturnValue("state123");
+    await handler(event);
+
+    expect(mockFetchSubscriptionChannelIds).toHaveBeenCalledWith(
+      mockTokens.access_token,
+    );
+    // One insert for the integrations row, one per subscribed channel.
+    expect(mockInsert).toHaveBeenCalledTimes(3);
+    expect(mockValues).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 1, source: "youtube", url: "UC1" }),
+    );
+    expect(mockValues).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 1, source: "youtube", url: "UC2" }),
+    );
+  });
+
+  it("skips a channel over the free-plan cap without failing the redirect", async () => {
+    mockFetchSubscriptionChannelIds.mockResolvedValue(["UC1", "UC2"]);
+    mockAssertWithinFeedLimit.mockImplementation(async (_userId, url) => {
+      if (url === "UC2") {
+        throw Object.assign(new Error("cap exceeded"), { statusCode: 403 });
+      }
+    });
+    const event = { context: { user: { id: 1 } } };
+    mockGetQuery.mockReturnValue({ code: "auth-code", state: "state123" });
+    mockGetCookie.mockReturnValue("state123");
+
+    await handler(event);
+
+    expect(mockSendRedirect).toHaveBeenCalledWith(
+      event,
+      "/settings/connections",
+    );
+    // Integration insert plus only the one channel under the cap.
+    expect(mockInsert).toHaveBeenCalledTimes(2);
+  });
+
+  it("still redirects when fetching subscriptions fails", async () => {
+    mockFetchSubscriptionChannelIds.mockRejectedValue(
+      new Error("Subscriptions API error: 500"),
+    );
+    const event = { context: { user: { id: 1 } } };
+    mockGetQuery.mockReturnValue({ code: "auth-code", state: "state123" });
+    mockGetCookie.mockReturnValue("state123");
+
+    await expect(handler(event)).resolves.toBeUndefined();
+    expect(mockSendRedirect).toHaveBeenCalledWith(
+      event,
+      "/settings/connections",
     );
   });
 });

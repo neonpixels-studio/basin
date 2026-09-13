@@ -1,4 +1,5 @@
 import { integrations } from "../../../db/schema";
+import { createYouTubeFeedsForUser } from "../../../utils/integrationFeedCreation";
 import { clearFeedSyncFailures } from "../../../utils/feedSyncStatus";
 import { SYNC_STATUS } from "../../../utils/syncStatus";
 
@@ -66,6 +67,22 @@ export default defineEventHandler(async (event) => {
   // A working connection also clears any feed that previously failed
   // against it, instead of leaving "Needs attention" up until the next sync.
   await clearFeedSyncFailures(db, event.context.user.id, "youtube");
+
+  // Without this, a connected YouTube account is a dead end: the sync engine
+  // (netlify/functions/sync-feed.ts) only ever acts on feeds rows, and
+  // nothing above this line ever created one. A failure here (the
+  // subscriptions API erroring, every channel hitting the Free-plan cap)
+  // must not undo an already-successful connect, so it's logged rather than
+  // thrown — the user can retry a sync-triggering action later.
+  try {
+    await createYouTubeFeedsForUser(
+      db,
+      event.context.user.id,
+      tokens.access_token,
+    );
+  } catch (error) {
+    console.error("Failed to create YouTube feeds from subscriptions:", error);
+  }
 
   return sendRedirect(event, "/settings/connections");
 });

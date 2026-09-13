@@ -29,7 +29,19 @@ vi.stubGlobal("useDb", () => ({ insert: mockInsert, update: mockUpdate }));
 // letting the genuine encryption run end-to-end is what the tests below verify.
 vi.stubGlobal("encryptToken", encryptToken);
 
+// The connect flow also creates a feed row for the account's timeline (see
+// integrationFeedCreation.ts) — mocking only its plan-cap dependency (rather
+// than the whole module) lets that real orchestration logic run end-to-end,
+// the same way createFeedForUser's own dependencies are mocked in
+// feeds.post.test.ts.
+vi.mock("../../../../server/utils/feedLimit", () => ({
+  assertWithinFeedLimit: vi.fn(),
+}));
+
 import handler from "../../../../server/api/auth/bluesky.post";
+import { assertWithinFeedLimit } from "../../../../server/utils/feedLimit";
+
+const mockAssertWithinFeedLimit = vi.mocked(assertWithinFeedLimit);
 
 const mockSession = {
   did: "did:plc:abc123",
@@ -53,6 +65,7 @@ describe("POST /api/auth/bluesky", () => {
       handle: "you.bsky.social",
       appPassword: "xxxx-xxxx-xxxx-xxxx",
     });
+    mockAssertWithinFeedLimit.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -94,7 +107,10 @@ describe("POST /api/auth/bluesky", () => {
   it("inserts the integration with the correct provider and user", async () => {
     const event = { context: { user: { id: 1 } } };
     await handler(event);
-    expect(mockInsert).toHaveBeenCalledTimes(1);
+    // One insert for the integrations row, one for the feed created from it
+    // (see integrationFeedCreation.ts) — the integration's onConflictDoUpdate
+    // call is still calls[0] since it runs before feed creation.
+    expect(mockInsert).toHaveBeenCalledTimes(2);
     expect(mockValues).toHaveBeenCalledWith(
       expect.objectContaining({
         userId: 1,
@@ -183,5 +199,35 @@ describe("POST /api/auth/bluesky", () => {
         syncFailedAt: null,
       }),
     );
+  });
+
+  it("creates a feed for the connected account's timeline on connect", async () => {
+    // This is the crux of the "connecting never creates a feed" bug: without
+    // wiring createBlueskyFeedForUser into this handler, only the
+    // integrations insert above ever happens and this assertion fails.
+    const event = { context: { user: { id: 1 } } };
+    await handler(event);
+
+    expect(mockAssertWithinFeedLimit).toHaveBeenCalledWith(
+      1,
+      "https://bsky.app/profile/you.bsky.social",
+    );
+    expect(mockValues).toHaveBeenCalledWith({
+      userId: 1,
+      url: "https://bsky.app/profile/you.bsky.social",
+      title: "you.bsky.social",
+      source: "bluesky",
+    });
+  });
+
+  it("still returns ok when the free-plan feed cap blocks feed creation", async () => {
+    mockAssertWithinFeedLimit.mockRejectedValue(
+      Object.assign(new Error("cap exceeded"), { statusCode: 403 }),
+    );
+    const event = { context: { user: { id: 1 } } };
+
+    const result = await handler(event);
+
+    expect(result).toEqual({ ok: true, handle: "you.bsky.social" });
   });
 });

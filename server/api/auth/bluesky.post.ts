@@ -1,4 +1,5 @@
 import { integrations } from "../../db/schema";
+import { createBlueskyFeedForUser } from "../../utils/integrationFeedCreation";
 import { clearFeedSyncFailures } from "../../utils/feedSyncStatus";
 import { SYNC_STATUS } from "../../utils/syncStatus";
 
@@ -72,6 +73,17 @@ export default defineEventHandler(async (event) => {
   // A working connection also clears any feed that previously failed
   // against it, instead of leaving "Needs attention" up until the next sync.
   await clearFeedSyncFailures(db, user.id, "bluesky");
+
+  // Without this, a connected Bluesky account is a dead end: the sync engine
+  // (netlify/functions/sync-feed.ts) only ever acts on feeds rows, and
+  // nothing above this line ever created one. A failure here (the Free-plan
+  // cap already reached) must not undo an already-verified, already-saved
+  // connection, so it's logged rather than thrown.
+  try {
+    await createBlueskyFeedForUser(db, user.id, session.handle);
+  } catch (error) {
+    console.error("Failed to create Bluesky feed for user:", error);
+  }
 
   return { ok: true, handle: session.handle };
 });
