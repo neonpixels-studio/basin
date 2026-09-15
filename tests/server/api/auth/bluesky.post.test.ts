@@ -14,6 +14,7 @@ const mockInsert = vi.fn();
 const mockUpdate = vi.fn();
 const mockUpdateSet = vi.fn();
 const mockUpdateWhere = vi.fn();
+const mockFeedsFindFirst = vi.fn();
 
 // 32 bytes of hex — a valid AES-256-GCM key so encryptToken (a real
 // server/utils/crypto call, auto-imported the same way as createBlueskySession)
@@ -22,14 +23,52 @@ const TEST_TOKEN_ENCRYPTION_KEY = randomBytes(32).toString("hex");
 
 vi.stubGlobal("readBody", mockReadBody);
 vi.stubGlobal("createBlueskySession", mockCreateBlueskySession);
-vi.stubGlobal("useDb", () => ({ insert: mockInsert, update: mockUpdate }));
+vi.stubGlobal("useDb", () => ({
+  insert: mockInsert,
+  update: mockUpdate,
+  query: { feeds: { findFirst: mockFeedsFindFirst } },
+}));
 // encryptToken is a real server/utils/crypto call (Nitro auto-imports
 // server/utils/* into server/api routes; vitest doesn't run that transform,
 // so it's shimmed here as a global backed by the real implementation) —
 // letting the genuine encryption run end-to-end is what the tests below verify.
 vi.stubGlobal("encryptToken", encryptToken);
 
+// The connect flow also creates a feed row for the account's timeline (see
+// integrationFeedCreation.ts) — mocking only its plan-cap dependency (rather
+// than the whole module) lets that real orchestration logic run end-to-end,
+// the same way createFeedForUser's own dependencies are mocked in
+// feeds.post.test.ts. feedLimitExceededError and isFeedLimitDbError are left
+// real, since upsertIntegrationFeed (inside createBlueskyFeedForUser)
+// depends on their actual behavior to translate a raced DB-trigger cap
+// rejection into the same clean 403 — replacing the whole module (as a naive
+// `() => ({ assertWithinFeedLimit: vi.fn() })` factory would) leaves those
+// two undefined and silently untested.
+vi.mock("../../../../server/utils/feedLimit", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../../../../server/utils/feedLimit")>();
+  return { ...actual, assertWithinFeedLimit: vi.fn() };
+});
+
+import { DrizzleQueryError } from "drizzle-orm";
 import handler from "../../../../server/api/auth/bluesky.post";
+import {
+  assertWithinFeedLimit,
+  FEED_LIMIT_DB_ERROR_MARKER,
+  FEED_LIMIT_SQLSTATE,
+} from "../../../../server/utils/feedLimit";
+
+const mockAssertWithinFeedLimit = vi.mocked(assertWithinFeedLimit);
+
+// Mirrors how the real Postgres cap trigger (migration
+// 0011_enforce_source_cap.sql) surfaces through drizzle's neon-http driver.
+function makeCapDbError(): DrizzleQueryError {
+  const pgError = Object.assign(
+    new Error(`insert violates constraint: ${FEED_LIMIT_DB_ERROR_MARKER}`),
+    { code: FEED_LIMIT_SQLSTATE },
+  );
+  return new DrizzleQueryError("insert into feeds ...", [], pgError);
+}
 
 const mockSession = {
   did: "did:plc:abc123",
@@ -53,6 +92,11 @@ describe("POST /api/auth/bluesky", () => {
       handle: "you.bsky.social",
       appPassword: "xxxx-xxxx-xxxx-xxxx",
     });
+    mockAssertWithinFeedLimit.mockResolvedValue(undefined);
+    // No existing bluesky feed by default — most tests exercise the
+    // first-connect (insert) path; the reconnect (update-in-place) path is
+    // covered by its own dedicated test below.
+    mockFeedsFindFirst.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -94,7 +138,10 @@ describe("POST /api/auth/bluesky", () => {
   it("inserts the integration with the correct provider and user", async () => {
     const event = { context: { user: { id: 1 } } };
     await handler(event);
-    expect(mockInsert).toHaveBeenCalledTimes(1);
+    // One insert for the integrations row, one for the feed created from it
+    // (see integrationFeedCreation.ts) — the integration's onConflictDoUpdate
+    // call is still calls[0] since it runs before feed creation.
+    expect(mockInsert).toHaveBeenCalledTimes(2);
     expect(mockValues).toHaveBeenCalledWith(
       expect.objectContaining({
         userId: 1,
@@ -181,6 +228,77 @@ describe("POST /api/auth/bluesky", () => {
         syncStatus: "ok",
         syncError: null,
         syncFailedAt: null,
+      }),
+    );
+  });
+
+  it("creates a feed for the connected account's timeline on connect", async () => {
+    // This is the crux of the "connecting never creates a feed" bug: without
+    // wiring createBlueskyFeedForUser into this handler, only the
+    // integrations insert above ever happens and this assertion fails.
+    const event = { context: { user: { id: 1 } } };
+    await handler(event);
+
+    expect(mockAssertWithinFeedLimit).toHaveBeenCalledWith(
+      1,
+      "https://bsky.app/profile/you.bsky.social",
+    );
+    expect(mockValues).toHaveBeenCalledWith({
+      userId: 1,
+      url: "https://bsky.app/profile/you.bsky.social",
+      title: "you.bsky.social",
+      source: "bluesky",
+    });
+  });
+
+  it("still returns ok when the free-plan feed cap blocks feed creation", async () => {
+    mockAssertWithinFeedLimit.mockRejectedValue(
+      Object.assign(new Error("cap exceeded"), { statusCode: 403 }),
+    );
+    const event = { context: { user: { id: 1 } } };
+
+    const result = await handler(event);
+
+    expect(result).toEqual({ ok: true, handle: "you.bsky.social" });
+  });
+
+  it("still returns ok when the feed insert races the DB-trigger cap rejection", async () => {
+    // Exercises the real isFeedLimitDbError/feedLimitExceededError path
+    // inside upsertIntegrationFeed, not just the app-level pre-check above —
+    // see the comment on the feedLimit mock factory. Only the second
+    // onConflictDoUpdate call (the feed upsert) should reject; the first is
+    // the integration upsert above it, which must still succeed.
+    mockOnConflictDoUpdate
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(makeCapDbError());
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const event = { context: { user: { id: 1 } } };
+
+    const result = await handler(event);
+
+    expect(result).toEqual({ ok: true, handle: "you.bsky.social" });
+    expect(errorSpy).toHaveBeenCalledWith(
+      "Failed to create Bluesky feed for user:",
+      expect.objectContaining({ statusCode: 403 }),
+    );
+  });
+
+  it("updates the existing bluesky feed in place on reconnect, instead of inserting a duplicate", async () => {
+    // A handle rename or reconnecting a different Bluesky account must reuse
+    // the single existing bluesky feed row rather than leaving a stale one
+    // behind that keeps double-syncing the same timeline.
+    mockFeedsFindFirst.mockResolvedValue({ id: 42 });
+    const event = { context: { user: { id: 1 } } };
+
+    await handler(event);
+
+    // Only the integration insert — no second feed insert.
+    expect(mockInsert).toHaveBeenCalledTimes(1);
+    expect(mockUpdate).toHaveBeenCalledTimes(2);
+    expect(mockUpdateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        url: "https://bsky.app/profile/you.bsky.social",
+        title: "you.bsky.social",
       }),
     );
   });
