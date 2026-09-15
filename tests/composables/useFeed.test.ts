@@ -1,10 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { nextTick } from "vue";
 import { setActivePinia, createPinia } from "pinia";
 import {
   useFeedStore,
   FEED_SYNC_TIMEOUT_MS,
   FEED_ITEMS_TIMEOUT_MS,
   MARK_ALL_READ_TIMEOUT_MS,
+  INITIAL_REVEAL_DELAY_MS,
 } from "~/stores/feed";
 import { VALID_MARK_ALL_READ_FILTERS } from "../../server/utils/markAllRead";
 import { mapSearchRow, type SearchRow } from "../../server/utils/search";
@@ -1398,6 +1400,223 @@ describe("useFeedStore", () => {
         "Failed to load feed items — please try again",
       );
       expect(state.loading).toBe(false);
+    });
+  });
+
+  // setupWatchers() is gated on import.meta.client and was previously
+  // untested: an older Vitest (4.x) didn't apply vitest.config.ts's
+  // `define: { "import.meta.client": true }` to plain import.meta.<prop>
+  // chains, so `!import.meta.client` was always true and this whole
+  // function returned before doing anything. The Vitest 5 upgrade fixed
+  // that transform (verified directly below and exercised by every other
+  // test in this suite, which would fail loudly if it regressed) — this
+  // block is the first real coverage of the client-gated init path.
+  describe("setupWatchers", () => {
+    // Shared shape for stubbing useUserSettings across this suite (rule of
+    // three: the same stub literal was being repeated per test). Callers
+    // supply the `load` mock directly so both a resolved and a rejected
+    // load go through the same helper instead of two near-duplicate stubs.
+    function stubUserSettings(load: ReturnType<typeof vi.fn>, save = vi.fn()) {
+      vi.stubGlobal(
+        "useUserSettings",
+        vi.fn(() => ({ loading: ref(false), error: ref(null), load, save })),
+      );
+      return { load, save };
+    }
+
+    const resolvingSettings = (
+      settings: {
+        layout?: string;
+        showUnreadOnly?: boolean;
+      } | null,
+    ) => vi.fn().mockResolvedValue(settings);
+
+    const rejectingSettings = (error: Error) =>
+      vi.fn().mockRejectedValue(error);
+
+    afterEach(() => {
+      // This block's only vi.stubGlobal target is useUserSettings (verified:
+      // tests/setup.ts assigns every other global directly, not through
+      // vi.stubGlobal, so this can't revert anything installed there) — the
+      // same blanket-cleanup pattern already used in this file's other
+      // vi.stubGlobal-using describe blocks (see the sync-queue and refresh
+      // suites above).
+      vi.unstubAllGlobals();
+    });
+
+    it("loads persisted layout and unread-only settings from the db without echoing them back", async () => {
+      const { load, save } = stubUserSettings(
+        resolvingSettings({ layout: "grid", showUnreadOnly: true }),
+      );
+      state.layout = "timeline";
+      state.unreadOnly = false;
+
+      await feed.setupWatchers();
+      await nextTick();
+
+      expect(load).toHaveBeenCalledTimes(1);
+      expect(state.layout).toBe("grid");
+      expect(state.unreadOnly).toBe(true);
+      // The layout/unreadOnly watchers below are registered after this load,
+      // specifically so applying the loaded values doesn't re-trigger a save
+      // of the value that was just read.
+      expect(save).not.toHaveBeenCalled();
+    });
+
+    // A genuine empty/204 response resolves null and means "no saved
+    // settings yet" — this must fall back to the same defaults as a missing
+    // field, and the watchers below must still register.
+    it("falls back to defaults and still registers watchers when load() resolves null", async () => {
+      const { save } = stubUserSettings(resolvingSettings(null));
+      state.layout = "grid";
+      state.unreadOnly = true;
+
+      await feed.setupWatchers();
+
+      expect(state.layout).toBe("timeline");
+      expect(state.unreadOnly).toBe(false);
+
+      state.layout = "grid";
+      await nextTick();
+      expect(save).toHaveBeenCalledWith({ layout: "grid" });
+    });
+
+    // A rejection (network failure, expired auth) tells us nothing about the
+    // user's real settings — unlike the null case above, it must leave
+    // whatever's already in state alone rather than clobbering it with
+    // defaults, and it still must not leave the watchers below unregistered
+    // for the rest of the session (setupWatchers() only ever runs once).
+    it("keeps the current settings and still registers watchers when load() rejects", async () => {
+      const { save } = stubUserSettings(
+        rejectingSettings(new Error("network failure")),
+      );
+      state.layout = "grid";
+      state.unreadOnly = true;
+
+      await feed.setupWatchers();
+
+      expect(state.layout).toBe("grid");
+      expect(state.unreadOnly).toBe(true);
+
+      state.layout = "timeline";
+      await nextTick();
+      expect(save).toHaveBeenCalledWith({ layout: "timeline" });
+    });
+
+    it("does not retry a rejected load on a second call", async () => {
+      const { load } = stubUserSettings(
+        rejectingSettings(new Error("network failure")),
+      );
+
+      await feed.setupWatchers();
+      await feed.setupWatchers();
+
+      // setupWatchers() is guarded by a single `initialized` flag with no
+      // notion of "failed, retry me" — a second call after a failed load is
+      // still a no-op by design. The watchers registered on the first call
+      // (proved by the preceding test) are what keeps the store usable, not
+      // a retry.
+      expect(load).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps the loading flag up until the initial reveal delay elapses", async () => {
+      stubUserSettings(
+        resolvingSettings({ layout: "timeline", showUnreadOnly: false }),
+      );
+      state.loading = true;
+
+      await feed.setupWatchers();
+      await vi.advanceTimersByTimeAsync(INITIAL_REVEAL_DELAY_MS - 1);
+      expect(state.loading).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(state.loading).toBe(false);
+    });
+
+    it("only loads settings once across repeated calls", async () => {
+      const { load } = stubUserSettings(
+        resolvingSettings({ layout: "grid", showUnreadOnly: true }),
+      );
+
+      await feed.setupWatchers();
+      await feed.setupWatchers();
+
+      expect(load).toHaveBeenCalledTimes(1);
+    });
+
+    it("persists a layout change through the watcher it registers, without an extra save from the initial load", async () => {
+      const { save } = stubUserSettings(
+        resolvingSettings({ layout: "timeline", showUnreadOnly: false }),
+      );
+
+      await feed.setupWatchers();
+      state.layout = "grid";
+      await nextTick();
+
+      expect(save).toHaveBeenCalledTimes(1);
+      expect(save).toHaveBeenCalledWith({ layout: "grid" });
+    });
+
+    it("persists an unread-only change through the watcher it registers", async () => {
+      const { save } = stubUserSettings(
+        resolvingSettings({ layout: "timeline", showUnreadOnly: false }),
+      );
+
+      await feed.setupWatchers();
+      state.unreadOnly = true;
+      await nextTick();
+
+      expect(save).toHaveBeenCalledTimes(1);
+      expect(save).toHaveBeenCalledWith({ showUnreadOnly: true });
+    });
+
+    // The filter watcher is the one carrying the load-bearing behavior change
+    // (server-side filter scoping): switching filters must refetch page one
+    // for the new filter, not just re-run the cosmetic reveal timer.
+    describe("filter watcher", () => {
+      beforeEach(() => {
+        vi.mocked(globalThis.$fetch).mockReset();
+        vi.mocked(globalThis.$fetch).mockResolvedValue({
+          items: [],
+          total: 0,
+          nextOffset: null,
+        });
+      });
+
+      afterEach(() => {
+        // Restore the file-wide default (tests/setup.ts) so a scoped reset
+        // here can't leak into whatever test runs next.
+        vi.mocked(globalThis.$fetch).mockReset();
+        vi.mocked(globalThis.$fetch).mockResolvedValue([]);
+      });
+
+      it("refetches the first page for the new filter through the watcher it registers", async () => {
+        stubUserSettings(
+          resolvingSettings({ layout: "timeline", showUnreadOnly: false }),
+        );
+
+        await feed.setupWatchers();
+        const itemsCallsBefore = vi
+          .mocked(globalThis.$fetch)
+          .mock.calls.filter((call) => call[0] === "/api/feed-items").length;
+
+        state.filter = "saved";
+        await nextTick();
+        // The watcher's loadItems() call is fire-and-forget (not awaited by
+        // the watcher itself), so its own internal awaits (buildAuthHeaders,
+        // the $fetchWithTimeout race) need another microtask flush beyond
+        // nextTick.
+        await vi.advanceTimersByTimeAsync(0);
+
+        // Assert a *new* /api/feed-items call landed, not just that the most
+        // recent one (which could be stale, e.g. setupWatchers()'s own
+        // initial load) happens to carry the right query.
+        const itemsCalls = vi
+          .mocked(globalThis.$fetch)
+          .mock.calls.filter((call) => call[0] === "/api/feed-items");
+        expect(itemsCalls.length).toBe(itemsCallsBefore + 1);
+        expect(itemsCalls.at(-1)?.[1]?.query).toEqual({ filter: "saved" });
+      });
     });
   });
 });
