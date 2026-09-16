@@ -1,5 +1,6 @@
 import { and, eq } from "drizzle-orm";
-import { integrations } from "../../db/schema";
+import { feeds, integrations } from "../../db/schema";
+import { reactivateOldestPausedFeedsUnderCap } from "../../utils/feedPause";
 
 interface StoredGrant {
   accessToken: string;
@@ -68,6 +69,40 @@ async function revokeRemoteGrantSafely(
   }
 }
 
+// Feeds created from this integration (see integrationFeedCreation.ts) are
+// meaningless without it: the sync engine has no credentials left to run
+// them, so every one of them would start failing permanently on its next
+// scheduled sync (syncYouTubeFeed/syncBlueskyFeed both throw
+// ErrorDoNotRetry("No account connected...") — see sync-feed.ts) while still
+// occupying a Free-plan source slot the user can no longer add to. Disconnect
+// removes them rather than leaving that behind.
+async function deleteIntegrationFeeds(
+  userId: number,
+  provider: RevocableProvider,
+): Promise<void> {
+  const deletedFeeds = await useDb()
+    .delete(feeds)
+    .where(and(eq(feeds.userId, userId), eq(feeds.source, provider)))
+    .returning({ id: feeds.id });
+
+  if (deletedFeeds.length === 0) {
+    return;
+  }
+
+  // Mirrors feeds/[id].delete.ts's reconciliation: freeing these slots may
+  // drop a downgraded Free account back under its cap, so promote the oldest
+  // paused sources into the room. Best-effort — a failure here must not turn
+  // an already-committed disconnect into a 500.
+  try {
+    await reactivateOldestPausedFeedsUnderCap(userId);
+  } catch (error) {
+    console.error(
+      `Failed to reconcile paused feeds after disconnecting ${provider}:`,
+      error,
+    );
+  }
+}
+
 export default defineEventHandler(async (event) => {
   const user = event.context.user;
   if (!user)
@@ -106,6 +141,8 @@ export default defineEventHandler(async (event) => {
   const revoked = grant
     ? await revokeRemoteGrantSafely(provider, grant)
     : false;
+
+  await deleteIntegrationFeeds(user.id, provider);
 
   return { ok: true, revoked };
 });

@@ -35,6 +35,11 @@ export const MARK_ALL_READ_TIMEOUT_MS = 15000;
 // wedge the caller (loadCounts is best effort, but must still settle).
 const FEED_COUNTS_TIMEOUT_MS = 15000;
 
+// setupWatchers() keeps the loading skeleton up for this long after mount so
+// the reveal doesn't flash for a near-instant settings load. Exported so
+// tests advance their fake timers by the exact same value.
+export const INITIAL_REVEAL_DELAY_MS = 650;
+
 export const useFeedStore = defineStore("feed", () => {
   const { getToken } = useAuth();
 
@@ -136,9 +141,25 @@ export const useFeedStore = defineStore("feed", () => {
 
   async function loadSettingsFromDb() {
     const { load } = useUserSettings();
-    const settings = await load();
-    state.layout = settings.layout ?? "timeline";
-    state.unreadOnly = settings.showUnreadOnly ?? false;
+    // A genuine empty/204 response resolves null and means "no saved
+    // settings yet" — falling back to defaults is correct. A rejection
+    // (network failure, expired auth) tells us nothing about the user's
+    // real settings, so it must neither clobber whatever's already in
+    // state nor throw out of setupWatchers() — the latter would leave the
+    // layout/unreadOnly/filter watchers below permanently unregistered for
+    // the rest of the session, since setupWatchers() only ever runs once.
+    let settings;
+    try {
+      settings = await load();
+    } catch (error) {
+      console.error(
+        "Failed to load user settings; keeping current values",
+        error,
+      );
+      return;
+    }
+    state.layout = settings?.layout ?? "timeline";
+    state.unreadOnly = settings?.showUnreadOnly ?? false;
   }
 
   async function buildAuthHeaders(): Promise<Record<string, string>> {
@@ -355,7 +376,7 @@ export const useFeedStore = defineStore("feed", () => {
     );
     setTimeout(() => {
       state.loading = false;
-    }, 650);
+    }, INITIAL_REVEAL_DELAY_MS);
   }
 
   function revealAfterLoad() {

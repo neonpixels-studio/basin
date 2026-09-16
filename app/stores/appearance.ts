@@ -296,6 +296,35 @@ export const useAppearanceStore = defineStore("appearance", () => {
     };
   }
 
+  // Applies a successfully loaded DB response to `state` and reconciles the
+  // server if a local edit landed during the fetch. Split out of loadFromDb
+  // so that function's own branching stays under the complexity/line
+  // thresholds fallow enforces.
+  function applyLoadedSettings(
+    userId: string,
+    dbSettings: Record<string, unknown>,
+    persistence: ReturnType<typeof startPersistenceWatchers>,
+  ) {
+    persistence.setApplyingRemote(true);
+    try {
+      applyDbSettings(dbSettings, persistence.editedKeys);
+      applyToDom();
+      writeCachedSettings(userId, buildPatch());
+    } finally {
+      persistence.setApplyingRemote(false);
+    }
+    if (persistence.editedKeys.size > 0) {
+      // An edit made while the fetch was in flight already PATCHed a full
+      // patch built from whatever the *other* fields held at that moment
+      // (cache/defaults, not yet the DB's values) — applyDbSettings just
+      // merged in the real DB values for those untouched fields, but that
+      // correction never reached the server on its own. Persisting once
+      // more here reconciles the server with the corrected merged state
+      // instead of leaving it holding that stale mid-flight write.
+      persistence.schedulePersist();
+    }
+  }
+
   // Stops the per-key persistence watchers started by loadFromDb() —
   // captured so a sign-out (or an account switch) mid-session can tear them
   // down instead of leaving them saving one account's in-memory state under
@@ -309,6 +338,21 @@ export const useAppearanceStore = defineStore("appearance", () => {
   // reach `ready.value = true` below instead of being read as a no-op.
   let loadedUserId: string | null | undefined;
 
+  // Identifies which loadFromDb() call is the current one, so its pending
+  // `await load()` can tell a stale continuation apart from a live one.
+  // Comparing against loadedUserId alone isn't enough: an A → B → A switch
+  // (or a sign-out followed by signing back in as the same account) reuses
+  // the same id, so a stale call from the *first* "A" load would pass an
+  // id-only check even though a newer "A" load has since taken over.
+  // Incremented by every loadFromDb() call and by teardownLoadedAccount(),
+  // so a sign-out invalidates an in-flight load too, not just a switch to a
+  // different account.
+  let loadGeneration = 0;
+
+  function isStaleLoad(generation: number) {
+    return generation !== loadGeneration;
+  }
+
   // Does the real work of loading `userId`'s settings: applies any cached
   // snapshot immediately (so the cloak can lift before the network
   // round-trip resolves), registers the persistence watcher up front — so a
@@ -319,6 +363,7 @@ export const useAppearanceStore = defineStore("appearance", () => {
   // right after teardownLoadedAccount(), so there's no previous account's
   // state left to guard against here.
   async function loadFromDb(userId: string) {
+    const generation = ++loadGeneration;
     loadedUserId = userId;
 
     const cached = readCachedSettings(userId);
@@ -343,11 +388,21 @@ export const useAppearanceStore = defineStore("appearance", () => {
       }
     }
 
-    const { load, save, error: saveError } = useUserSettings();
-    const persistence = startPersistenceWatchers(userId, save, saveError);
-    stopPersisting = persistence.stop;
+    // Declared ahead of the try so the catch block below can still consult
+    // `persistence?.isTornDown` even if useUserSettings() or
+    // startPersistenceWatchers() itself is what threw.
+    let persistence: ReturnType<typeof startPersistenceWatchers> | undefined;
 
     try {
+      // useUserSettings() and startPersistenceWatchers() live inside this try
+      // (not ahead of it) so that a throw from either — not just a rejection
+      // of load() itself — still lands in the catch/finally below instead of
+      // leaving loadedUserId claimed with no persistence watcher and no way
+      // to retry.
+      const { load, save, error: saveError } = useUserSettings();
+      persistence = startPersistenceWatchers(userId, save, saveError);
+      stopPersisting = persistence.stop;
+
       const dbSettings = await load();
       if (persistence.isTornDown) {
         // This account was torn down (sign-out or account switch) while
@@ -359,24 +414,7 @@ export const useAppearanceStore = defineStore("appearance", () => {
         // and PATCH it to the server under the new account's token.
         return;
       }
-      persistence.setApplyingRemote(true);
-      try {
-        applyDbSettings(dbSettings, persistence.editedKeys);
-        applyToDom();
-        writeCachedSettings(userId, buildPatch());
-      } finally {
-        persistence.setApplyingRemote(false);
-      }
-      if (persistence.editedKeys.size > 0) {
-        // An edit made while the fetch was in flight already PATCHed a full
-        // patch built from whatever the *other* fields held at that moment
-        // (cache/defaults, not yet the DB's values) — applyDbSettings just
-        // merged in the real DB values for those untouched fields, but that
-        // correction never reached the server on its own. Persisting once
-        // more here reconciles the server with the corrected merged state
-        // instead of leaving it holding that stale mid-flight write.
-        persistence.schedulePersist();
-      }
+      applyLoadedSettings(userId, dbSettings, persistence);
     } catch (error) {
       // useUserSettings().load() already falls back to defaults internally
       // and shouldn't reject — this only guards against a future change (or
@@ -387,12 +425,18 @@ export const useAppearanceStore = defineStore("appearance", () => {
       // newer account may have claimed `loadedUserId` since, and clobbering
       // that claim would make the auth watcher re-run teardown for an
       // account that's already loaded.
-      if (!persistence.isTornDown) {
+      if (!persistence?.isTornDown) {
         console.error("Failed to load appearance settings", error);
         loadedUserId = undefined;
       }
     } finally {
-      ready.value = true;
+      // A stale continuation skips this too: flipping `ready` here would be
+      // this call declaring the load done on the current generation's
+      // behalf while its own fetch is still pending. That load's own
+      // finally is what owns setting ready once it actually lands.
+      if (!isStaleLoad(generation)) {
+        ready.value = true;
+      }
     }
   }
 
@@ -405,6 +449,17 @@ export const useAppearanceStore = defineStore("appearance", () => {
   // account's first edit from saving the old account's in-memory theme
   // under the new account's auth token.
   function teardownLoadedAccount() {
+    // Invalidates any loadFromDb() call still in flight for the account being
+    // torn down, even if the next thing loaded turns out to be that same
+    // account again (see loadGeneration's comment) — a sign-out must retire
+    // the outgoing load's claim just as surely as a switch to someone else.
+    loadGeneration += 1;
+    // Re-cloaks the UI for whatever comes next: without this, a mid-session
+    // switch away from an already-loaded (ready === true) account would
+    // render the DEFAULTS this function is about to apply as if they were
+    // the incoming account's real settings, instead of staying cloaked until
+    // that account's own cache hit or fetch lands.
+    ready.value = false;
     stopPersisting?.();
     stopPersisting = null;
     loadedUserId = null;
