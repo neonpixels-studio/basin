@@ -64,7 +64,7 @@ describe("useAppearanceStore loadFromDb ownership guard", () => {
       .mockReturnValueOnce(userALoad.promise)
       .mockResolvedValueOnce(userBSettings);
     const save = vi.fn().mockResolvedValue(undefined);
-    vi.stubGlobal("useUserSettings", () => ({ load, save }));
+    vi.stubGlobal("useUserSettings", () => ({ load, save, error: ref(null) }));
 
     const { isLoaded, isSignedIn, userId } = stubAuth();
     const store = useAppearanceStore();
@@ -111,6 +111,7 @@ describe("useAppearanceStore loadFromDb ownership guard", () => {
     vi.stubGlobal("useUserSettings", () => ({
       load,
       save: vi.fn().mockResolvedValue(undefined),
+      error: ref(null),
     }));
 
     const { isLoaded, isSignedIn, userId } = stubAuth();
@@ -161,7 +162,7 @@ describe("useAppearanceStore loadFromDb ownership guard", () => {
     const userALoad = deferred<typeof userASettings>();
     const load = vi.fn().mockReturnValueOnce(userALoad.promise);
     const save = vi.fn().mockResolvedValue(undefined);
-    vi.stubGlobal("useUserSettings", () => ({ load, save }));
+    vi.stubGlobal("useUserSettings", () => ({ load, save, error: ref(null) }));
 
     const { isLoaded, isSignedIn, userId } = stubAuth();
     const store = useAppearanceStore();
@@ -202,6 +203,7 @@ describe("useAppearanceStore loadFromDb ownership guard", () => {
     vi.stubGlobal("useUserSettings", () => ({
       load,
       save: vi.fn().mockResolvedValue(undefined),
+      error: ref(null),
     }));
 
     const { isLoaded, isSignedIn, userId } = stubAuth();
@@ -241,6 +243,7 @@ describe("useAppearanceStore loadFromDb ownership guard", () => {
     vi.stubGlobal("useUserSettings", () => ({
       load,
       save: vi.fn().mockResolvedValue(undefined),
+      error: ref(null),
     }));
 
     const { isLoaded, isSignedIn, userId } = stubAuth();
@@ -281,6 +284,7 @@ describe("useAppearanceStore loadFromDb ownership guard", () => {
     vi.stubGlobal("useUserSettings", () => ({
       load,
       save: vi.fn().mockResolvedValue(undefined),
+      error: ref(null),
     }));
 
     const { isLoaded, isSignedIn, userId } = stubAuth();
@@ -322,6 +326,7 @@ describe("useAppearanceStore loadFromDb ownership guard", () => {
     vi.stubGlobal("useUserSettings", () => ({
       load,
       save: vi.fn().mockResolvedValue(undefined),
+      error: ref(null),
     }));
 
     const { isLoaded, isSignedIn, userId } = stubAuth();
@@ -362,6 +367,7 @@ describe("useAppearanceStore loadFromDb ownership guard", () => {
       .mockImplementationOnce(() => ({
         load: vi.fn().mockResolvedValue(userASettings),
         save: vi.fn().mockResolvedValue(undefined),
+        error: ref(null),
       }));
     vi.stubGlobal("useUserSettings", brokenUseUserSettings);
 

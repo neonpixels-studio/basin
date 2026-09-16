@@ -1,5 +1,9 @@
 import { defineStore } from "pinia";
-import { reactive, ref, computed, watch } from "vue";
+import { reactive, ref, computed, watch, type Ref } from "vue";
+import type {
+  UserSettings,
+  UserSettingsPatch,
+} from "~/composables/useUserSettings";
 
 // Caches the last-applied appearance settings client-side so a returning,
 // signed-in visitor can uncloak immediately instead of waiting on the
@@ -92,16 +96,75 @@ export const useAppearanceStore = defineStore("appearance", () => {
     root.style.setProperty("--accent-soft-ink", accentColors.a);
   }
 
-  function applyDbSettings(dbSettings: Record<string, unknown>) {
-    state.theme = (dbSettings.theme as string) ?? DEFAULTS.theme;
-    state.accent = (dbSettings.accentColor as string) ?? DEFAULTS.accent;
-    state.reading = (dbSettings.readingFont as string) ?? DEFAULTS.reading;
-    state.density = (dbSettings.spacing as string) ?? DEFAULTS.density;
-    state.radius = (dbSettings.radius as string) ?? DEFAULTS.radius;
-    state.autoplay =
-      (dbSettings.autoplayMediaPreviews as boolean) ?? DEFAULTS.autoplay;
-    state.compactNotif =
-      (dbSettings.compactNotifications as boolean) ?? DEFAULTS.compactNotif;
+  // `loadingStyle` is a local-only preference: applyToDom() never reads it
+  // (it isn't a DOM attribute/CSS var like theme/reading/density/radius/
+  // accent are) and it's never sent to or read from the DB (see buildPatch
+  // below). It was never part of applyDbSettings before this change either,
+  // so excluding it from the persisted-key type below changes nothing
+  // observable — there's no persistence or DOM side effect tied to it to
+  // preserve.
+  type PersistedAppearanceKey =
+    | "theme"
+    | "accent"
+    | "reading"
+    | "density"
+    | "radius"
+    | "autoplay"
+    | "compactNotif";
+
+  // Maps each persisted local state key to the DB response key it's read
+  // from. applyDbSettings loops over this instead of one branch per field,
+  // which is what keeps that function's complexity flat as fields are added.
+  // Typed against UserSettings (not a bare `string`) so a typo'd or renamed
+  // DB column fails to compile instead of silently reading `undefined`.
+  const DB_FIELD_KEYS: Record<PersistedAppearanceKey, keyof UserSettings> = {
+    theme: "theme",
+    accent: "accentColor",
+    reading: "readingFont",
+    density: "spacing",
+    radius: "radius",
+    autoplay: "autoplayMediaPreviews",
+    compactNotif: "compactNotifications",
+  };
+
+  // Reads `dbKey` off an untrusted source (the DB response, or a
+  // hand-editable localStorage cache entry) and falls back to `fallback`
+  // unless the value's runtime type actually matches — a corrupt cache
+  // entry or a stale API response shouldn't be able to write a
+  // wrong-shaped value (a string into a boolean field, an object into a
+  // string field) straight into `state`.
+  function readTypedField(
+    source: Record<string, unknown>,
+    dbKey: string,
+    fallback: string | boolean,
+  ): string | boolean {
+    const value = source[dbKey];
+    if (typeof fallback === "boolean") {
+      return typeof value === "boolean" ? value : fallback;
+    }
+    return typeof value === "string" ? value : fallback;
+  }
+
+  // `editedKeys` is per-key rather than a single flag: a visitor who only
+  // touched (say) accent while the DB fetch was in flight should still get
+  // every *other* field applied from the DB response. Skipping the whole
+  // apply on any single edit silently reverts untouched fields to whatever
+  // the cache/defaults happened to hold.
+  function applyDbSettings(
+    dbSettings: Record<string, unknown>,
+    editedKeys: ReadonlySet<PersistedAppearanceKey> = new Set(),
+  ) {
+    const stateRecord = state as unknown as Record<string, unknown>;
+    (Object.keys(DB_FIELD_KEYS) as PersistedAppearanceKey[]).forEach((key) => {
+      if (editedKeys.has(key)) {
+        return;
+      }
+      stateRecord[key] = readTypedField(
+        dbSettings,
+        DB_FIELD_KEYS[key],
+        DEFAULTS[key],
+      );
+    });
   }
 
   function buildPatch() {
@@ -116,10 +179,156 @@ export const useAppearanceStore = defineStore("appearance", () => {
     };
   }
 
-  // Stops the deep persistence watcher started by loadFromDb() — captured so
-  // a sign-out (or an account switch) mid-session can tear it down instead
-  // of leaving it saving one account's in-memory state under the next
-  // account's auth token.
+  // Owns everything about watching `state` for local edits and getting them
+  // to the server, so loadFromDb() below can stay focused on the
+  // cache → fetch → merge sequence. One watcher per field (not a single
+  // deep watch over `state`) is what lets a change be attributed to the
+  // specific key that changed (recorded in `editedKeys`) instead of only
+  // ever knowing "the object as a whole is dirty".
+  function startPersistenceWatchers(
+    userId: string,
+    save: (_patch: UserSettingsPatch) => Promise<UserSettings | null>,
+    saveError: Ref<string | null>,
+  ) {
+    const editedKeys = new Set<PersistedAppearanceKey>();
+    let applyingRemote = false;
+    // Set once teardownLoadedAccount() calls stop() below, so a persist
+    // already queued via schedulePersist() can't fire after the account it
+    // was queued for has been torn down — without this, a sign-out (or
+    // account switch) landing between an edit and its scheduled microtask
+    // would PATCH the old account's state using the new account's token.
+    let tornDown = false;
+
+    // save() already swallows its own request error internally (see
+    // useUserSettings) and reports it via `saveError` instead of rejecting —
+    // caching on every call regardless would make a failed PATCH invisible:
+    // the visitor would see the change stick locally, then watch it silently
+    // revert on the next load once the DB turns out to still hold the old
+    // value.
+    async function persist() {
+      applyToDom();
+      const patch = buildPatch();
+      const result = await save(patch);
+      if (!result) {
+        console.error("Failed to persist appearance settings", saveError.value);
+        return;
+      }
+      writeCachedSettings(userId, patch);
+    }
+
+    // Coalesces persist() so a caller that sets several fields in the same
+    // synchronous pass (e.g. applying a preset) still produces one PATCH
+    // instead of one per field — each watcher below fires with
+    // flush: "sync", but deferring the actual persist lets same-tick writes
+    // collapse into a single call, same as the old deep watcher's
+    // default-flush batching did.
+    //
+    // A macrotask (setTimeout), not queueMicrotask, is what makes the
+    // `tornDown` check above actually reliable: Vue's own watchers (like the
+    // auth watcher in init() that drives teardownLoadedAccount()) flush on
+    // a microtask too, and a microtask this code schedules synchronously
+    // from inside a `flush: "sync"` watcher callback is queued *before*
+    // Vue's flush is — so a microtask scheduled here would run, and PATCH,
+    // before a same-tick sign-out's watcher ever got a chance to set
+    // `tornDown`. A macrotask always runs after the entire microtask queue
+    // (including every pending Vue watcher flush) has drained, so
+    // `tornDown` is guaranteed to be up to date by the time this fires.
+    let persistScheduled = false;
+    function schedulePersist() {
+      if (persistScheduled) {
+        return;
+      }
+      persistScheduled = true;
+      setTimeout(() => {
+        persistScheduled = false;
+        if (tornDown) {
+          return;
+        }
+        void persist();
+      }, 0);
+    }
+
+    // Registered before the DB fetch in loadFromDb so a change made during
+    // that round-trip is still saved. `flush: "sync"` matters here: the DB
+    // response applying to `state` flips `applyingRemote` back to false in
+    // a synchronous `finally` right after mutating every field. Vue's
+    // default ("pre") flush would defer these callbacks to the next
+    // microtask — by which point applyingRemote would already be back to
+    // false, and the remote apply would be misattributed as a local edit
+    // and re-PATCHed. Only the applyingRemote check and editedKeys
+    // bookkeeping need to run synchronously — the actual persist is
+    // deferred via schedulePersist() above.
+    const stopWatchers = (
+      Object.keys(DB_FIELD_KEYS) as PersistedAppearanceKey[]
+    ).map((key) =>
+      watch(
+        () => state[key],
+        () => {
+          if (applyingRemote) {
+            return;
+          }
+          editedKeys.add(key);
+          schedulePersist();
+        },
+        { flush: "sync" },
+      ),
+    );
+
+    return {
+      editedKeys,
+      schedulePersist,
+      setApplyingRemote(value: boolean) {
+        applyingRemote = value;
+      },
+      // Lets loadFromDb() recognize its own in-flight `load()` resolving
+      // *after* this account has already been torn down (a sign-out or
+      // account switch that landed while the fetch was still pending) — so
+      // it can discard that stale response instead of writing it into
+      // `state` and, via whichever account's watchers are live now, PATCHing
+      // it to the server under the wrong account's token.
+      get isTornDown() {
+        return tornDown;
+      },
+      stop() {
+        tornDown = true;
+        stopWatchers.forEach((stop) => stop());
+      },
+    };
+  }
+
+  // Applies a successfully loaded DB response to `state` and reconciles the
+  // server if a local edit landed during the fetch. Split out of loadFromDb
+  // so that function's own branching stays under the complexity/line
+  // thresholds fallow enforces.
+  function applyLoadedSettings(
+    userId: string,
+    dbSettings: Record<string, unknown>,
+    persistence: ReturnType<typeof startPersistenceWatchers>,
+  ) {
+    persistence.setApplyingRemote(true);
+    try {
+      applyDbSettings(dbSettings, persistence.editedKeys);
+      applyToDom();
+      writeCachedSettings(userId, buildPatch());
+    } finally {
+      persistence.setApplyingRemote(false);
+    }
+    if (persistence.editedKeys.size > 0) {
+      // An edit made while the fetch was in flight already PATCHed a full
+      // patch built from whatever the *other* fields held at that moment
+      // (cache/defaults, not yet the DB's values) — applyDbSettings just
+      // merged in the real DB values for those untouched fields, but that
+      // correction never reached the server on its own. Persisting once
+      // more here reconciles the server with the corrected merged state
+      // instead of leaving it holding that stale mid-flight write.
+      persistence.schedulePersist();
+    }
+  }
+
+  // Stops the per-key persistence watchers started by loadFromDb() —
+  // captured so a sign-out (or an account switch) mid-session can tear them
+  // down instead of leaving them saving one account's in-memory state under
+  // the next account's auth token.
   let stopPersisting: (() => void) | null = null;
 
   // Tracks which account's settings are currently loaded: a user id once
@@ -179,65 +388,47 @@ export const useAppearanceStore = defineStore("appearance", () => {
       }
     }
 
-    try {
-      // useUserSettings() and the watch() registration below live inside this
-      // try (not ahead of it) so that a throw from either — not just a
-      // rejection of load() itself — still lands in the catch/finally below
-      // instead of leaving loadedUserId claimed with no persistence watcher
-      // and no way to retry.
-      const { load, save } = useUserSettings();
+    // Declared ahead of the try so the catch block below can still consult
+    // `persistence?.isTornDown` even if useUserSettings() or
+    // startPersistenceWatchers() itself is what threw.
+    let persistence: ReturnType<typeof startPersistenceWatchers> | undefined;
 
-      // Flips once the visitor changes a setting locally. Registered before
-      // the DB fetch below so that edit is saved rather than being clobbered
-      // when the fetch resolves and would otherwise re-apply the stale value.
-      let dirty = false;
-      stopPersisting = watch(
-        state,
-        () => {
-          dirty = true;
-          applyToDom();
-          const patch = buildPatch();
-          save(patch);
-          writeCachedSettings(userId, patch);
-        },
-        { deep: true },
-      );
+    try {
+      // useUserSettings() and startPersistenceWatchers() live inside this try
+      // (not ahead of it) so that a throw from either — not just a rejection
+      // of load() itself — still lands in the catch/finally below instead of
+      // leaving loadedUserId claimed with no persistence watcher and no way
+      // to retry.
+      const { load, save, error: saveError } = useUserSettings();
+      persistence = startPersistenceWatchers(userId, save, saveError);
+      stopPersisting = persistence.stop;
 
       const dbSettings = await load();
-      // teardownLoadedAccount() (sign-out) or a newer loadFromDb() (account
-      // switch, or a switch away and back to this same account) can run to
-      // completion while this fetch is still in flight, moving on to a later
-      // generation than the one this call started with. Applying dbSettings
-      // here would be this stale continuation clobbering whatever load is
-      // now actually current — and the persistence watcher it would trigger
-      // would re-PATCH those stale settings back under the current account's
-      // auth token. Bail out instead; the current generation's own call owns
-      // applying its settings and flipping `ready`.
-      if (isStaleLoad(generation)) {
+      if (persistence.isTornDown) {
+        // This account was torn down (sign-out or account switch) while
+        // load() was still in flight. loadFromDb() for whichever account is
+        // actually loaded now already owns `state` and `stopPersisting` —
+        // applying this stale response would write a no-longer-loaded
+        // account's DB values into the *new* account's shared `state`, and
+        // that account's own (live) watchers would treat it as a local edit
+        // and PATCH it to the server under the new account's token.
         return;
       }
-      if (!dirty) {
-        applyDbSettings(dbSettings);
-        applyToDom();
-        writeCachedSettings(userId, buildPatch());
-      }
+      applyLoadedSettings(userId, dbSettings, persistence);
     } catch (error) {
       // useUserSettings().load() already falls back to defaults internally
       // and shouldn't reject — this only guards against a future change (or
-      // an unexpected throw) leaving the cloak stuck down. Logged
-      // unconditionally, even for a stale generation: the outgoing account's
-      // fetch genuinely failed and that's worth knowing regardless of whether
-      // anyone is still waiting on it.
-      console.error("Failed to load appearance settings", error);
-      // Same staleness check as the success branch above: if a newer load has
-      // already taken over, this call has no claim left to clear — resetting
-      // loadedUserId to undefined here would erase the *current* generation's
-      // claim instead, making init()'s watcher think nothing is loaded and
-      // re-fire loadFromDb for an account that's already loaded.
-      if (isStaleLoad(generation)) {
-        return;
+      // an unexpected throw) leaving the cloak stuck down. Clear the claim so
+      // a later auth re-fire retries instead of assuming this account is
+      // already loaded — but only if this account is still the loaded one:
+      // if it was already torn down (see the isTornDown check above), a
+      // newer account may have claimed `loadedUserId` since, and clobbering
+      // that claim would make the auth watcher re-run teardown for an
+      // account that's already loaded.
+      if (!persistence?.isTornDown) {
+        console.error("Failed to load appearance settings", error);
+        loadedUserId = undefined;
       }
-      loadedUserId = undefined;
     } finally {
       // A stale continuation skips this too: flipping `ready` here would be
       // this call declaring the load done on the current generation's
