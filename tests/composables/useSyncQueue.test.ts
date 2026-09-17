@@ -347,6 +347,29 @@ describe("useSyncQueue", () => {
       expect(SentrySDK.captureException).toHaveBeenCalledTimes(1);
       expect(SentrySDK.captureException).toHaveBeenCalledWith(dbError);
     });
+
+    it("still refreshes the count exactly once when the client DB opened fine but reading pending items failed", async () => {
+      // Unlike the client-DB-broken case above, the connection itself is
+      // healthy here — the count read must still happen (otherwise the
+      // banner goes stale on a failure unrelated to useClientDb()), but only
+      // once, reusing the already-open connection rather than opening (and
+      // risking failing on) a second one.
+      const pendingItemsError = new Error("object store missing");
+      vi.mocked(syncQueueStore.getPendingItems).mockRejectedValue(
+        pendingItemsError,
+      );
+      vi.mocked(syncQueueStore.countFailedItems).mockResolvedValue(2);
+
+      const { flushSyncQueue, failedCount } = useSyncQueue();
+      await expect(flushSyncQueue()).resolves.toBeUndefined();
+
+      expect(mockUseClientDb).toHaveBeenCalledTimes(1);
+      expect(SentrySDK.captureException).toHaveBeenCalledTimes(1);
+      expect(SentrySDK.captureException).toHaveBeenCalledWith(
+        pendingItemsError,
+      );
+      expect(failedCount.value).toBe(2);
+    });
   });
 
   describe("refreshFailedCount()", () => {

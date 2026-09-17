@@ -162,44 +162,52 @@ async function processItem(db: ClientDb, item: SyncQueueRow): Promise<boolean> {
   }
 }
 
-// Runs the actual offline-check/pending-loop/refresh sequence, so runFlushPass
-// can wrap it in exactly one try/catch. Refreshing the count is folded into
-// both this function's exits (offline and success) rather than a `finally` on
-// the caller, so a genuine failure below (useClientDb()/getPendingItems()
-// throwing) propagates straight to that one catch instead of also retrying
-// the identically-broken client DB here — which would double-report the same
-// underlying failure to Sentry.
-async function flushPendingItems(): Promise<void> {
-  if (!navigator.onLine) {
-    await refreshFailedCount();
-    return;
-  }
-
-  const db = await useClientDb();
-  const pending = await syncQueueStore.getPendingItems(db);
-
-  for (const item of pending) {
-    const stillRetryable = await processItem(db, item);
-    if (stillRetryable) {
-      break;
-    }
-  }
-
-  await refreshFailedCount(db);
-}
-
 async function runFlushPass(): Promise<void> {
+  // Tracked so the catch below can tell "useClientDb() itself failed" apart
+  // from "opened fine, something later failed" — see its comment.
+  let openedDb: ClientDb | undefined;
   try {
-    await flushPendingItems();
+    if (!navigator.onLine) {
+      await refreshFailedCount();
+      return;
+    }
+
+    openedDb = await useClientDb();
+    const pending = await syncQueueStore.getPendingItems(openedDb);
+
+    for (const item of pending) {
+      const stillRetryable = await processItem(openedDb, item);
+      if (stillRetryable) {
+        break;
+      }
+    }
+
+    await refreshFailedCountWith(openedDb);
   } catch (error) {
     // useClientDb()/getPendingItems() itself failing (IndexedDB unavailable,
     // quota exceeded) must not become an unhandled rejection — the plugin
-    // calls flushSyncQueue() without awaiting or catching it. Deliberately
-    // does not also call refreshFailedCount() here: it would fail against the
-    // same broken client DB and double-report this one failure.
+    // calls flushSyncQueue() without awaiting or catching it.
     console.error("Sync queue flush pass failed", error);
     captureException(error, { stage: "sync-queue-flush-pass" });
+    // Only refresh here if useClientDb() itself succeeded: a broken client DB
+    // would fail identically again and double-report this one failure to
+    // Sentry (see refreshFailedCount()'s own try/catch below). Any other
+    // failure (a corrupt object store, a failed version upgrade) leaves a
+    // healthy connection worth reading from — without this, the banner would
+    // go stale on exactly those failures instead of just the client-DB ones.
+    if (openedDb) {
+      await refreshFailedCountWith(openedDb);
+    }
   }
+}
+
+// Reads the count using an already-open connection. Kept internal (not part
+// of useSyncQueue()'s returned surface) so the exported refreshFailedCount()
+// below can stay zero-arg — a caller that ever passed it by reference to an
+// event handler (e.g. `@click="refreshFailedCount"`) would otherwise hand it
+// a DOM event as `db`.
+async function refreshFailedCountWith(db: ClientDb): Promise<void> {
+  failedCount.value = await syncQueueStore.countFailedItems(db);
 }
 
 // Best-effort read — a database that can't be reached has no failed rows to
@@ -207,12 +215,9 @@ async function runFlushPass(): Promise<void> {
 // (e.g. from the UI banner's onMounted hook) or interrupt a flush pass. It
 // also must not claim zero failures when the read itself is what failed —
 // that would hide real quarantined items — so the previous count is kept.
-// Accepts an already-open `db` so a caller mid-flush-pass reuses its
-// connection instead of opening (and risking failing on) a second one.
-async function refreshFailedCount(db?: ClientDb): Promise<void> {
+async function refreshFailedCount(): Promise<void> {
   try {
-    const clientDb = db ?? (await useClientDb());
-    failedCount.value = await syncQueueStore.countFailedItems(clientDb);
+    await refreshFailedCountWith(await useClientDb());
   } catch (error) {
     console.error("Failed to refresh the quarantined sync queue count", error);
     captureException(error, { stage: "sync-queue-refresh-failed-count" });

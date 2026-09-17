@@ -22,6 +22,16 @@ function cacheKeyFor(userId: string): string {
   return `${APPEARANCE_CACHE_PREFIX}:${userId}`;
 }
 
+// Reduces an ofetch/$fetch save failure to a bare message before it reaches
+// Sentry extras — the raw value can carry the request's Authorization header
+// and full response body, neither of which belongs in a third-party report.
+function describeSaveError(saveError: unknown): string | null {
+  if (saveError instanceof Error) {
+    return saveError.message;
+  }
+  return saveError === null ? null : String(saveError);
+}
+
 function readCachedSettings(userId: string): Record<string, unknown> | null {
   try {
     const raw = localStorage.getItem(cacheKeyFor(userId));
@@ -38,7 +48,11 @@ function readCachedSettings(userId: string): Record<string, unknown> | null {
     // access itself, not just on a malformed value — either way, a cache
     // miss is the safe fallback, not a crash.
     console.error("Failed to read cached appearance settings", error);
-    captureException(error, { stage: "appearance-cache-read", userId });
+    // No userId in the extras: identifyUser() (app/plugins/sentry.client.ts)
+    // already scopes every event to the signed-in Clerk user, and sending the
+    // raw Clerk id again here would be the same class of leak tombstone.ts
+    // (in this same change) deliberately avoids for that identifier.
+    captureException(error, { stage: "appearance-cache-read" });
     return null;
   }
 }
@@ -50,7 +64,7 @@ function writeCachedSettings(userId: string, patch: Record<string, unknown>) {
     // Best-effort cache — a full quota or blocked storage shouldn't break
     // the app, just leave the next load to fall back to the DB fetch.
     console.error("Failed to cache appearance settings", error);
-    captureException(error, { stage: "appearance-cache-write", userId });
+    captureException(error, { stage: "appearance-cache-write" });
   }
 }
 
@@ -214,9 +228,12 @@ export const useAppearanceStore = defineStore("appearance", () => {
       const result = await save(patch);
       if (!result) {
         console.error("Failed to persist appearance settings", saveError.value);
+        // Only a message, never the raw saveError value: it comes from
+        // ofetch/$fetch and can carry the request's Authorization header and
+        // full response body — the same class of leak as sending an
+        // unredacted error object anywhere else in this change.
         captureMessage("Failed to persist appearance settings", {
-          userId,
-          saveError: saveError.value,
+          saveError: describeSaveError(saveError.value),
         });
         return;
       }
@@ -381,7 +398,7 @@ export const useAppearanceStore = defineStore("appearance", () => {
         ready.value = true;
       } catch (error) {
         console.error("Discarding unusable cached appearance settings", error);
-        captureException(error, { stage: "appearance-cache-discard", userId });
+        captureException(error, { stage: "appearance-cache-discard" });
         try {
           localStorage.removeItem(cacheKeyFor(userId));
         } catch (removeError) {
@@ -392,10 +409,7 @@ export const useAppearanceStore = defineStore("appearance", () => {
             "Failed to clear unusable cached appearance settings",
             removeError,
           );
-          captureException(removeError, {
-            stage: "appearance-cache-clear",
-            userId,
-          });
+          captureException(removeError, { stage: "appearance-cache-clear" });
         }
       }
     }
@@ -439,7 +453,7 @@ export const useAppearanceStore = defineStore("appearance", () => {
       // account that's already loaded.
       if (!persistence?.isTornDown) {
         console.error("Failed to load appearance settings", error);
-        captureException(error, { stage: "appearance-load-from-db", userId });
+        captureException(error, { stage: "appearance-load-from-db" });
         loadedUserId = undefined;
       }
     } finally {

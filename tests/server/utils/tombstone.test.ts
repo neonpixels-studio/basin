@@ -109,7 +109,10 @@ describe("tombstone", () => {
           providerIdHash: hashProviderId("clerk_gone"),
         }),
       );
-      const [extras] = mockSentryScope.setExtras.mock.calls[0];
+      // .at(-1) (not [0]): resilient to this suite's shared, module-level
+      // Sentry mock (see tests/setup.ts) ever accumulating an earlier call
+      // before the outer describe's vi.resetAllMocks() runs.
+      const [extras] = mockSentryScope.setExtras.mock.calls.at(-1)!;
       expect(JSON.stringify(extras)).not.toContain("clerk_gone");
       errorSpy.mockRestore();
     });

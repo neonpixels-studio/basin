@@ -9,6 +9,11 @@
 import * as Sentry from "@sentry/nuxt";
 import { loadEnv } from "./env";
 
+// Milliseconds flushSentry() waits for queued events to actually leave the
+// process before giving up — see that function's comment for why this can't
+// be skipped.
+const FLUSH_TIMEOUT_MS = 2000;
+
 let initialized = false;
 
 export function initSentry(): void {
@@ -21,4 +26,14 @@ export function initSentry(): void {
     tracesSampleRate: process.env.NODE_ENV === "production" ? 0.1 : 1.0,
   });
   initialized = true;
+}
+
+// Sentry.init() queues events and sends them over HTTP asynchronously — it
+// does not await delivery. A Netlify Function's execution environment is
+// frozen (or torn down) the instant the handler's promise settles, so any
+// event captured moments earlier would otherwise never actually leave the
+// process. Call this on every exit path of the handler (success or failure)
+// after initSentry() has run.
+export async function flushSentry(): Promise<void> {
+  await Sentry.flush(FLUSH_TIMEOUT_MS);
 }

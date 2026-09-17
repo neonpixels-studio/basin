@@ -74,7 +74,7 @@ describe("useAccount", () => {
     expect(errorSpy).toHaveBeenCalled();
     expect(SentrySDK.captureException).toHaveBeenCalledWith(requestError);
     expect(mockSentryScope.setExtras).toHaveBeenCalledWith(
-      expect.objectContaining({ context: "account-deletion" }),
+      expect.objectContaining({ stage: "account-deletion" }),
     );
     errorSpy.mockRestore();
   });

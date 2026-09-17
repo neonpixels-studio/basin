@@ -30,7 +30,7 @@ import type {
   BlueskySessionTokens,
 } from "../../server/utils/blueskyAdapter";
 import { createDb } from "./db";
-import { initSentry } from "./sentry";
+import { initSentry, flushSentry } from "./sentry";
 import {
   IntegrationAuthError,
   ServerConfigError,
@@ -595,13 +595,12 @@ async function recordPermanentFailure(
   }
 }
 
-export default asyncWorkloadFn<SyncFeedEvent>(async (event) => {
-  // See netlify/functions/sentry.ts: this bundle never loads
-  // sentry.server.config.ts, so blueskyAdapter.ts's Sentry calls need their
-  // own client initialized in this runtime.
-  initSentry();
+// Runs the event and persists a permanent-failure record when one is thrown.
+// Split out of the exported handler so that one stays a thin
+// initSentry()/flushSentry() wrapper (see the handler's own comment for why
+// the flush must run on every exit path, including this function re-throwing).
+async function runSyncFeedEvent(event: SyncFeedEvent): Promise<void> {
   const { userId, feedId } = event.eventData;
-
   try {
     await processSyncFeedEvent(event.eventData, event.attempt);
   } catch (error) {
@@ -615,6 +614,22 @@ export default asyncWorkloadFn<SyncFeedEvent>(async (event) => {
     }
 
     throw error;
+  }
+}
+
+export default asyncWorkloadFn<SyncFeedEvent>(async (event) => {
+  // See netlify/functions/sentry.ts: this bundle never loads
+  // sentry.server.config.ts, so blueskyAdapter.ts's Sentry calls need their
+  // own client initialized in this runtime.
+  initSentry();
+
+  try {
+    await runSyncFeedEvent(event);
+  } finally {
+    // Runs on every exit path (success, or runSyncFeedEvent re-throwing) —
+    // see flushSentry()'s comment for why skipping this on any path would
+    // silently drop that path's Sentry events.
+    await flushSentry();
   }
 });
 

@@ -164,12 +164,17 @@ describe("useAppearanceStore", () => {
   // and the persistence watcher — registered before the fetch — re-fired on
   // the DB response applying, PATCHing the just-loaded values straight back.
   describe("loadFromDb (via init())", () => {
+    // Restored (not vi.restoreAllMocks()) in afterEach below, so this stays
+    // scoped to the console.error spies the tests in this block install —
+    // vi.restoreAllMocks() would also reach into the @sentry/nuxt mock
+    // tests/setup.ts registers once for the whole file.
+    let consoleErrorSpy: ReturnType<typeof vi.spyOn> | undefined;
+
     afterEach(() => {
       vi.unstubAllGlobals();
       localStorage.clear();
-      // Restores the console.error spies several tests below install without
-      // ever calling .mockRestore() themselves.
-      vi.restoreAllMocks();
+      consoleErrorSpy?.mockRestore();
+      consoleErrorSpy = undefined;
     });
 
     it("preserves a field edited mid-fetch while still applying untouched fields from the DB response", async () => {
@@ -408,13 +413,19 @@ describe("useAppearanceStore", () => {
         .mockImplementation(() => {
           throw readError;
         });
-      vi.spyOn(console, "error").mockImplementation(() => {});
+      consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
       const { deferredLoad } = setupSignedInLoad();
       store.init();
       await flushPromises();
 
       expect(SentrySDK.captureException).toHaveBeenCalledWith(readError);
+      // No userId in the extras: identifyUser() already scopes events to the
+      // signed-in user, and this repo's Sentry-wiring policy is never to
+      // send a raw Clerk id (see tombstone.ts's provider-id hashing).
+      expect(mockSentryScope.setExtras).toHaveBeenCalledWith({
+        stage: "appearance-cache-read",
+      });
 
       getItemSpy.mockRestore();
       deferredLoad.resolve({ ...USER_SETTINGS_DEFAULTS });
@@ -435,13 +446,16 @@ describe("useAppearanceStore", () => {
         .mockImplementation(() => {
           throw writeError;
         });
-      vi.spyOn(console, "error").mockImplementation(() => {});
+      consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
       store.state.accent = "rose";
       await flushScheduledPersist();
 
       expect(save).toHaveBeenCalledTimes(1);
       expect(SentrySDK.captureException).toHaveBeenCalledWith(writeError);
+      expect(mockSentryScope.setExtras).toHaveBeenCalledWith({
+        stage: "appearance-cache-write",
+      });
 
       setItemSpy.mockRestore();
     });
@@ -449,7 +463,7 @@ describe("useAppearanceStore", () => {
     it("reports to Sentry (as a message, not an exception) when a save resolves falsy", async () => {
       const { deferredLoad, save } = setupSignedInLoad();
       save.mockResolvedValue(null);
-      vi.spyOn(console, "error").mockImplementation(() => {});
+      consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
       store.init();
       await flushPromises();
       deferredLoad.resolve({ ...USER_SETTINGS_DEFAULTS });
@@ -464,8 +478,10 @@ describe("useAppearanceStore", () => {
       expect(SentrySDK.captureMessage).toHaveBeenCalledWith(
         "Failed to persist appearance settings",
       );
+      // No userId (see the cache-read test above) and saveError is reduced to
+      // a plain message/string, never the raw ofetch error object — it can
+      // carry the request's Authorization header and full response body.
       expect(mockSentryScope.setExtras).toHaveBeenCalledWith({
-        userId: "user_dirty_flag_test",
         saveError: null,
       });
     });
