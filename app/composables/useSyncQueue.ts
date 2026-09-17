@@ -5,6 +5,7 @@ import {
   type SyncQueueAction,
   type SyncQueueRow,
 } from "./syncQueueStore";
+import { captureException } from "~/lib/sentry";
 
 // A queued mutation gets this many attempts against a transient failure
 // (network error, 5xx) before it's quarantined too — a persistently-erroring
@@ -129,6 +130,10 @@ async function syncItem(db: ClientDb, item: SyncQueueRow): Promise<boolean> {
     await syncQueueStore.markSynced(db, item.id);
   } catch (error) {
     console.error("Failed to record a synced sync_queue item locally", error);
+    captureException(error, {
+      stage: "sync-queue-mark-synced",
+      itemId: item.id,
+    });
   }
   return false;
 }
@@ -149,6 +154,10 @@ async function processItem(db: ClientDb, item: SyncQueueRow): Promise<boolean> {
       "Failed to record a sync_queue item's outcome locally",
       error,
     );
+    captureException(error, {
+      stage: "sync-queue-record-outcome",
+      itemId: item.id,
+    });
     return true;
   }
 }
@@ -173,6 +182,7 @@ async function runFlushPass(): Promise<void> {
     // quota exceeded) must not become an unhandled rejection — the plugin
     // calls flushSyncQueue() without awaiting or catching it.
     console.error("Sync queue flush pass failed", error);
+    captureException(error, { stage: "sync-queue-flush-pass" });
   } finally {
     // Always runs — including the offline early-return, the outer catch
     // above, and a user-initiated retryFailedItems() that requeued items
@@ -193,6 +203,7 @@ async function refreshFailedCount(): Promise<void> {
     failedCount.value = await syncQueueStore.countFailedItems(db);
   } catch (error) {
     console.error("Failed to refresh the quarantined sync queue count", error);
+    captureException(error, { stage: "sync-queue-refresh-failed-count" });
   }
 }
 

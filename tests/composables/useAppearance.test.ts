@@ -4,6 +4,13 @@ import { ref } from "vue";
 import { flushPromises } from "@vue/test-utils";
 import { useAppearanceStore, ACCENTS } from "~/stores/appearance";
 import { USER_SETTINGS_DEFAULTS } from "~/composables/useUserSettings";
+// @sentry/nuxt is mocked once, globally, in tests/setup.ts — see that file's
+// comment for why a module-scoped mock here instead would silently miss the
+// calls app/lib/sentry.ts makes. mockSentryScope is the shared `withScope`
+// scope object, since extras are set on the scope, not passed to
+// captureException/captureMessage directly.
+import * as SentrySDK from "@sentry/nuxt";
+import { mockSentryScope } from "../setup";
 
 // Deferred promise so a test can control exactly when `load()` resolves,
 // letting it inject a local edit while the DB fetch is still in flight.
@@ -380,6 +387,77 @@ describe("useAppearanceStore", () => {
       await flushPromises();
 
       expect(save).not.toHaveBeenCalled();
+    });
+
+    it("reports to Sentry when reading the cached appearance settings throws (e.g. Safari private browsing)", async () => {
+      localStorage.setItem(
+        "basin-appearance-cache:user_dirty_flag_test",
+        JSON.stringify({ theme: "dark" }),
+      );
+      const readError = new Error("SecurityError");
+      const getItemSpy = vi
+        .spyOn(localStorage, "getItem")
+        .mockImplementation(() => {
+          throw readError;
+        });
+      vi.spyOn(console, "error").mockImplementation(() => {});
+
+      const { deferredLoad } = setupSignedInLoad();
+      store.init();
+      await flushPromises();
+
+      expect(SentrySDK.captureException).toHaveBeenCalledWith(readError);
+
+      getItemSpy.mockRestore();
+      deferredLoad.resolve({ ...USER_SETTINGS_DEFAULTS });
+      await flushPromises();
+    });
+
+    it("reports to Sentry when caching appearance settings fails after a successful save", async () => {
+      const { deferredLoad, save } = setupSignedInLoad();
+      store.init();
+      await flushPromises();
+      deferredLoad.resolve({ ...USER_SETTINGS_DEFAULTS });
+      await flushPromises();
+      save.mockClear();
+
+      const writeError = new Error("QuotaExceededError");
+      const setItemSpy = vi
+        .spyOn(localStorage, "setItem")
+        .mockImplementation(() => {
+          throw writeError;
+        });
+      vi.spyOn(console, "error").mockImplementation(() => {});
+
+      store.state.accent = "rose";
+      await flushScheduledPersist();
+
+      expect(save).toHaveBeenCalledTimes(1);
+      expect(SentrySDK.captureException).toHaveBeenCalledWith(writeError);
+
+      setItemSpy.mockRestore();
+    });
+
+    it("reports to Sentry (as a message, not an exception) when a save resolves falsy", async () => {
+      const { deferredLoad, save } = setupSignedInLoad();
+      save.mockResolvedValue(null);
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      store.init();
+      await flushPromises();
+      deferredLoad.resolve({ ...USER_SETTINGS_DEFAULTS });
+      await flushPromises();
+      save.mockClear();
+
+      store.state.accent = "rose";
+      await flushScheduledPersist();
+
+      expect(save).toHaveBeenCalledTimes(1);
+      expect(SentrySDK.captureMessage).toHaveBeenCalledWith(
+        "Failed to persist appearance settings",
+      );
+      expect(mockSentryScope.setExtras).toHaveBeenCalledWith(
+        expect.objectContaining({ userId: "user_dirty_flag_test" }),
+      );
     });
   });
 });

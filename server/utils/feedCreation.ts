@@ -12,6 +12,7 @@ import {
 import { fetchFeedBody, validateFeedContent } from "./feedValidator";
 import { detectFeedSource } from "./feedSourceDetector";
 import { UNGATED_SYNC_STATE } from "./feedSyncBackoff";
+import { captureException } from "../../app/lib/sentry";
 
 const FEED_VALIDATION_TIMEOUT_MS = 10_000;
 
@@ -152,6 +153,7 @@ async function upsertFeed(
         `Feed cap enforced at the DB layer for user ${userId}: the app-level pre-check raced and lost, or FREE_PLAN_FEED_LIMIT drifted from migration 0011.`,
         error,
       );
+      captureException(error, { stage: "feed-cap-db-trigger", userId, url });
       throw feedLimitExceededError();
     }
     throw error;

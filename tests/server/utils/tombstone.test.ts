@@ -6,6 +6,11 @@ import {
   hashProviderId,
   TombstonePepperError,
 } from "../../../server/utils/tombstoneHash";
+// @sentry/nuxt is mocked once, globally, in tests/setup.ts — see that file's
+// comment for why a module-scoped mock here instead would silently miss the
+// calls app/lib/sentry.ts makes.
+import * as SentrySDK from "@sentry/nuxt";
+import { mockSentryScope } from "../../setup";
 
 // Fixed so hashProviderId is deterministic across the assertions below.
 const TEST_TOMBSTONE_PEPPER = "test-tombstone-pepper-0123456789";
@@ -92,6 +97,12 @@ describe("tombstone", () => {
       await expect(isProviderTombstoned("clerk_gone")).resolves.toBe(true);
       expect(errorSpy).toHaveBeenCalledWith(
         expect.stringContaining("clerk_gone"),
+      );
+      expect(SentrySDK.captureMessage).toHaveBeenCalledWith(
+        expect.stringContaining("missing deleted_at"),
+      );
+      expect(mockSentryScope.setExtras).toHaveBeenCalledWith(
+        expect.objectContaining({ providerId: "clerk_gone" }),
       );
       errorSpy.mockRestore();
     });

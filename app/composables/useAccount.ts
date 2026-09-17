@@ -1,3 +1,5 @@
+import { captureException } from "~/lib/sentry";
+
 // Isolates the account-deletion request so components don't build auth headers
 // or call $fetch directly. Mirrors useBilling's shape (loading/error refs plus
 // an action) for consistency.
@@ -36,6 +38,7 @@ export function useAccount() {
       // Log the real error: a mid-deletion 500 (billing may already be purged)
       // must not be indistinguishable from a benign failure in production logs.
       console.error("Account deletion request failed:", caughtError);
+      captureException(caughtError, { context: "account-deletion" });
       const statusCode = (caughtError as { statusCode?: number })?.statusCode;
       error.value =
         statusCode === 429

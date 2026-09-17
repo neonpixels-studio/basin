@@ -1,6 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { useSyncQueue } from "~/composables/useSyncQueue";
 import { syncQueueStore } from "~/composables/syncQueueStore";
+// @sentry/nuxt is mocked once, globally, in tests/setup.ts — see that file's
+// comment for why a module-scoped mock here instead would silently miss the
+// calls app/lib/sentry.ts makes.
+import * as SentrySDK from "@sentry/nuxt";
 
 vi.mock("~/composables/syncQueueStore", () => ({
   syncQueueStore: {
@@ -86,8 +90,9 @@ describe("useSyncQueue", () => {
       const items = [makeItem({ id: 1 }), makeItem({ id: 2 })];
       vi.mocked(syncQueueStore.getPendingItems).mockResolvedValue(items);
       mockFetch.mockResolvedValue({ ok: true });
+      const markSyncedError = new Error("DB write failed");
       vi.mocked(syncQueueStore.markSynced).mockRejectedValueOnce(
-        new Error("DB write failed"),
+        markSyncedError,
       );
 
       const { flushSyncQueue } = useSyncQueue();
@@ -98,6 +103,7 @@ describe("useSyncQueue", () => {
       // The pass continued to item 2 rather than stopping.
       expect(mockFetch).toHaveBeenCalledTimes(2);
       expect(syncQueueStore.markSynced).toHaveBeenCalledWith(fakeDb, 2);
+      expect(SentrySDK.captureException).toHaveBeenCalledWith(markSyncedError);
     });
 
     it("stops the pass (without quarantining) when recording an outcome throws unexpectedly", async () => {
@@ -109,8 +115,9 @@ describe("useSyncQueue", () => {
       const items = [makeItem({ id: 1 }), makeItem({ id: 2 })];
       vi.mocked(syncQueueStore.getPendingItems).mockResolvedValue(items);
       mockFetch.mockRejectedValueOnce(new Error("Network error"));
+      const recordFailureError = new Error("DB write failed");
       vi.mocked(syncQueueStore.recordRetryableFailure).mockRejectedValueOnce(
-        new Error("DB write failed"),
+        recordFailureError,
       );
 
       const { flushSyncQueue } = useSyncQueue();
@@ -118,6 +125,9 @@ describe("useSyncQueue", () => {
 
       expect(mockFetch).toHaveBeenCalledTimes(1);
       expect(syncQueueStore.quarantine).not.toHaveBeenCalled();
+      expect(SentrySDK.captureException).toHaveBeenCalledWith(
+        recordFailureError,
+      );
     });
 
     it("quarantines a permanently-failing (403) item without blocking items behind it", async () => {
@@ -322,6 +332,18 @@ describe("useSyncQueue", () => {
     });
   });
 
+  describe("flushSyncQueue() outer failure", () => {
+    it("reports to Sentry when the flush pass fails outright (e.g. IndexedDB unavailable)", async () => {
+      const dbError = new Error("IndexedDB unavailable");
+      mockUseClientDb.mockRejectedValueOnce(dbError);
+
+      const { flushSyncQueue } = useSyncQueue();
+      await expect(flushSyncQueue()).resolves.toBeUndefined();
+
+      expect(SentrySDK.captureException).toHaveBeenCalledWith(dbError);
+    });
+  });
+
   describe("refreshFailedCount()", () => {
     it("sets failedCount from the store", async () => {
       vi.mocked(syncQueueStore.countFailedItems).mockResolvedValue(2);
@@ -339,11 +361,13 @@ describe("useSyncQueue", () => {
       await refreshFailedCount();
       expect(failedCount.value).toBe(4);
 
+      const countError = new Error("DB unavailable");
       vi.mocked(syncQueueStore.countFailedItems).mockRejectedValueOnce(
-        new Error("DB unavailable"),
+        countError,
       );
       await expect(refreshFailedCount()).resolves.toBeUndefined();
       expect(failedCount.value).toBe(4);
+      expect(SentrySDK.captureException).toHaveBeenCalledWith(countError);
     });
   });
 

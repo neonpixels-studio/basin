@@ -17,9 +17,21 @@ vi.mock("../../../server/utils/feedSourceDetector", () => ({
   detectFeedSource: vi.fn(),
 }));
 
-vi.mock("../../../server/utils/feedLimit", () => ({
-  assertWithinFeedLimit: vi.fn(),
-}));
+// Keep isFeedLimitDbError/feedLimitExceededError real (the DB-cap-trigger test
+// below exercises them) and only fake the network-backed pre-check.
+vi.mock("../../../server/utils/feedLimit", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../../../server/utils/feedLimit")>();
+  return { ...actual, assertWithinFeedLimit: vi.fn() };
+});
+
+// @sentry/nuxt is mocked once, globally, in tests/setup.ts — see that file's
+// comment for why a module-scoped mock here instead would silently miss the
+// calls app/lib/sentry.ts makes. mockSentryScope is the shared `withScope`
+// scope object, since extras are set on the scope, not passed to
+// captureException directly.
+import * as SentrySDK from "@sentry/nuxt";
+import { mockSentryScope } from "../../setup";
 
 import { createFeedForUser } from "../../../server/utils/feedCreation";
 import {
@@ -27,7 +39,11 @@ import {
   fetchFeedBody,
 } from "../../../server/utils/feedValidator";
 import { detectFeedSource } from "../../../server/utils/feedSourceDetector";
-import { assertWithinFeedLimit } from "../../../server/utils/feedLimit";
+import {
+  assertWithinFeedLimit,
+  FEED_LIMIT_DB_ERROR_MARKER,
+  FEED_LIMIT_SQLSTATE,
+} from "../../../server/utils/feedLimit";
 
 const mockValidateFeedContent = vi.mocked(validateFeedContent);
 const mockFetchFeedBody = vi.mocked(fetchFeedBody);
@@ -159,5 +175,27 @@ describe("createFeedForUser", () => {
     await createFeedForUser(1, "https://example.com/feed.xml");
     const { set } = mockOnConflictDoUpdate.mock.calls[0][0];
     expect(set).not.toHaveProperty("consecutiveFailures");
+  });
+
+  it("reports to Sentry and maps the DB cap trigger to the same 403 the pre-check throws", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const dbTriggerError = Object.assign(
+      new Error(
+        `insert violates check constraint: ${FEED_LIMIT_DB_ERROR_MARKER}`,
+      ),
+      { code: FEED_LIMIT_SQLSTATE },
+    );
+    mockReturning.mockRejectedValue(dbTriggerError);
+
+    await expect(
+      createFeedForUser(1, "https://example.com/feed.xml"),
+    ).rejects.toMatchObject({ statusCode: 403 });
+
+    expect(errorSpy).toHaveBeenCalled();
+    expect(SentrySDK.captureException).toHaveBeenCalledWith(dbTriggerError);
+    expect(mockSentryScope.setExtras).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 1, stage: "feed-cap-db-trigger" }),
+    );
+    errorSpy.mockRestore();
   });
 });

@@ -7,6 +7,7 @@
 import { inArray, sql } from "drizzle-orm";
 import { deletionTombstones } from "../db/schema";
 import { hashProviderId } from "./tombstoneHash";
+import { captureMessage } from "../../app/lib/sentry";
 
 // A tombstone only needs to outlive any session token that was minted just
 // before the account was deleted: Clerk verifies JWTs networklessly, so such a
@@ -82,6 +83,10 @@ function isTombstoneActive(
     // can be reconciled rather than silently locking an identity out.
     console.error(
       `deletion_tombstones row for provider id ${providerId} is missing deleted_at; blocking re-creation until reconciled`,
+    );
+    captureMessage(
+      "deletion_tombstones row is missing deleted_at; blocking re-creation until reconciled",
+      { providerId },
     );
     return true;
   }

@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { ref } from "vue";
 import { useAccount } from "~/composables/useAccount";
+// @sentry/nuxt is mocked once, globally, in tests/setup.ts — see that file's
+// comment for why a module-scoped mock here instead would silently miss the
+// calls app/lib/sentry.ts makes.
+import * as SentrySDK from "@sentry/nuxt";
+import { mockSentryScope } from "../setup";
 
 const mockFetch = vi.fn();
 const mockGetToken = vi.fn();
@@ -60,12 +65,17 @@ describe("useAccount", () => {
 
   it("returns false and sets an error when the request fails", async () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    mockFetch.mockRejectedValue(new Error("boom"));
+    const requestError = new Error("boom");
+    mockFetch.mockRejectedValue(requestError);
     const { deleteAccount, error } = useAccount();
     const result = await deleteAccount();
     expect(result).toBe(false);
     expect(error.value).toMatch(/Failed to delete/);
     expect(errorSpy).toHaveBeenCalled();
+    expect(SentrySDK.captureException).toHaveBeenCalledWith(requestError);
+    expect(mockSentryScope.setExtras).toHaveBeenCalledWith(
+      expect.objectContaining({ context: "account-deletion" }),
+    );
     errorSpy.mockRestore();
   });
 

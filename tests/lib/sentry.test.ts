@@ -1,18 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-// Captured scope from the mock so tests can assert on setExtras calls.
-const mockScope = { setExtras: vi.fn() };
-
-// Mock @sentry/nuxt before importing the module under test so the real SDK is
-// never loaded during unit tests.
-vi.mock("@sentry/nuxt", () => ({
-  withScope: vi.fn((callback: (_scope: typeof mockScope) => unknown) => {
-    return callback(mockScope);
-  }),
-  captureException: vi.fn(() => "event-id-exception"),
-  captureMessage: vi.fn(() => "event-id-message"),
-  setUser: vi.fn(),
-}));
+// @sentry/nuxt is mocked once, globally, in tests/setup.ts — every test file
+// (this one included) transitively loads app/lib/sentry.ts via the eager
+// `useAppearanceStore` import in that setup file, so a module-scoped mock
+// declared here instead would bind to a *different* mock instance than the
+// one app/lib/sentry.ts actually calls, and every assertion below would
+// silently see zero calls. Reuse the shared scope so `setExtras` assertions
+// still work.
+import { mockSentryScope as mockScope } from "../setup";
 
 import * as SentrySDK from "@sentry/nuxt";
 import {

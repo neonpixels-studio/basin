@@ -4,6 +4,7 @@
 // forces this via Clerk reverification, then retries with a fresh token.
 import type { H3Event } from "h3";
 import { getFactorVerificationAgesMinutes } from "./clerk";
+import { captureMessage } from "../../app/lib/sentry";
 
 // Machine-readable code the client matches to trigger Clerk's reverification
 // flow. Kept in sync with REVERIFICATION_REQUIRED_CODE in
@@ -38,6 +39,10 @@ export function assertRecentReverification(
     // distinct from an ordinary stale session, which carries a real age below.
     console.error(
       "Clerk `fva` claim unavailable; reverification gate cannot evaluate a factor age and is rejecting the request.",
+    );
+    captureMessage(
+      "Clerk `fva` claim unavailable; reverification gate cannot evaluate a factor age and is rejecting the request.",
+      { actionDescription },
     );
     throw reverificationRequiredError(actionDescription);
   }

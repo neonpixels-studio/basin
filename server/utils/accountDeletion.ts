@@ -10,6 +10,7 @@ import { deleteClerkUser } from "./clerk";
 import { deleteBillingRecords } from "./subscriptions";
 import { recordDeletionTombstone } from "./tombstone";
 import { hashProviderId } from "./tombstoneHash";
+import { captureException } from "../../app/lib/sentry";
 
 // Order matters:
 //   1. Delete the Stripe customer while the `subscriptions` row still exists —
@@ -67,6 +68,10 @@ async function purgeAccountData(user: DbUser): Promise<void> {
       `Stripe billing was purged for user ${user.id} but recording the deletion tombstone failed; the users row is still intact and this is retryable:`,
       caughtError,
     );
+    captureException(caughtError, {
+      stage: "record-deletion-tombstone",
+      userId: user.id,
+    });
     throw caughtError;
   }
   try {
@@ -76,6 +81,10 @@ async function purgeAccountData(user: DbUser): Promise<void> {
       `Stripe billing was purged and the deletion tombstone written for user ${user.id}, but deleting the users row failed; the users row is still present and must be reconciled (retry is safe):`,
       caughtError,
     );
+    captureException(caughtError, {
+      stage: "delete-users-row",
+      userId: user.id,
+    });
     throw caughtError;
   }
 }
@@ -97,6 +106,10 @@ export async function deleteUserAccount(
       `Account data deleted for user ${user.id}, but removing the Clerk identity ${user.providerId} failed; reconcile manually (delete its deletion_tombstones row if the identity is kept, else it stays locked out until the session-lifetime window elapses):`,
       caughtError,
     );
+    captureException(caughtError, {
+      stage: "delete-clerk-identity",
+      userId: user.id,
+    });
   }
 }
 
