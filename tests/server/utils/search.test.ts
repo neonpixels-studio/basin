@@ -117,13 +117,24 @@ describe("searchFeedItems", () => {
     expect(result.items[0].imageUrl).toBe("https://example.com/image.jpg");
   });
 
-  // Regression: #276. A podcast/video opened from search needs mediaUrl for
-  // the player and mediaDuration for the displayed duration — both are
-  // already selected in feedItems.ts's fetchFeedItems but were missing here.
+  // Regression: #276. The row-to-SearchResult mapping (mapSearchRow) spreads
+  // `...item` through unconditionally, so it would pass mediaUrl/
+  // mediaDuration along even if the select below it never fetched them —
+  // that's the actual bug this closes. Pin the drizzle select() argument
+  // itself (same pattern as the orderBy pin further down in this file) so
+  // deleting the columns from the query fails this test, not just the
+  // mapping.
+  it("selects the media columns so a podcast/video opened from search can play", async () => {
+    await searchFeedItems(1, "testing");
+
+    const selection = mockSelect.mock.calls[0][0];
+    expect(selection.mediaUrl).toBe(feedItems.mediaUrl);
+    expect(selection.mediaDuration).toBe(feedItems.mediaDuration);
+  });
+
   it("includes mediaUrl and mediaDuration in results", async () => {
     const podcastRow = {
       ...mockRow,
-      feedSource: "podcast",
       mediaUrl: "https://example.com/episode.mp3",
       mediaDuration: 1800,
     };
