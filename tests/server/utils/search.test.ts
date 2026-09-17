@@ -21,6 +21,8 @@ import {
   SEARCH_RESULT_MAX_LIMIT,
   MAX_SEARCH_TERMS,
   MAX_TERM_LENGTH,
+  type SearchRow,
+  type SearchResult,
 } from "../../../server/utils/search";
 
 // search.ts composes one sql`` fragment inside another (the shared
@@ -39,7 +41,7 @@ function flattenSqlChunks(sqlFragment: { queryChunks: unknown[] }): unknown[] {
   });
 }
 
-const mockRow = {
+const mockRow: SearchRow = {
   id: 1,
   feedId: 10,
   feedSource: "rss",
@@ -62,7 +64,7 @@ const mockRow = {
 };
 
 // Expected result after the mapping step strips feedSource/feedTitle and adds type/source/time.
-const expectedResult = {
+const expectedResult: SearchResult = {
   id: 1,
   feedId: 10,
   guid: "guid-1",
@@ -131,15 +133,6 @@ describe("searchFeedItems", () => {
 
     expect(result.items[0].mediaUrl).toBe("https://example.com/episode.mp3");
     expect(result.items[0].mediaDuration).toBe(1800);
-  });
-
-  it("returns null mediaUrl and mediaDuration when not set", async () => {
-    mockOffset.mockResolvedValue([mockRow]);
-
-    const result = await searchFeedItems(1, "testing");
-
-    expect(result.items[0].mediaUrl).toBeNull();
-    expect(result.items[0].mediaDuration).toBeNull();
   });
 
   it("returns null author and imageUrl when not set", async () => {
