@@ -55,6 +55,8 @@ const mockRow = {
   readAt: null,
   starred: false,
   savedAt: null,
+  mediaUrl: null,
+  mediaDuration: null,
   createdAt: null,
   updatedAt: null,
 };
@@ -74,6 +76,8 @@ const expectedResult = {
   readAt: null,
   starred: false,
   savedAt: null,
+  mediaUrl: null,
+  mediaDuration: null,
   createdAt: null,
   updatedAt: null,
   type: "article",
@@ -109,6 +113,33 @@ describe("searchFeedItems", () => {
 
     expect(result.items[0].author).toBe("Jane Doe");
     expect(result.items[0].imageUrl).toBe("https://example.com/image.jpg");
+  });
+
+  // Regression: #276. A podcast/video opened from search needs mediaUrl for
+  // the player and mediaDuration for the displayed duration — both are
+  // already selected in feedItems.ts's fetchFeedItems but were missing here.
+  it("includes mediaUrl and mediaDuration in results", async () => {
+    const podcastRow = {
+      ...mockRow,
+      feedSource: "podcast",
+      mediaUrl: "https://example.com/episode.mp3",
+      mediaDuration: 1800,
+    };
+    mockOffset.mockResolvedValue([podcastRow]);
+
+    const result = await searchFeedItems(1, "testing");
+
+    expect(result.items[0].mediaUrl).toBe("https://example.com/episode.mp3");
+    expect(result.items[0].mediaDuration).toBe(1800);
+  });
+
+  it("returns null mediaUrl and mediaDuration when not set", async () => {
+    mockOffset.mockResolvedValue([mockRow]);
+
+    const result = await searchFeedItems(1, "testing");
+
+    expect(result.items[0].mediaUrl).toBeNull();
+    expect(result.items[0].mediaDuration).toBeNull();
   });
 
   it("returns null author and imageUrl when not set", async () => {
