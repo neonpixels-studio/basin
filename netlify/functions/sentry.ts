@@ -34,6 +34,17 @@ export function initSentry(): void {
 // event captured moments earlier would otherwise never actually leave the
 // process. Call this on every exit path of the handler (success or failure)
 // after initSentry() has run.
+//
+// Never throws: this runs from a bare `finally` in the caller, so a rejected
+// flush (a transport error, a client in a bad state) must not replace
+// whatever error the handler was already failing with — that would corrupt
+// the async workload's retry classification (e.g. turning a non-retryable
+// ErrorDoNotRetry into a generic, retried failure) after a permanent-failure
+// record may already have been written for it.
 export async function flushSentry(): Promise<void> {
-  await Sentry.flush(FLUSH_TIMEOUT_MS);
+  try {
+    await Sentry.flush(FLUSH_TIMEOUT_MS);
+  } catch (flushError) {
+    console.error("Failed to flush Sentry before the worker froze", flushError);
+  }
 }

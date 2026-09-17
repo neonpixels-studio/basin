@@ -618,12 +618,17 @@ async function runSyncFeedEvent(event: SyncFeedEvent): Promise<void> {
 }
 
 export default asyncWorkloadFn<SyncFeedEvent>(async (event) => {
-  // See netlify/functions/sentry.ts: this bundle never loads
-  // sentry.server.config.ts, so blueskyAdapter.ts's Sentry calls need their
-  // own client initialized in this runtime.
-  initSentry();
-
   try {
+    // See netlify/functions/sentry.ts: this bundle never loads
+    // sentry.server.config.ts, so blueskyAdapter.ts's Sentry calls need
+    // their own client initialized in this runtime. Called inside the try
+    // (not ahead of it): initSentry() calls loadEnv(), and before this
+    // change env loading happened inside processSyncFeedEvent() (via
+    // createDb()), where a failure lands in runSyncFeedEvent's own catch and
+    // gets persisted through recordPermanentFailure(). Calling it outside
+    // the try would let that same class of failure bypass both the failure
+    // record and the flush below.
+    initSentry();
     await runSyncFeedEvent(event);
   } finally {
     // Runs on every exit path (success, or runSyncFeedEvent re-throwing) —

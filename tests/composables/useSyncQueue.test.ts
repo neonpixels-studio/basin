@@ -5,6 +5,7 @@ import { syncQueueStore } from "~/composables/syncQueueStore";
 // comment for why a module-scoped mock here instead would silently miss the
 // calls app/lib/sentry.ts makes.
 import * as SentrySDK from "@sentry/nuxt";
+import { mockSentryScope } from "../setup";
 
 vi.mock("~/composables/syncQueueStore", () => ({
   syncQueueStore: {
@@ -369,6 +370,50 @@ describe("useSyncQueue", () => {
         pendingItemsError,
       );
       expect(failedCount.value).toBe(2);
+    });
+
+    it("resolves (and reports each failure once, under its own stage) when both reading pending items and refreshing the count fail", async () => {
+      // The uncovered path this guards: refreshing the count from the catch
+      // path used to be unguarded, so a countFailedItems() rejection here
+      // (on an otherwise-healthy connection) would itself become an
+      // unhandled rejection out of flushSyncQueue() — exactly what the outer
+      // try/catch exists to prevent.
+      const pendingItemsError = new Error("object store missing");
+      const countError = new Error("count read also failed");
+      vi.mocked(syncQueueStore.getPendingItems).mockRejectedValue(
+        pendingItemsError,
+      );
+      vi.mocked(syncQueueStore.countFailedItems).mockRejectedValue(countError);
+
+      const { flushSyncQueue } = useSyncQueue();
+      await expect(flushSyncQueue()).resolves.toBeUndefined();
+
+      expect(SentrySDK.captureException).toHaveBeenCalledTimes(2);
+      expect(SentrySDK.captureException).toHaveBeenCalledWith(
+        pendingItemsError,
+      );
+      expect(SentrySDK.captureException).toHaveBeenCalledWith(countError);
+    });
+
+    it("labels a happy-path count-refresh failure with its own stage, not the flush pass's", async () => {
+      const happyPathCountError = new Error("count read failed");
+      vi.mocked(syncQueueStore.getPendingItems).mockResolvedValue([]);
+      vi.mocked(syncQueueStore.countFailedItems).mockRejectedValue(
+        happyPathCountError,
+      );
+
+      const { flushSyncQueue } = useSyncQueue();
+      await expect(flushSyncQueue()).resolves.toBeUndefined();
+
+      expect(SentrySDK.captureException).toHaveBeenCalledTimes(1);
+      expect(SentrySDK.captureException).toHaveBeenCalledWith(
+        happyPathCountError,
+      );
+      expect(mockSentryScope.setExtras).toHaveBeenCalledWith(
+        expect.objectContaining({
+          stage: "sync-queue-refresh-failed-count",
+        }),
+      );
     });
   });
 

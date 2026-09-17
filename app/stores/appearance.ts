@@ -22,16 +22,6 @@ function cacheKeyFor(userId: string): string {
   return `${APPEARANCE_CACHE_PREFIX}:${userId}`;
 }
 
-// Reduces an ofetch/$fetch save failure to a bare message before it reaches
-// Sentry extras — the raw value can carry the request's Authorization header
-// and full response body, neither of which belongs in a third-party report.
-function describeSaveError(saveError: unknown): string | null {
-  if (saveError instanceof Error) {
-    return saveError.message;
-  }
-  return saveError === null ? null : String(saveError);
-}
-
 function readCachedSettings(userId: string): Record<string, unknown> | null {
   try {
     const raw = localStorage.getItem(cacheKeyFor(userId));
@@ -228,12 +218,13 @@ export const useAppearanceStore = defineStore("appearance", () => {
       const result = await save(patch);
       if (!result) {
         console.error("Failed to persist appearance settings", saveError.value);
-        // Only a message, never the raw saveError value: it comes from
-        // ofetch/$fetch and can carry the request's Authorization header and
-        // full response body — the same class of leak as sending an
-        // unredacted error object anywhere else in this change.
+        // saveError.value is always the same static string (useUserSettings's
+        // save() already reports the real underlying error to Sentry itself —
+        // see its own capture — and never exposes the raw ofetch error here),
+        // so the only extra worth attaching at this layer is which fields
+        // this store attempted to persist.
         captureMessage("Failed to persist appearance settings", {
-          saveError: describeSaveError(saveError.value),
+          patchKeys: Object.keys(patch),
         });
         return;
       }

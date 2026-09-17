@@ -3,6 +3,10 @@ import {
   useUserSettings,
   USER_SETTINGS_DEFAULTS,
 } from "~/composables/useUserSettings";
+// @sentry/nuxt is mocked once, globally, in tests/setup.ts — see that file's
+// comment for why a module-scoped mock here instead would silently miss the
+// calls app/lib/sentry.ts makes.
+import * as SentrySDK from "@sentry/nuxt";
 
 const mockSettings = {
   theme: "dark",
@@ -66,6 +70,14 @@ describe("useUserSettings", () => {
       expect(error.value).toBe("Failed to load settings");
     });
 
+    it("reports the real fetch failure to Sentry — load() itself never rejects, so this is the only place it's visible", async () => {
+      const fetchError = new Error("Network error");
+      vi.stubGlobal("$fetch", vi.fn().mockRejectedValue(fetchError));
+      const { load } = useUserSettings();
+      await load();
+      expect(SentrySDK.captureException).toHaveBeenCalledWith(fetchError);
+    });
+
     it("clears error before each fetch", async () => {
       vi.stubGlobal("$fetch", vi.fn().mockResolvedValue(mockSettings));
       const { load, error } = useUserSettings();
@@ -101,6 +113,14 @@ describe("useUserSettings", () => {
       const { save, error } = useUserSettings();
       await save({ layout: "grid" });
       expect(error.value).toBe("Failed to save settings");
+    });
+
+    it("reports the real fetch failure to Sentry — callers only ever see the generic error string", async () => {
+      const fetchError = new Error("Network error");
+      vi.stubGlobal("$fetch", vi.fn().mockRejectedValue(fetchError));
+      const { save } = useUserSettings();
+      await save({ layout: "grid" });
+      expect(SentrySDK.captureException).toHaveBeenCalledWith(fetchError);
     });
 
     it("sends a PATCH request to /api/settings/reading", async () => {

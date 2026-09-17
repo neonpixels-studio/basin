@@ -182,7 +182,7 @@ async function runFlushPass(): Promise<void> {
       }
     }
 
-    await refreshFailedCountWith(openedDb);
+    await safeRefreshFailedCountWith(openedDb);
   } catch (error) {
     // useClientDb()/getPendingItems() itself failing (IndexedDB unavailable,
     // quota exceeded) must not become an unhandled rejection — the plugin
@@ -191,12 +191,15 @@ async function runFlushPass(): Promise<void> {
     captureException(error, { stage: "sync-queue-flush-pass" });
     // Only refresh here if useClientDb() itself succeeded: a broken client DB
     // would fail identically again and double-report this one failure to
-    // Sentry (see refreshFailedCount()'s own try/catch below). Any other
-    // failure (a corrupt object store, a failed version upgrade) leaves a
-    // healthy connection worth reading from — without this, the banner would
-    // go stale on exactly those failures instead of just the client-DB ones.
+    // Sentry (see safeRefreshFailedCountWith's own try/catch below). Any
+    // other failure (a corrupt object store, a failed version upgrade)
+    // leaves a healthy connection worth reading from — without this, the
+    // banner would go stale on exactly those failures instead of just the
+    // client-DB ones. Uses the guarded wrapper (not the bare read): a
+    // countFailedItems() failure here must not itself become the unhandled
+    // rejection this whole catch exists to prevent.
     if (openedDb) {
-      await refreshFailedCountWith(openedDb);
+      await safeRefreshFailedCountWith(openedDb);
     }
   }
 }
@@ -205,9 +208,24 @@ async function runFlushPass(): Promise<void> {
 // of useSyncQueue()'s returned surface) so the exported refreshFailedCount()
 // below can stay zero-arg — a caller that ever passed it by reference to an
 // event handler (e.g. `@click="refreshFailedCount"`) would otherwise hand it
-// a DOM event as `db`.
+// a DOM event as `db`. Left unguarded itself so runFlushPass's happy path can
+// let a failure here join the same outer catch instead of being reported
+// with a misleading "flush pass failed" label — see safeRefreshFailedCountWith
+// for the guarded version every other caller uses.
 async function refreshFailedCountWith(db: ClientDb): Promise<void> {
   failedCount.value = await syncQueueStore.countFailedItems(db);
+}
+
+// Same as refreshFailedCountWith, but never throws — the previous count is
+// kept on failure, and the failure is reported once under its own stage
+// rather than becoming (or masquerading as) some other caller's rejection.
+async function safeRefreshFailedCountWith(db: ClientDb): Promise<void> {
+  try {
+    await refreshFailedCountWith(db);
+  } catch (error) {
+    console.error("Failed to refresh the quarantined sync queue count", error);
+    captureException(error, { stage: "sync-queue-refresh-failed-count" });
+  }
 }
 
 // Best-effort read — a database that can't be reached has no failed rows to

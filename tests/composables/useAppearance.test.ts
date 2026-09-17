@@ -478,11 +478,20 @@ describe("useAppearanceStore", () => {
       expect(SentrySDK.captureMessage).toHaveBeenCalledWith(
         "Failed to persist appearance settings",
       );
-      // No userId (see the cache-read test above) and saveError is reduced to
-      // a plain message/string, never the raw ofetch error object — it can
-      // carry the request's Authorization header and full response body.
+      // No userId (see the cache-read test above) and no raw save error
+      // either: useUserSettings.save() already reports the real underlying
+      // error itself, so this layer only needs to say which fields it tried
+      // to persist.
       expect(mockSentryScope.setExtras).toHaveBeenCalledWith({
-        saveError: null,
+        patchKeys: [
+          "theme",
+          "accentColor",
+          "readingFont",
+          "spacing",
+          "radius",
+          "autoplayMediaPreviews",
+          "compactNotifications",
+        ],
       });
     });
   });
