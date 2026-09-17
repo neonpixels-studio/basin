@@ -160,7 +160,7 @@ export interface SearchRow {
 // row-to-SearchResult derivation — including `unread` — without standing up
 // the drizzle query chain. type/source/time/unread come from the shared
 // deriveFeedItemFields (feedItemMapper.ts), which also backs feedItems.ts's
-// mapRow, so the two derivations can't drift apart again.
+// mapRow, so the two derivations can't drift apart again (basin#247).
 export function mapSearchRow({
   feedSource,
   feedTitle,

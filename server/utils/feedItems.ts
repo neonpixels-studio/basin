@@ -117,10 +117,14 @@ function mapRow({
   feedTitle,
   ...row
 }: FeedItemRow): FeedItemResult {
+  const derived = deriveFeedItemFields({ feedSource, feedTitle, ...row });
   return {
     ...row,
-    ...deriveFeedItemFields({ feedSource, feedTitle, ...row }),
-    handle: feedTitle?.trim() || feedSource,
+    ...derived,
+    // Same fallback as `source` — reuse the value derive already computed
+    // instead of re-deriving it, so the two can't diverge if the fallback
+    // rule ever changes.
+    handle: derived.source,
     saved: row.savedAt !== null,
   };
 }

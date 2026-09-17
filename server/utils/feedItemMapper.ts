@@ -15,9 +15,12 @@ export interface FeedItemDerivationInput {
 // Fields derived identically wherever a feed-item row becomes a result —
 // today the dashboard feed (feedItems.ts) and search (search.ts). Previously
 // each file hand-rolled this derivation, which is how `unread` drifted out of
-// sync between them (basin#247). Because deriveFeedItemFields has an explicit
-// return type, adding a field here without updating a call site's result type
-// is a compile error rather than a silent gap in one path.
+// sync between them (basin#247): the field existed on FeedItemResult's mapper
+// but not SearchResult's. That direction is now a hard compile error — a
+// field declared on SearchResult/FeedItemResult that this function doesn't
+// produce fails the object-literal check in mapSearchRow/mapRow — since both
+// spread this function's single, explicitly-typed return value instead of
+// re-deriving the fields by hand.
 export interface FeedItemDerivedFields {
   // Derived from the parent feed's source column — matches SOURCES keys in icons.js
   type: string;
