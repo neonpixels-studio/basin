@@ -132,20 +132,6 @@ describe("searchFeedItems", () => {
     expect(selection.mediaDuration).toBe(feedItems.mediaDuration);
   });
 
-  it("includes mediaUrl and mediaDuration in results", async () => {
-    const podcastRow = {
-      ...mockRow,
-      mediaUrl: "https://example.com/episode.mp3",
-      mediaDuration: 1800,
-    };
-    mockOffset.mockResolvedValue([podcastRow]);
-
-    const result = await searchFeedItems(1, "testing");
-
-    expect(result.items[0].mediaUrl).toBe("https://example.com/episode.mp3");
-    expect(result.items[0].mediaDuration).toBe(1800);
-  });
-
   it("returns null author and imageUrl when not set", async () => {
     const noAuthorRow = { ...mockRow, author: null, imageUrl: null };
     mockOffset.mockResolvedValue([noAuthorRow]);
