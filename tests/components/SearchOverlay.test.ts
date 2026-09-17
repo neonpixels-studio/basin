@@ -4,8 +4,10 @@ import {
   flushPromises,
   enableAutoUnmount,
 } from "@vue/test-utils";
+import { toRaw } from "vue";
 import SearchOverlay from "~/components/SearchOverlay.vue";
 import { useSearch } from "~/composables/useSearch";
+import { useFeedStore } from "~/stores/feed";
 import { mapSearchRow } from "../../server/utils/search";
 
 const { state } = useSearch();
@@ -247,6 +249,44 @@ describe("SearchOverlay", () => {
       await flushPromises();
 
       expect(queueAction).not.toHaveBeenCalled();
+    });
+
+    // Regression: #275. mapSearchRow previously omitted `saved`, so a saved
+    // item opened from search read as unsaved — ReaderDetail's bookmark
+    // button (which reads `item.saved`) showed unfilled. Asserts the store's
+    // activeItem — the exact object ReaderDetail and toggleSave read from —
+    // reflects saved=true. The count-adjustment fix this enables is covered
+    // separately by useFeed.test.ts's toggleSave suite (which already pins
+    // the count math itself); readAt is set here so opening this result
+    // doesn't also exercise the unrelated markRead sync path.
+    it("carries saved=true onto the store's activeItem for an already-saved search result", async () => {
+      const searchResult = mapSearchRow(
+        mockSearchResultRow({
+          readAt: new Date("2026-01-01T00:00:00Z"),
+          savedAt: new Date("2026-01-01T00:00:00Z"),
+        }),
+      );
+
+      const wrapper = await runSearch(
+        vi.fn().mockResolvedValue({ items: [searchResult], nextOffset: null }),
+        "found",
+      );
+      const feedStore = useFeedStore();
+      // Pins the precondition this test relies on: with no matching id
+      // already loaded, openItem's id-reconciliation falls through to the
+      // raw search row itself (see useFeed.test.ts's dedicated fallback
+      // test), so activeItem below is genuinely searchResult, not a
+      // same-shaped stand-in.
+      expect(feedStore.state.items).toHaveLength(0);
+
+      await wrapper.find(".sr-item").trigger("click");
+      await flushPromises();
+
+      // feedStore.state is a Vue reactive() object; a plain object assigned
+      // into it comes back wrapped in a fresh Proxy, so toRaw unwraps it
+      // back to the original target for the identity check.
+      expect(toRaw(feedStore.state.activeItem as object)).toBe(searchResult);
+      expect(feedStore.state.activeItem?.saved).toBe(true);
     });
   });
 

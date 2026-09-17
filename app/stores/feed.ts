@@ -583,7 +583,40 @@ export const useFeedStore = defineStore("feed", () => {
     }
   }
 
-  async function openItem(item: Record<string, unknown>) {
+  // A caller (e.g. SearchOverlay's chooseRow) can hand in a fresh object for
+  // an item that's already loaded in state.items — a separate /api/search
+  // response row, not the same reference. Without reconciling by id first,
+  // toggling unread/saved/starred from that detached copy would adjust the
+  // global count correctly for that one toggle but leave the stale duplicate
+  // in state.items out of sync, so a later toggle on that duplicate would
+  // double-count. Operating on the loaded row (when one exists) instead keeps
+  // every view mutating the same object.
+  //
+  // Deliberately keeps the loaded row's own unread/saved/starred rather than
+  // copying the fresher search row's values onto it: an unsynced optimistic
+  // toggle sitting in the outbox is local state we don't want a stale server
+  // response clobbering. Trade-off: if the item's real saved/unread state
+  // changed elsewhere (another device, another tab) since this page's items
+  // loaded, the search row's fresher value is discarded here and a toggle
+  // against the now-stale loaded value can itself drift from the server by
+  // one count until the next counts reload.
+  // @todo weigh reconciling specific server-owned fields (not the whole row)
+  // from the fresher row onto the loaded one, guarded so it never overwrites
+  // a field with a pending unsynced local change.
+  function resolveOpenedItem(
+    item: Record<string, unknown>,
+  ): Record<string, unknown> {
+    if (item.id === undefined || item.id === null) {
+      return item;
+    }
+    return (
+      state.items.find((row: Record<string, unknown>) => row.id === item.id) ??
+      item
+    );
+  }
+
+  async function openItem(rawItem: Record<string, unknown>) {
+    const item = resolveOpenedItem(rawItem);
     const wasUnread = item.unread === true;
     item.unread = false;
     state.activeItem = item;
