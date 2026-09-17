@@ -18,6 +18,7 @@ import {
   fetchFeedItemCounts,
   FEED_ITEMS_DEFAULT_LIMIT,
   FEED_ITEMS_MAX_LIMIT,
+  type FeedItemRow,
 } from "../../../server/utils/feedItems";
 
 // Render the drizzle SQL passed to a mocked .where() into real SQL so filter
@@ -29,7 +30,9 @@ function renderWhere(): { sql: string; params: unknown[] } {
   return dialect.sqlToQuery(mockWhere.mock.calls[0][0]);
 }
 
-const mockRow = {
+// Typed against FeedItemRow (exported by feedItems.ts) so a misspelled key
+// here fails to compile instead of silently being accepted.
+const mockRow: FeedItemRow = {
   id: 1,
   feedId: 10,
   feedSource: "rss",
@@ -176,6 +179,12 @@ describe("fetchFeedItems", () => {
     mockOffset.mockResolvedValue([mockRow]);
     const result = await fetchFeedItems(1, {});
     expect(result.items[0].handle).toBe("Test Feed");
+  });
+
+  it("falls back to feedSource for handle when feedTitle is blank", async () => {
+    mockOffset.mockResolvedValue([{ ...mockRow, feedTitle: "   " }]);
+    const result = await fetchFeedItems(1, {});
+    expect(result.items[0].handle).toBe("rss");
   });
 
   it("clamps limit to the maximum allowed value", async () => {

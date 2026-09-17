@@ -12,25 +12,11 @@ export interface FeedItemDerivationInput {
   readAt: Date | null;
 }
 
-// Fields derived identically wherever a feed-item row becomes a result —
-// today the dashboard feed (feedItems.ts) and search (search.ts). Previously
-// each file hand-rolled this derivation, which is how `unread` drifted out of
-// sync between them (basin#247): the field existed on FeedItemResult's mapper
-// but not SearchResult's. Both mapSearchRow and mapRow now spread this
-// function's single, explicitly-typed return value instead of re-deriving
-// the fields by hand, so the four fields below can't be computed differently
-// between the two paths again. The guarantee is one-directional: a
-// SearchResult/FeedItemResult field this function doesn't produce is a
-// missing-property compile error at the call site (the direction #247 broke
-// in); a field only added here and never referenced by a result type is not
-// itself an error, since TypeScript doesn't excess-property-check spread
-// properties.
-//
-// Two call sites, not three — this deliberately abstracts before the rule of
-// three, because the duplication had already caused a shipped bug (basin#247)
-// rather than being merely repeated code; contrast search.ts's
-// clampSearchLimit, which waits for a third caller because its duplication
-// hasn't caused one.
+// Shared by feedItems.ts's mapRow and search.ts's mapSearchRow so the two
+// can't derive these fields differently again (basin#247, where `unread`
+// drifted between them). Both spread this function's return value; a field
+// declared on SearchResult/FeedItemResult that this function doesn't produce
+// is a missing-property compile error at the call site.
 export interface FeedItemDerivedFields {
   // Derived from the parent feed's source column — matches SOURCES keys in icons.js
   type: string;

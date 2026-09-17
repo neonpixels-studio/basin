@@ -179,12 +179,9 @@ export function mapSearchRow(row: SearchRow): SearchResult {
     savedAt: row.savedAt,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
-    ...deriveFeedItemFields({
-      feedSource: row.feedSource,
-      feedTitle: row.feedTitle,
-      publishedAt: row.publishedAt,
-      readAt: row.readAt,
-    }),
+    // Passing the row itself (not a hand-copied subset) means the four
+    // derived fields can never be wired from the wrong column here.
+    ...deriveFeedItemFields(row),
   };
 }
 

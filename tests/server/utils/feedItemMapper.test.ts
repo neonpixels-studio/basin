@@ -85,6 +85,3 @@ describe("deriveFeedItemFields", () => {
     ).toBe(false);
   });
 });
-
-// See the FeedItemDerivedFields doc comment (server/utils/feedItemMapper.ts)
-// for the exact shape of the compile-time guarantee this refactor gives.

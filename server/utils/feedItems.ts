@@ -115,12 +115,9 @@ export interface FeedItemRow {
 // per-source handle, and search.ts doesn't yet expose `saved`), so they stay
 // local to this mapper.
 function mapRow(row: FeedItemRow): FeedItemResult {
-  const derived = deriveFeedItemFields({
-    feedSource: row.feedSource,
-    feedTitle: row.feedTitle,
-    publishedAt: row.publishedAt,
-    readAt: row.readAt,
-  });
+  // Passing the row itself (not a hand-copied subset) means the four
+  // derived fields can never be wired from the wrong column here.
+  const derived = deriveFeedItemFields(row);
   return {
     id: row.id,
     feedId: row.feedId,
