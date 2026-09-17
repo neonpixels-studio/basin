@@ -158,17 +158,33 @@ export interface SearchRow {
 
 // Extracted so tests (and any future caller) can exercise the exact
 // row-to-SearchResult derivation — including `unread` — without standing up
-// the drizzle query chain. type/source/time/unread come from the shared
-// deriveFeedItemFields (feedItemMapper.ts), which also backs feedItems.ts's
-// mapRow, so the two derivations can't drift apart again (basin#247).
-export function mapSearchRow({
-  feedSource,
-  feedTitle,
-  ...item
-}: SearchRow): SearchResult {
+// the drizzle query chain. Enumerates the raw fields explicitly (rather than
+// spreading the row) so an unexpected extra column on the query never leaks
+// into the API response unreviewed. type/source/time/unread come from the
+// shared deriveFeedItemFields — see feedItemMapper.ts for the rationale.
+export function mapSearchRow(row: SearchRow): SearchResult {
   return {
-    ...item,
-    ...deriveFeedItemFields({ feedSource, feedTitle, ...item }),
+    id: row.id,
+    feedId: row.feedId,
+    guid: row.guid,
+    title: row.title,
+    url: row.url,
+    author: row.author,
+    imageUrl: row.imageUrl,
+    content: row.content,
+    tags: row.tags,
+    publishedAt: row.publishedAt,
+    readAt: row.readAt,
+    starred: row.starred,
+    savedAt: row.savedAt,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    ...deriveFeedItemFields({
+      feedSource: row.feedSource,
+      feedTitle: row.feedTitle,
+      publishedAt: row.publishedAt,
+      readAt: row.readAt,
+    }),
   };
 }
 

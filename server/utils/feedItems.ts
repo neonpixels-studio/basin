@@ -107,19 +107,38 @@ export interface FeedItemRow {
   updatedAt: Date | null;
 }
 
-// type/source/time/unread come from the shared deriveFeedItemFields
-// (feedItemMapper.ts), which also backs search.ts's mapSearchRow, so the two
-// derivations can't drift apart again (basin#247). `handle` and `saved` have
-// no search.ts equivalent (search results have no per-source handle, and
-// search.ts doesn't yet expose `saved`), so they stay local to this mapper.
-function mapRow({
-  feedSource,
-  feedTitle,
-  ...row
-}: FeedItemRow): FeedItemResult {
-  const derived = deriveFeedItemFields({ feedSource, feedTitle, ...row });
+// Enumerates the raw fields explicitly (rather than spreading the row) so an
+// unexpected extra column on the query never leaks into the API response
+// unreviewed. type/source/time/unread come from the shared
+// deriveFeedItemFields — see feedItemMapper.ts for the rationale. `handle`
+// and `saved` have no search.ts equivalent (search results have no
+// per-source handle, and search.ts doesn't yet expose `saved`), so they stay
+// local to this mapper.
+function mapRow(row: FeedItemRow): FeedItemResult {
+  const derived = deriveFeedItemFields({
+    feedSource: row.feedSource,
+    feedTitle: row.feedTitle,
+    publishedAt: row.publishedAt,
+    readAt: row.readAt,
+  });
   return {
-    ...row,
+    id: row.id,
+    feedId: row.feedId,
+    guid: row.guid,
+    title: row.title,
+    url: row.url,
+    author: row.author,
+    imageUrl: row.imageUrl,
+    content: row.content,
+    tags: row.tags,
+    publishedAt: row.publishedAt,
+    readAt: row.readAt,
+    starred: row.starred,
+    savedAt: row.savedAt,
+    mediaUrl: row.mediaUrl,
+    mediaDuration: row.mediaDuration,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
     ...derived,
     // Same fallback as `source` — reuse the value derive already computed
     // instead of re-deriving it, so the two can't diverge if the fallback

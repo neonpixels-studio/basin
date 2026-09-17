@@ -86,15 +86,5 @@ describe("deriveFeedItemFields", () => {
   });
 });
 
-// Type-level note on the compile-time guarantee this refactor actually gives:
-// mapSearchRow (search.ts) and mapRow (feedItems.ts) both declare an explicit
-// return type (SearchResult / FeedItemResult) and spread
-// deriveFeedItemFields()'s result into it. TypeScript's excess-property check
-// does not apply to spread properties, so adding a field to
-// FeedItemDerivedFields alone is NOT by itself a compile error at either call
-// site — it silently flows through unused. What IS a hard compile error: a
-// field declared on SearchResult or FeedItemResult that deriveFeedItemFields
-// doesn't produce (a missing-property error on the object literal), which is
-// the direction #247 actually broke in (a field existed on one result type's
-// hand-rolled mapper but not the other's). Keep this comment in sync with
-// server/utils/feedItemMapper.ts if that guarantee's shape changes.
+// See the FeedItemDerivedFields doc comment (server/utils/feedItemMapper.ts)
+// for the exact shape of the compile-time guarantee this refactor gives.
