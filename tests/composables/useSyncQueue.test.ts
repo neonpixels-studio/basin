@@ -333,13 +333,18 @@ describe("useSyncQueue", () => {
   });
 
   describe("flushSyncQueue() outer failure", () => {
-    it("reports to Sentry when the flush pass fails outright (e.g. IndexedDB unavailable)", async () => {
+    it("reports to Sentry exactly once when the flush pass fails outright (e.g. IndexedDB unavailable)", async () => {
+      // mockRejectedValue (not -Once): the client DB stays broken for every
+      // call, including the refresh a naive `finally` would still attempt —
+      // this is what catches a regression back to double-reporting the same
+      // failure once for the flush pass and again for the count refresh.
       const dbError = new Error("IndexedDB unavailable");
-      mockUseClientDb.mockRejectedValueOnce(dbError);
+      mockUseClientDb.mockRejectedValue(dbError);
 
       const { flushSyncQueue } = useSyncQueue();
       await expect(flushSyncQueue()).resolves.toBeUndefined();
 
+      expect(SentrySDK.captureException).toHaveBeenCalledTimes(1);
       expect(SentrySDK.captureException).toHaveBeenCalledWith(dbError);
     });
   });

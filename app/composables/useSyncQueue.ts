@@ -162,33 +162,43 @@ async function processItem(db: ClientDb, item: SyncQueueRow): Promise<boolean> {
   }
 }
 
+// Runs the actual offline-check/pending-loop/refresh sequence, so runFlushPass
+// can wrap it in exactly one try/catch. Refreshing the count is folded into
+// both this function's exits (offline and success) rather than a `finally` on
+// the caller, so a genuine failure below (useClientDb()/getPendingItems()
+// throwing) propagates straight to that one catch instead of also retrying
+// the identically-broken client DB here — which would double-report the same
+// underlying failure to Sentry.
+async function flushPendingItems(): Promise<void> {
+  if (!navigator.onLine) {
+    await refreshFailedCount();
+    return;
+  }
+
+  const db = await useClientDb();
+  const pending = await syncQueueStore.getPendingItems(db);
+
+  for (const item of pending) {
+    const stillRetryable = await processItem(db, item);
+    if (stillRetryable) {
+      break;
+    }
+  }
+
+  await refreshFailedCount(db);
+}
+
 async function runFlushPass(): Promise<void> {
   try {
-    if (!navigator.onLine) {
-      return;
-    }
-
-    const db = await useClientDb();
-    const pending = await syncQueueStore.getPendingItems(db);
-
-    for (const item of pending) {
-      const stillRetryable = await processItem(db, item);
-      if (stillRetryable) {
-        break;
-      }
-    }
+    await flushPendingItems();
   } catch (error) {
     // useClientDb()/getPendingItems() itself failing (IndexedDB unavailable,
     // quota exceeded) must not become an unhandled rejection — the plugin
-    // calls flushSyncQueue() without awaiting or catching it.
+    // calls flushSyncQueue() without awaiting or catching it. Deliberately
+    // does not also call refreshFailedCount() here: it would fail against the
+    // same broken client DB and double-report this one failure.
     console.error("Sync queue flush pass failed", error);
     captureException(error, { stage: "sync-queue-flush-pass" });
-  } finally {
-    // Always runs — including the offline early-return, the outer catch
-    // above, and a user-initiated retryFailedItems() that requeued items
-    // but found nothing (yet) to send — so the banner never reports a
-    // stale count.
-    await refreshFailedCount();
   }
 }
 
@@ -197,10 +207,12 @@ async function runFlushPass(): Promise<void> {
 // (e.g. from the UI banner's onMounted hook) or interrupt a flush pass. It
 // also must not claim zero failures when the read itself is what failed —
 // that would hide real quarantined items — so the previous count is kept.
-async function refreshFailedCount(): Promise<void> {
+// Accepts an already-open `db` so a caller mid-flush-pass reuses its
+// connection instead of opening (and risking failing on) a second one.
+async function refreshFailedCount(db?: ClientDb): Promise<void> {
   try {
-    const db = await useClientDb();
-    failedCount.value = await syncQueueStore.countFailedItems(db);
+    const clientDb = db ?? (await useClientDb());
+    failedCount.value = await syncQueueStore.countFailedItems(clientDb);
   } catch (error) {
     console.error("Failed to refresh the quarantined sync queue count", error);
     captureException(error, { stage: "sync-queue-refresh-failed-count" });

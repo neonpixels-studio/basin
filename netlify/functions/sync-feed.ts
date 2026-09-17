@@ -30,6 +30,7 @@ import type {
   BlueskySessionTokens,
 } from "../../server/utils/blueskyAdapter";
 import { createDb } from "./db";
+import { initSentry } from "./sentry";
 import {
   IntegrationAuthError,
   ServerConfigError,
@@ -595,6 +596,10 @@ async function recordPermanentFailure(
 }
 
 export default asyncWorkloadFn<SyncFeedEvent>(async (event) => {
+  // See netlify/functions/sentry.ts: this bundle never loads
+  // sentry.server.config.ts, so blueskyAdapter.ts's Sentry calls need their
+  // own client initialized in this runtime.
+  initSentry();
   const { userId, feedId } = event.eventData;
 
   try {

@@ -153,7 +153,10 @@ async function upsertFeed(
         `Feed cap enforced at the DB layer for user ${userId}: the app-level pre-check raced and lost, or FREE_PLAN_FEED_LIMIT drifted from migration 0011.`,
         error,
       );
-      captureException(error, { stage: "feed-cap-db-trigger", userId, url });
+      // url is deliberately omitted from the extras: private feed URLs
+      // routinely carry a subscriber auth token in the path or query, and
+      // this diagnosis only needs the user and the trigger that fired.
+      captureException(error, { stage: "feed-cap-db-trigger", userId });
       throw feedLimitExceededError();
     }
     throw error;

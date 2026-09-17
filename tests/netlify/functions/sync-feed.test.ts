@@ -46,6 +46,13 @@ vi.mock("../../../netlify/functions/db", () => ({
   })),
 }));
 
+// initSentry() would otherwise call the real dotenvx-backed loadEnv() on
+// every handler invocation — mock it out the same way createDb() is mocked
+// above, so this suite never touches the filesystem for real env files.
+vi.mock("../../../netlify/functions/sentry", () => ({
+  initSentry: vi.fn(),
+}));
+
 // 32 bytes of hex — a valid AES-256-GCM key. sync-feed.ts imports crypto.ts
 // explicitly (it's a standalone Netlify Function, not a Nitro server route,
 // so it has no auto-import), and here we let the real encrypt/decrypt run

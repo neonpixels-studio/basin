@@ -101,9 +101,16 @@ describe("tombstone", () => {
       expect(SentrySDK.captureMessage).toHaveBeenCalledWith(
         expect.stringContaining("missing deleted_at"),
       );
+      // The raw provider id must never reach Sentry — only the peppered hash
+      // (see tombstoneHash.ts / issue #215), which is what console.error
+      // above (asserted with the raw id) is for.
       expect(mockSentryScope.setExtras).toHaveBeenCalledWith(
-        expect.objectContaining({ providerId: "clerk_gone" }),
+        expect.objectContaining({
+          providerIdHash: hashProviderId("clerk_gone"),
+        }),
       );
+      const [extras] = mockSentryScope.setExtras.mock.calls[0];
+      expect(JSON.stringify(extras)).not.toContain("clerk_gone");
       errorSpy.mockRestore();
     });
 

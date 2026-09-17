@@ -84,9 +84,15 @@ function isTombstoneActive(
     console.error(
       `deletion_tombstones row for provider id ${providerId} is missing deleted_at; blocking re-creation until reconciled`,
     );
+    // Send the peppered hash, never the raw provider id — this module exists
+    // specifically to keep raw Clerk provider ids out of storage (see the
+    // file header and tombstoneHash.ts), so the raw id must not leak to a
+    // third party here either. The hash is what identifies the row anyway;
+    // the raw id already reached first-party logs via console.error above,
+    // where the reconciliation this message asks for actually happens.
     captureMessage(
       "deletion_tombstones row is missing deleted_at; blocking re-creation until reconciled",
-      { providerId },
+      { providerIdHash: hashProviderId(providerId) },
     );
     return true;
   }

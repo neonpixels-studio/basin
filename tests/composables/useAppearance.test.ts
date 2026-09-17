@@ -79,6 +79,11 @@ describe("useAppearanceStore", () => {
     store.state.reading = "mono";
     store.state.density = "cozy";
     store.state.radius = "sharp";
+    // The Sentry SDK is mocked once, globally, in tests/setup.ts (module
+    // mocks are shared across the whole file) — clear its call history per
+    // test so an earlier test's captureException/captureMessage/setExtras
+    // calls can't make a later test's assertion pass on stale data.
+    vi.clearAllMocks();
   });
 
   describe("themeIcon", () => {
@@ -162,6 +167,9 @@ describe("useAppearanceStore", () => {
     afterEach(() => {
       vi.unstubAllGlobals();
       localStorage.clear();
+      // Restores the console.error spies several tests below install without
+      // ever calling .mockRestore() themselves.
+      vi.restoreAllMocks();
     });
 
     it("preserves a field edited mid-fetch while still applying untouched fields from the DB response", async () => {
@@ -452,12 +460,14 @@ describe("useAppearanceStore", () => {
       await flushScheduledPersist();
 
       expect(save).toHaveBeenCalledTimes(1);
+      expect(SentrySDK.captureMessage).toHaveBeenCalledTimes(1);
       expect(SentrySDK.captureMessage).toHaveBeenCalledWith(
         "Failed to persist appearance settings",
       );
-      expect(mockSentryScope.setExtras).toHaveBeenCalledWith(
-        expect.objectContaining({ userId: "user_dirty_flag_test" }),
-      );
+      expect(mockSentryScope.setExtras).toHaveBeenCalledWith({
+        userId: "user_dirty_flag_test",
+        saveError: null,
+      });
     });
   });
 });
