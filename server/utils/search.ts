@@ -1,7 +1,6 @@
 import { sql, eq, desc } from "drizzle-orm";
 import { feedItems, feeds } from "../db/schema";
-import { FEED_SOURCE_TO_ITEM_TYPE } from "../../app/utils/feedSources";
-import { formatRelativeTime } from "../../app/utils/feedTime";
+import { deriveFeedItemFields } from "./feedItemMapper";
 
 // Default page size for a search request. No longer a hard ceiling on how many
 // results a query can ever surface — callers page past it via limit/offset.
@@ -128,7 +127,7 @@ export interface SearchResult {
   savedAt: Date | null;
   createdAt: Date | null;
   updatedAt: Date | null;
-  // Derived the same way as FeedItemResult.unread (feedItems.ts) so any
+  // Derived by the shared deriveFeedItemFields (feedItemMapper.ts) so any
   // consumer that keys off `unread` — e.g. the feed store's openItem — behaves
   // identically whether the item came from the dashboard feed or search.
   unread: boolean;
@@ -159,7 +158,9 @@ export interface SearchRow {
 
 // Extracted so tests (and any future caller) can exercise the exact
 // row-to-SearchResult derivation — including `unread` — without standing up
-// the drizzle query chain. Mirrors feedItems.ts's mapRow.
+// the drizzle query chain. type/source/time/unread come from the shared
+// deriveFeedItemFields (feedItemMapper.ts), which also backs feedItems.ts's
+// mapRow, so the two derivations can't drift apart again.
 export function mapSearchRow({
   feedSource,
   feedTitle,
@@ -167,10 +168,7 @@ export function mapSearchRow({
 }: SearchRow): SearchResult {
   return {
     ...item,
-    type: FEED_SOURCE_TO_ITEM_TYPE[feedSource] ?? feedSource,
-    source: feedTitle?.trim() || feedSource,
-    time: formatRelativeTime(item.publishedAt),
-    unread: item.readAt === null,
+    ...deriveFeedItemFields({ feedSource, feedTitle, ...item }),
   };
 }
 

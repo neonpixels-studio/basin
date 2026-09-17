@@ -1,7 +1,7 @@
 import { desc, eq, and, sql, inArray, type SQL } from "drizzle-orm";
 import { feedItems, feeds } from "../db/schema";
 import { FEED_SOURCE_TO_ITEM_TYPE } from "../../app/utils/feedSources";
-import { formatRelativeTime } from "../../app/utils/feedTime";
+import { deriveFeedItemFields } from "./feedItemMapper";
 import {
   SAVED_FILTER,
   STARRED_FILTER,
@@ -83,7 +83,9 @@ function feedItemsConditions(
   return conditions;
 }
 
-function mapRow(row: {
+// Exported so tests can build a typo-safe fixture (Partial<FeedItemRow>)
+// instead of a bare Record<string, unknown>. Mirrors search.ts's SearchRow.
+export interface FeedItemRow {
   id: number;
   feedId: number;
   feedSource: string;
@@ -103,30 +105,22 @@ function mapRow(row: {
   mediaDuration: number | null;
   createdAt: Date | null;
   updatedAt: Date | null;
-}): FeedItemResult {
+}
+
+// type/source/time/unread come from the shared deriveFeedItemFields
+// (feedItemMapper.ts), which also backs search.ts's mapSearchRow, so the two
+// derivations can't drift apart again (basin#247). `handle` and `saved` have
+// no search.ts equivalent (search results have no per-source handle, and
+// search.ts doesn't yet expose `saved`), so they stay local to this mapper.
+function mapRow({
+  feedSource,
+  feedTitle,
+  ...row
+}: FeedItemRow): FeedItemResult {
   return {
-    id: row.id,
-    feedId: row.feedId,
-    guid: row.guid,
-    type: FEED_SOURCE_TO_ITEM_TYPE[row.feedSource] ?? row.feedSource,
-    source: row.feedTitle?.trim() || row.feedSource,
-    handle: row.feedTitle?.trim() || row.feedSource,
-    time: formatRelativeTime(row.publishedAt),
-    title: row.title,
-    url: row.url,
-    author: row.author,
-    imageUrl: row.imageUrl,
-    content: row.content,
-    tags: row.tags,
-    publishedAt: row.publishedAt,
-    readAt: row.readAt,
-    starred: row.starred,
-    savedAt: row.savedAt,
-    mediaUrl: row.mediaUrl,
-    mediaDuration: row.mediaDuration,
-    createdAt: row.createdAt,
-    updatedAt: row.updatedAt,
-    unread: row.readAt === null,
+    ...row,
+    ...deriveFeedItemFields({ feedSource, feedTitle, ...row }),
+    handle: feedTitle?.trim() || feedSource,
     saved: row.savedAt !== null,
   };
 }
