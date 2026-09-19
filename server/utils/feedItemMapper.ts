@@ -16,11 +16,10 @@ export interface FeedItemDerivationInput {
 // Shared by feedItems.ts's mapRow and search.ts's mapSearchRow so the two
 // can't derive these fields differently again — basin#247 (`unread`) and
 // basin#281 (`saved`) both drifted between the two mappers before landing
-// here. Both destructure this function's return value field-by-field (never
-// spread), matching FeedItemResult/SearchResult declaring every derived
-// field as required: a field added here without being added to both result
-// interfaces is a missing-property compile error at each mapper's return
-// statement.
+// here. FeedItemResult and SearchResult both `extends` this interface
+// (rather than redeclaring these fields), so a field added here is a
+// missing-property compile error on both result types until each mapper's
+// return statement is updated to supply it.
 export interface FeedItemDerivedFields {
   // Derived from the parent feed's source column — matches SOURCES keys in icons.js
   type: string;
@@ -28,7 +27,9 @@ export interface FeedItemDerivedFields {
   source: string;
   // Short relative time string (e.g. "2h", "3d")
   time: string;
+  // True when the item has never been opened/read
   unread: boolean;
+  // True when the item has been bookmarked/saved
   saved: boolean;
 }
 

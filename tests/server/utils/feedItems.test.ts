@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { PgDialect } from "drizzle-orm/pg-core";
+import { feedItems } from "../../../server/db/schema";
 
 const mockSelect = vi.fn();
 const mockFrom = vi.fn();
@@ -115,6 +116,27 @@ describe("fetchFeedItems", () => {
     mockOffset.mockResolvedValue([mockRow]);
     const result = await fetchFeedItems(1, {});
     expect(result.items).toEqual([expectedResult]);
+  });
+
+  // Regression guard mirroring search.test.ts's equivalent for #275/#276:
+  // every test above feeds a hand-built row straight into the mocked
+  // .offset(), so nothing else pins that the query actually selects these
+  // columns — dropping readAt/savedAt from the projection would leave
+  // row.readAt/savedAt undefined at runtime, deriving unread=false and
+  // saved=true for every item regardless of their real state; dropping
+  // mediaUrl/mediaDuration would silently break podcast/video playback from
+  // the dashboard feed the way #276 broke it from search.
+  it("selects readAt/savedAt and the media columns so derived fields come from real columns, not undefined", async () => {
+    await fetchFeedItems(1, {});
+
+    // Pinned to the exact column objects, not just the key names — a key
+    // present but mis-wired to the wrong column (e.g. `savedAt:
+    // feedItems.readAt`) would still pass an Object.keys-only check.
+    const selection = mockSelect.mock.calls[0][0];
+    expect(selection.readAt).toBe(feedItems.readAt);
+    expect(selection.savedAt).toBe(feedItems.savedAt);
+    expect(selection.mediaUrl).toBe(feedItems.mediaUrl);
+    expect(selection.mediaDuration).toBe(feedItems.mediaDuration);
   });
 
   it("returns empty items array when no rows are found", async () => {
