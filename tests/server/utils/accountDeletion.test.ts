@@ -35,6 +35,14 @@ vi.mock("../../../server/utils/auth", () => ({
 
 vi.stubGlobal("useDb", () => ({ delete: mockDelete }));
 
+// @sentry/nuxt is mocked once, globally, in tests/setup.ts — see that file's
+// comment for why a module-scoped mock here instead would silently miss the
+// calls app/lib/sentry.ts makes. mockSentryScope is the shared `withScope`
+// scope object, since extras are set on the scope, not passed to
+// captureException directly.
+import * as SentrySDK from "@sentry/nuxt";
+import { mockSentryScope } from "../../setup";
+
 import {
   deleteUserAccount,
   deleteAccountByProviderId,
@@ -115,6 +123,13 @@ describe("deleteUserAccount", () => {
       expect.stringContaining("recording the deletion tombstone failed"),
       expect.any(Error),
     );
+    expect(SentrySDK.captureException).toHaveBeenCalledWith(expect.any(Error));
+    expect(mockSentryScope.setExtras).toHaveBeenCalledWith(
+      expect.objectContaining({
+        stage: "record-deletion-tombstone",
+        userId: 7,
+      }),
+    );
     errorSpy.mockRestore();
   });
 
@@ -154,6 +169,10 @@ describe("deleteUserAccount", () => {
       expect.stringContaining("deleting the users row failed"),
       expect.any(Error),
     );
+    expect(SentrySDK.captureException).toHaveBeenCalledWith(expect.any(Error));
+    expect(mockSentryScope.setExtras).toHaveBeenCalledWith(
+      expect.objectContaining({ stage: "delete-users-row", userId: 7 }),
+    );
     errorSpy.mockRestore();
   });
 
@@ -165,6 +184,10 @@ describe("deleteUserAccount", () => {
     ).resolves.toBeUndefined();
     expect(mockDelete).toHaveBeenCalledTimes(1);
     expect(errorSpy).toHaveBeenCalled();
+    expect(SentrySDK.captureException).toHaveBeenCalledWith(expect.any(Error));
+    expect(mockSentryScope.setExtras).toHaveBeenCalledWith(
+      expect.objectContaining({ stage: "delete-clerk-identity", userId: 7 }),
+    );
     errorSpy.mockRestore();
   });
 });

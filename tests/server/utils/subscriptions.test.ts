@@ -4,6 +4,10 @@ import type { SQL } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
 import { neon } from "@neondatabase/serverless";
 import { drizzle } from "drizzle-orm/neon-http";
+// @sentry/nuxt is mocked once, globally, in tests/setup.ts — see that file's
+// comment for why a module-scoped mock here instead would silently miss the
+// calls app/lib/sentry.ts makes.
+import * as SentrySDK from "@sentry/nuxt";
 import * as realSchema from "../../../server/db/schema";
 import {
   processedStripeEvents,
@@ -223,13 +227,15 @@ describe("getOrCreateStripeCustomerId", () => {
       .mockResolvedValueOnce(undefined)
       .mockResolvedValueOnce({ stripeCustomerId: "cus_winner" });
     mockCreateStripeCustomer.mockResolvedValue({ id: "cus_loser" });
-    mockDeleteStripeCustomer.mockRejectedValue(new Error("Stripe timeout"));
+    const cleanupError = new Error("Stripe timeout");
+    mockDeleteStripeCustomer.mockRejectedValue(cleanupError);
     const consoleErrorSpy = vi
       .spyOn(console, "error")
       .mockImplementation(() => {});
     const customerId = await getOrCreateStripeCustomerId(1, "a@b.com");
     expect(customerId).toBe("cus_winner");
     expect(consoleErrorSpy).toHaveBeenCalled();
+    expect(SentrySDK.captureException).toHaveBeenCalledWith(cleanupError);
     consoleErrorSpy.mockRestore();
   });
 });

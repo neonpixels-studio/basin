@@ -2,6 +2,29 @@ import { config } from "@vue/test-utils";
 import { vi, beforeEach } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 
+// Stub the real Sentry SDK for every test file. Several app/server modules
+// (appearance store, useAccount, useSyncQueue, server/utils/*) import
+// app/lib/sentry.ts, which this setup file transitively loads (via the
+// eager `useAppearanceStore` import below) before any test-local `vi.mock`
+// call would normally hoist. A module is only ever evaluated once per test
+// file's module graph, so without a mock registered here first, app/lib/
+// sentry.ts would bind to the real `@sentry/nuxt` package (or, worse, to a
+// *different* mock instance than the one an individual test file asserts
+// against — the two would silently diverge). `mockSentryScope` is exported
+// so tests/lib/sentry.test.ts can assert on `setExtras` directly instead of
+// re-mocking this module itself. Named with the `mock` prefix so Vitest
+// allows referencing it inside the hoisted factory below.
+export const mockSentryScope = { setExtras: vi.fn() };
+
+vi.mock("@sentry/nuxt", () => ({
+  withScope: vi.fn((callback: (_scope: typeof mockSentryScope) => unknown) =>
+    callback(mockSentryScope),
+  ),
+  captureException: vi.fn(),
+  captureMessage: vi.fn(),
+  setUser: vi.fn(),
+}));
+
 // A valid tombstone pepper for every test by default, so any suite that reaches
 // getOrCreateUser or the account-deletion sweep doesn't throw TombstonePepperError.
 // The fail-closed tests override it to "" via vi.stubEnv to assert the throw.

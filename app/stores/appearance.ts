@@ -4,6 +4,7 @@ import type {
   UserSettings,
   UserSettingsPatch,
 } from "~/composables/useUserSettings";
+import { captureException, captureMessage } from "~/lib/sentry";
 
 // Caches the last-applied appearance settings client-side so a returning,
 // signed-in visitor can uncloak immediately instead of waiting on the
@@ -37,6 +38,11 @@ function readCachedSettings(userId: string): Record<string, unknown> | null {
     // access itself, not just on a malformed value — either way, a cache
     // miss is the safe fallback, not a crash.
     console.error("Failed to read cached appearance settings", error);
+    // No userId in the extras: identifyUser() (app/plugins/sentry.client.ts)
+    // already scopes every event to the signed-in Clerk user, and sending the
+    // raw Clerk id again here would be the same class of leak tombstone.ts
+    // (in this same change) deliberately avoids for that identifier.
+    captureException(error, { stage: "appearance-cache-read" });
     return null;
   }
 }
@@ -48,6 +54,7 @@ function writeCachedSettings(userId: string, patch: Record<string, unknown>) {
     // Best-effort cache — a full quota or blocked storage shouldn't break
     // the app, just leave the next load to fall back to the DB fetch.
     console.error("Failed to cache appearance settings", error);
+    captureException(error, { stage: "appearance-cache-write" });
   }
 }
 
@@ -211,6 +218,14 @@ export const useAppearanceStore = defineStore("appearance", () => {
       const result = await save(patch);
       if (!result) {
         console.error("Failed to persist appearance settings", saveError.value);
+        // saveError.value is always the same static string (useUserSettings's
+        // save() already reports the real underlying error to Sentry itself —
+        // see its own capture — and never exposes the raw ofetch error here),
+        // so the only extra worth attaching at this layer is which fields
+        // this store attempted to persist.
+        captureMessage("Failed to persist appearance settings", {
+          patchKeys: Object.keys(patch),
+        });
         return;
       }
       writeCachedSettings(userId, patch);
@@ -374,6 +389,7 @@ export const useAppearanceStore = defineStore("appearance", () => {
         ready.value = true;
       } catch (error) {
         console.error("Discarding unusable cached appearance settings", error);
+        captureException(error, { stage: "appearance-cache-discard" });
         try {
           localStorage.removeItem(cacheKeyFor(userId));
         } catch (removeError) {
@@ -384,6 +400,7 @@ export const useAppearanceStore = defineStore("appearance", () => {
             "Failed to clear unusable cached appearance settings",
             removeError,
           );
+          captureException(removeError, { stage: "appearance-cache-clear" });
         }
       }
     }
@@ -427,6 +444,7 @@ export const useAppearanceStore = defineStore("appearance", () => {
       // account that's already loaded.
       if (!persistence?.isTornDown) {
         console.error("Failed to load appearance settings", error);
+        captureException(error, { stage: "appearance-load-from-db" });
         loadedUserId = undefined;
       }
     } finally {
