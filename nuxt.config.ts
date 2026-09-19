@@ -31,6 +31,35 @@ const MIN_TOMBSTONE_PEPPER_LENGTH = 16;
 // ever touches an integration without a key.
 const isProductionBuild = process.env.NODE_ENV === "production";
 
+// Google Analytics (GA4) measurement ID. Read INLINE from process.env like the
+// other baked values so it's set per environment: it's only present in
+// .env.production, so preview (.env.dev), local (.env), and e2e (.env.e2e)
+// builds bake an empty string and skip the gtag.js snippet entirely (see
+// googleAnalyticsHeadScripts below). Mirrors the NUXT_DISABLE_SIGNUPS
+// prod-only pattern.
+const GA_MEASUREMENT_ID = process.env.NUXT_PUBLIC_GA_MEASUREMENT_ID || "";
+
+// The gtag.js loader + init pair, or nothing when no measurement ID is set for
+// this environment — so Google Analytics loads in production only.
+function googleAnalyticsHeadScripts() {
+  if (!GA_MEASUREMENT_ID) {
+    return [];
+  }
+
+  return [
+    {
+      async: true,
+      src: `https://www.googletagmanager.com/gtag/js?id=${GA_MEASUREMENT_ID}`,
+    },
+    {
+      innerHTML: `window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', '${GA_MEASUREMENT_ID}');`,
+    },
+  ];
+}
+
 // A missing or malformed key here would otherwise bake an empty (or invalid)
 // string into the server bundle (see the nitro.replace comment below) and
 // silently ship with integration tokens unencryptable — fail the build
@@ -204,6 +233,7 @@ export default defineNuxtConfig({
             "Every feed you follow — articles, podcasts, videos, posts — in one quiet, chronological place.",
         },
       ],
+      script: googleAnalyticsHeadScripts(),
       link: [
         { rel: "preconnect", href: "https://fonts.googleapis.com" },
         {
