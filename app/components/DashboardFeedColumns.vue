@@ -31,6 +31,7 @@ const state = feedStore.state;
           :class="stagger ? 'stagger' : ''"
           :style="{ '--i': i }"
           @save="feedStore.toggleSave(item)"
+          @star="feedStore.toggleStar(item)"
           @open="feedStore.openItem(item)"
         />
       </div>

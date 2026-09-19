@@ -20,6 +20,7 @@ const nuxtGlobals = {
   useAsyncData: "readonly",
   useState: "readonly",
   navigateTo: "readonly",
+  clearError: "readonly",
   ref: "readonly",
   computed: "readonly",
   watch: "readonly",
@@ -37,13 +38,19 @@ const nuxtGlobals = {
   useClientDb: "readonly",
   useSyncQueue: "readonly",
   useFeeds: "readonly",
+  useAccountExport: "readonly",
+  useAuthHeaders: "readonly",
   useConnections: "readonly",
   useUserSettings: "readonly",
   useBilling: "readonly",
+  useAccount: "readonly",
+  useReverification: "readonly",
+  isReverificationCancelledError: "readonly",
   useUserProfile: "readonly",
   useInputValidation: "readonly",
   useInfiniteScroll: "readonly",
   usePodcastPlayer: "readonly",
+  useMarketingSeo: "readonly",
 };
 
 // Nitro / H3 globals — server-only auto-imports
@@ -67,10 +74,15 @@ const nitroGlobals = {
   useDb: "readonly",
   getOrCreateUser: "readonly",
   buildYouTubeAuthUrl: "readonly",
+  buildYouTubeCallbackUrl: "readonly",
   exchangeCodeForTokens: "readonly",
   getYouTubeChannelHandle: "readonly",
   createBlueskySession: "readonly",
+  deleteBlueskySession: "readonly",
   encryptToken: "readonly",
+  decryptTokenTolerant: "readonly",
+  decryptNullableTokenTolerant: "readonly",
+  revokeGoogleToken: "readonly",
 };
 
 export default [
@@ -134,7 +146,9 @@ export default [
     },
   },
   {
-    files: ["app/pages/**/*.vue", "app/layouts/**/*.vue"],
+    // Nuxt reserves single-word filenames for pages, layouts, and the root
+    // error page — the multi-word rule can't apply to framework-mandated names.
+    files: ["app/pages/**/*.vue", "app/layouts/**/*.vue", "app/error.vue"],
     rules: {
       "vue/multi-word-component-names": "off",
     },

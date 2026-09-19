@@ -52,6 +52,9 @@ export async function seedE2eData(
         title: "E2E Article One",
         url: "https://e2e.example.com/1",
         publishedAt: new Date(),
+        // Saved (but not starred) so the Saved filter has exactly one match and
+        // the Starred filter excludes it — exercising server-side filtering.
+        savedAt: new Date(),
       },
       {
         feedId: feed.id,
@@ -59,6 +62,8 @@ export async function seedE2eData(
         title: "E2E Article Two",
         url: "https://e2e.example.com/2",
         publishedAt: new Date(Date.now() - 3_600_000),
+        // Starred (but not saved) so the Starred filter has exactly one match.
+        starred: true,
       },
     ])
     .onConflictDoUpdate({

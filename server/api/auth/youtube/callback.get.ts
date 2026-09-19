@@ -1,4 +1,5 @@
 import { integrations } from "../../../db/schema";
+import { createYouTubeFeedsForUser } from "../../../utils/integrationFeedCreation";
 import { clearFeedSyncFailures } from "../../../utils/feedSyncStatus";
 import { SYNC_STATUS } from "../../../utils/syncStatus";
 
@@ -19,8 +20,7 @@ export default defineEventHandler(async (event) => {
 
   deleteCookie(event, "oauth_state_youtube");
 
-  const { origin } = getRequestURL(event);
-  const redirectUri = `${origin}/api/auth/youtube/callback`;
+  const redirectUri = buildYouTubeCallbackUrl();
 
   const tokens = await exchangeCodeForTokens(String(code), redirectUri);
   const handle = await getYouTubeChannelHandle(tokens.access_token);
@@ -67,6 +67,33 @@ export default defineEventHandler(async (event) => {
   // A working connection also clears any feed that previously failed
   // against it, instead of leaving "Needs attention" up until the next sync.
   await clearFeedSyncFailures(db, event.context.user.id, "youtube");
+
+  // Without this, a connected YouTube account is a dead end: the sync engine
+  // (netlify/functions/sync-feed.ts) only ever acts on feeds rows, and
+  // nothing above this line ever created one. A failure here (the
+  // subscriptions API erroring, every channel hitting the Free-plan cap)
+  // must not undo an already-successful connect, so it's logged rather than
+  // thrown — the user can retry a sync-triggering action later. This is
+  // operator-visible only for now (no UI surfacing of a partial/failed feed
+  // creation yet) — see the PR's follow-up suggestions.
+  try {
+    const { upserted, skipped } = await createYouTubeFeedsForUser(
+      event.context.user.id,
+      tokens.access_token,
+    );
+    if (skipped.length > 0) {
+      console.error(
+        "Some YouTube channels were skipped during feed creation:",
+        {
+          userId: event.context.user.id,
+          upserted,
+          skipped,
+        },
+      );
+    }
+  } catch (error) {
+    console.error("Failed to create YouTube feeds from subscriptions:", error);
+  }
 
   return sendRedirect(event, "/settings/connections");
 });

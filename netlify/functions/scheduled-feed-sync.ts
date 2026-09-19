@@ -1,6 +1,6 @@
 import type { Config } from "@netlify/functions";
 import { AsyncWorkloadsClient } from "@netlify/async-workloads";
-import { and, lt, or, isNull, inArray } from "drizzle-orm";
+import { and, eq, lt, or, isNull, inArray } from "drizzle-orm";
 import { feeds } from "../../server/db/schema";
 import { createDb } from "./db";
 import { SYNC_FEED_EVENT_NAME, DEBOUNCE_WINDOW_MS } from "./types";
@@ -13,12 +13,22 @@ const SYNCABLE_SOURCE_TYPES = ["rss", "podcast", "youtube", "bluesky"] as const;
 
 async function fetchDueFeeds(): Promise<DueFeed[]> {
   const db = createDb();
-  const cutoffTime = new Date(Date.now() - DEBOUNCE_WINDOW_MS);
+  const now = new Date();
+  const cutoffTime = new Date(now.getTime() - DEBOUNCE_WINDOW_MS);
 
   return db.query.feeds.findMany({
     where: and(
       inArray(feeds.source, [...SYNCABLE_SOURCE_TYPES]),
       or(isNull(feeds.lastFetched), lt(feeds.lastFetched, cutoffTime)),
+      // Backoff gate for permanently-failing feeds: a feed whose sync keeps
+      // hitting a permanent error has nextRetryAt pushed into the future
+      // (server/utils/feedSyncBackoff.ts) so it is retried progressively less
+      // often instead of on every tick. A healthy feed has nextRetryAt null
+      // and is never gated here.
+      or(isNull(feeds.nextRetryAt), lt(feeds.nextRetryAt, now)),
+      // Paused sources (over the Free cap after a downgrade) stop pulling new
+      // content until the account upgrades again — see server/utils/feedPause.ts.
+      eq(feeds.paused, false),
     ),
     columns: {
       id: true,

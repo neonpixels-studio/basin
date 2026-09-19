@@ -6,6 +6,7 @@ const {
   mockUpdate,
   mockUpdateSet,
   mockUpdateWhere,
+  mockUpdateReturning,
   mockInsert,
   mockInsertValues,
   mockInsertOnConflict,
@@ -21,6 +22,7 @@ const {
   mockUpdate: vi.fn(),
   mockUpdateSet: vi.fn(),
   mockUpdateWhere: vi.fn(),
+  mockUpdateReturning: vi.fn(),
   mockInsert: vi.fn(),
   mockInsertValues: vi.fn(),
   mockInsertOnConflict: vi.fn(),
@@ -42,6 +44,14 @@ vi.mock("../../../netlify/functions/db", () => ({
     update: mockUpdate,
     insert: mockInsert,
   })),
+}));
+
+// initSentry() would otherwise call the real dotenvx-backed loadEnv() on
+// every handler invocation — mock it out the same way createDb() is mocked
+// above, so this suite never touches the filesystem for real env files.
+vi.mock("../../../netlify/functions/sentry", () => ({
+  initSentry: vi.fn(),
+  flushSentry: vi.fn(),
 }));
 
 // 32 bytes of hex — a valid AES-256-GCM key. sync-feed.ts imports crypto.ts
@@ -98,6 +108,10 @@ vi.mock("@netlify/async-workloads", () => ({
 
 import { eq } from "drizzle-orm";
 import handler from "../../../netlify/functions/sync-feed";
+import {
+  initSentry as mockInitSentry,
+  flushSentry as mockFlushSentry,
+} from "../../../netlify/functions/sentry";
 import { integrations } from "../../../server/db/schema";
 import { TokenRefreshAuthError } from "../../../server/utils/youtubeAdapter";
 import type { BlueskySessionTokens } from "../../../server/utils/blueskyAdapter";
@@ -122,6 +136,7 @@ function makeFeed(overrides: Record<string, unknown> = {}) {
     title: null,
     source: "rss",
     lastFetched: null,
+    paused: false,
     ...overrides,
   };
 }
@@ -133,6 +148,7 @@ function makeYouTubeFeed(overrides: Record<string, unknown> = {}) {
     title: "Test Channel",
     source: "youtube",
     lastFetched: null,
+    paused: false,
     ...overrides,
   };
 }
@@ -195,6 +211,22 @@ function makeVideoItem() {
   };
 }
 
+// Stubs the drizzle update chain used by every describe block here. where()
+// returns a thenable that also carries `.returning()`, so it satisfies both the
+// atomic-increment failure write (which ends in `.returning()`) and every other
+// write (awaited directly). The default RETURNING row stands in for a feed now
+// at one consecutive failure.
+function stubFeedUpdateChain() {
+  mockUpdate.mockReturnValue({ set: mockUpdateSet });
+  mockUpdateSet.mockReturnValue({ where: mockUpdateWhere });
+  mockUpdateWhere.mockReturnValue(
+    Object.assign(Promise.resolve(undefined), {
+      returning: mockUpdateReturning,
+    }),
+  );
+  mockUpdateReturning.mockResolvedValue([{ consecutiveFailures: 1 }]);
+}
+
 describe("sync-feed workload", () => {
   beforeEach(() => {
     vi.resetAllMocks();
@@ -204,9 +236,7 @@ describe("sync-feed workload", () => {
     vi.spyOn(console, "log").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
 
-    mockUpdate.mockReturnValue({ set: mockUpdateSet });
-    mockUpdateSet.mockReturnValue({ where: mockUpdateWhere });
-    mockUpdateWhere.mockResolvedValue(undefined);
+    stubFeedUpdateChain();
 
     mockInsert.mockReturnValue({ values: mockInsertValues });
     mockInsertValues.mockReturnValue({
@@ -266,6 +296,8 @@ describe("sync-feed workload", () => {
       1,
     );
     expect(mockUpdateWhere).toHaveBeenCalledTimes(1);
+    expect(mockInitSentry).toHaveBeenCalled();
+    expect(mockFlushSentry).toHaveBeenCalled();
   });
 
   it("no-ops when within debounce window in scheduled mode", async () => {
@@ -303,6 +335,37 @@ describe("sync-feed workload", () => {
     expect(mockParseRssFeed).toHaveBeenCalledTimes(1);
   });
 
+  it("skips a paused feed on scheduled sync without pulling content", async () => {
+    mockFindFirst.mockResolvedValue(
+      makeFeed({ paused: true, lastFetched: staleFetch() }),
+    );
+
+    await (handler as Function)(makeEvent());
+
+    expect(mockParseRssFeed).not.toHaveBeenCalled();
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  it("skips a paused feed even on an on-demand refresh (pause is not bypassable)", async () => {
+    mockFindFirst.mockResolvedValue(
+      makeFeed({ paused: true, lastFetched: recentFetch() }),
+    );
+
+    await (handler as Function)(
+      makeEvent({
+        eventData: {
+          userId: 1,
+          feedId: 1,
+          sourceType: "rss",
+          mode: "on-demand",
+        },
+      }),
+    );
+
+    expect(mockParseRssFeed).not.toHaveBeenCalled();
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
   it("throws ErrorDoNotRetry for an unsupported sourceType", async () => {
     await expect(
       (handler as Function)(
@@ -316,6 +379,12 @@ describe("sync-feed workload", () => {
         }),
       ),
     ).rejects.toMatchObject({ name: "ErrorDoNotRetry" });
+
+    // flushSentry() must still run on a re-thrown failure — a Netlify
+    // Function's execution environment freezes the instant the handler's
+    // promise settles, so any event queued moments earlier would otherwise
+    // never actually leave the process.
+    expect(mockFlushSentry).toHaveBeenCalled();
   });
 
   it("throws ErrorDoNotRetry when the feed is not found", async () => {
@@ -450,9 +519,7 @@ describe("sync-feed workload — YouTube source", () => {
     vi.spyOn(console, "log").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
 
-    mockUpdate.mockReturnValue({ set: mockUpdateSet });
-    mockUpdateSet.mockReturnValue({ where: mockUpdateWhere });
-    mockUpdateWhere.mockResolvedValue(undefined);
+    stubFeedUpdateChain();
 
     mockInsert.mockReturnValue({ values: mockInsertValues });
     mockInsertValues.mockReturnValue({
@@ -757,9 +824,7 @@ describe("sync-feed workload — permanent failure persistence", () => {
     vi.spyOn(console, "log").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
 
-    mockUpdate.mockReturnValue({ set: mockUpdateSet });
-    mockUpdateSet.mockReturnValue({ where: mockUpdateWhere });
-    mockUpdateWhere.mockResolvedValue(undefined);
+    stubFeedUpdateChain();
 
     mockInsert.mockReturnValue({ values: mockInsertValues });
     mockInsertValues.mockReturnValue({
@@ -818,10 +883,11 @@ describe("sync-feed workload — permanent failure persistence", () => {
       (handler as Function)(makeYouTubeEvent()),
     ).rejects.toMatchObject({ name: "ErrorDoNotRetry" });
 
-    // Only the feed is updated. There is no integration row to mark as
+    // Only the feed is updated (its two failure writes: the atomic increment
+    // and the derived nextRetryAt). There is no integration row to mark as
     // "needs reconnect" — the user was never connected, which
     // SettingsConnections already communicates via connected: false.
-    expect(mockUpdateWhere).toHaveBeenCalledTimes(1);
+    expect(mockUpdateWhere).toHaveBeenCalledTimes(2);
     expect(mockUpdateSet).toHaveBeenCalledWith(
       expect.objectContaining({
         syncStatus: "error",
@@ -840,10 +906,10 @@ describe("sync-feed workload — permanent failure persistence", () => {
       (handler as Function)(makeYouTubeEvent()),
     ).rejects.toMatchObject({ name: "IntegrationAuthError" });
 
-    // One update for the feed, one for the integration: this is an
-    // IntegrationAuthError, since the connected account genuinely needs
-    // re-authorizing.
-    expect(mockUpdateWhere).toHaveBeenCalledTimes(2);
+    // Two updates for the feed (the atomic increment and the derived
+    // nextRetryAt) and one for the integration: this is an IntegrationAuthError,
+    // since the connected account genuinely needs re-authorizing.
+    expect(mockUpdateWhere).toHaveBeenCalledTimes(3);
     expect(mockUpdateSet).toHaveBeenCalledWith(
       expect.objectContaining({
         syncStatus: "error",
@@ -865,9 +931,10 @@ describe("sync-feed workload — permanent failure persistence", () => {
     ).rejects.toMatchObject({ name: "ErrorDoNotRetry" });
 
     // A network flake that exhausted its retries says nothing about the
-    // connected account's health — only the feed is marked, not the
+    // connected account's health — only the feed is marked (its two failure
+    // writes: the atomic increment and the derived nextRetryAt), not the
     // integration.
-    expect(mockUpdateWhere).toHaveBeenCalledTimes(1);
+    expect(mockUpdateWhere).toHaveBeenCalledTimes(2);
   });
 
   it("clears a previously-recorded failure on the next successful sync", async () => {
@@ -943,9 +1010,7 @@ describe("sync-feed workload — Bluesky source", () => {
     vi.spyOn(console, "log").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
 
-    mockUpdate.mockReturnValue({ set: mockUpdateSet });
-    mockUpdateSet.mockReturnValue({ where: mockUpdateWhere });
-    mockUpdateWhere.mockResolvedValue(undefined);
+    stubFeedUpdateChain();
 
     mockInsert.mockReturnValue({ values: mockInsertValues });
     mockInsertValues.mockReturnValue({
@@ -965,6 +1030,7 @@ describe("sync-feed workload — Bluesky source", () => {
       title: "Bluesky timeline",
       source: "bluesky",
       lastFetched: null,
+      paused: false,
       ...overrides,
     };
   }

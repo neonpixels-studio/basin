@@ -17,9 +17,21 @@ vi.mock("../../../server/utils/feedSourceDetector", () => ({
   detectFeedSource: vi.fn(),
 }));
 
-vi.mock("../../../server/utils/feedLimit", () => ({
-  assertWithinFeedLimit: vi.fn(),
-}));
+// Keep isFeedLimitDbError/feedLimitExceededError real (the DB-cap-trigger test
+// below exercises them) and only fake the network-backed pre-check.
+vi.mock("../../../server/utils/feedLimit", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../../../server/utils/feedLimit")>();
+  return { ...actual, assertWithinFeedLimit: vi.fn() };
+});
+
+// @sentry/nuxt is mocked once, globally, in tests/setup.ts — see that file's
+// comment for why a module-scoped mock here instead would silently miss the
+// calls app/lib/sentry.ts makes. mockSentryScope is the shared `withScope`
+// scope object, since extras are set on the scope, not passed to
+// captureException directly.
+import * as SentrySDK from "@sentry/nuxt";
+import { mockSentryScope } from "../../setup";
 
 import { createFeedForUser } from "../../../server/utils/feedCreation";
 import {
@@ -27,7 +39,11 @@ import {
   fetchFeedBody,
 } from "../../../server/utils/feedValidator";
 import { detectFeedSource } from "../../../server/utils/feedSourceDetector";
-import { assertWithinFeedLimit } from "../../../server/utils/feedLimit";
+import {
+  assertWithinFeedLimit,
+  FEED_LIMIT_DB_ERROR_MARKER,
+  FEED_LIMIT_SQLSTATE,
+} from "../../../server/utils/feedLimit";
 
 const mockValidateFeedContent = vi.mocked(validateFeedContent);
 const mockFetchFeedBody = vi.mocked(fetchFeedBody);
@@ -123,19 +139,63 @@ describe("createFeedForUser", () => {
     );
   });
 
-  // Documents pre-existing single-add upsert behavior (unchanged by the OPML
-  // work): re-adding a URL without a sourceOverride resets any existing
-  // override to auto-detected. OPML import calls createFeedForUser without a
-  // sourceOverride for every entry, so re-importing a file containing a feed
-  // the user manually overrode elsewhere will reset that override — this
-  // test locks the behavior in so a future change to it is intentional, not
-  // silent. See the note on createFeedForUser for the full explanation.
-  it("resets an existing sourceOverride to null when re-adding without one", async () => {
+  // The conflict-update set clause covers two behaviors. First (pre-existing
+  // single-add behavior, unchanged by the OPML work): re-adding a URL without a
+  // sourceOverride resets any existing override to auto-detected — OPML import
+  // calls createFeedForUser without a sourceOverride for every entry, so
+  // re-importing a file containing a feed the user manually overrode elsewhere
+  // resets that override. Second: it un-gates the retry backoff (nextRetryAt
+  // null) and clears the failure display state so a repaired feed re-added
+  // after its origin recovered syncs immediately instead of staying backed off
+  // for up to a day. The explicit source/override are asserted too, pinning the
+  // spread order in feedCreation.ts (shared defaults first, call-site values
+  // last) so they can't be silently overridden by a future addition to the
+  // shared state.
+  it("resets sourceOverride and un-gates backoff on re-add", async () => {
     await createFeedForUser(1, "https://example.com/feed.xml");
     expect(mockOnConflictDoUpdate).toHaveBeenCalledWith(
       expect.objectContaining({
-        set: expect.objectContaining({ sourceOverride: null }),
+        set: expect.objectContaining({
+          source: "rss",
+          sourceOverride: null,
+          syncStatus: "ok",
+          syncError: null,
+          syncFailedAt: null,
+          nextRetryAt: null,
+        }),
       }),
     );
+  });
+
+  // consecutiveFailures must be preserved on re-add, not zeroed: validation
+  // proves the URL is reachable, but the un-gated retry is what confirms the
+  // feed actually works. Zeroing here would restart the backoff ramp for a
+  // still-broken feed — see UNGATED_SYNC_STATE in feedSyncBackoff.ts.
+  it("preserves consecutiveFailures on re-add", async () => {
+    await createFeedForUser(1, "https://example.com/feed.xml");
+    const { set } = mockOnConflictDoUpdate.mock.calls[0][0];
+    expect(set).not.toHaveProperty("consecutiveFailures");
+  });
+
+  it("reports to Sentry and maps the DB cap trigger to the same 403 the pre-check throws", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const dbTriggerError = Object.assign(
+      new Error(
+        `insert violates check constraint: ${FEED_LIMIT_DB_ERROR_MARKER}`,
+      ),
+      { code: FEED_LIMIT_SQLSTATE },
+    );
+    mockReturning.mockRejectedValue(dbTriggerError);
+
+    await expect(
+      createFeedForUser(1, "https://example.com/feed.xml"),
+    ).rejects.toMatchObject({ statusCode: 403 });
+
+    expect(errorSpy).toHaveBeenCalled();
+    expect(SentrySDK.captureException).toHaveBeenCalledWith(dbTriggerError);
+    expect(mockSentryScope.setExtras).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 1, stage: "feed-cap-db-trigger" }),
+    );
+    errorSpy.mockRestore();
   });
 });

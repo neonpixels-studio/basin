@@ -1,6 +1,15 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { nextTick, toRaw } from "vue";
 import { setActivePinia, createPinia } from "pinia";
-import { useFeedStore, FEED_SYNC_TIMEOUT_MS } from "~/stores/feed";
+import {
+  useFeedStore,
+  FEED_SYNC_TIMEOUT_MS,
+  FEED_ITEMS_TIMEOUT_MS,
+  MARK_ALL_READ_TIMEOUT_MS,
+  INITIAL_REVEAL_DELAY_MS,
+} from "~/stores/feed";
+import { VALID_MARK_ALL_READ_FILTERS } from "../../server/utils/markAllRead";
+import { mapSearchRow, type SearchRow } from "../../server/utils/search";
 import { makeFeed, makeConnection } from "../fixtures";
 
 const item = (overrides: Record<string, unknown> = {}) => ({
@@ -11,9 +20,8 @@ const item = (overrides: Record<string, unknown> = {}) => ({
   source: "Test",
   handle: "test.com",
   title: "Test Item",
-  excerpt: "Excerpt.",
+  content: "Item body content.",
   time: "1h",
-  meta: "3 min",
   tags: [],
   unread: true,
   saved: false,
@@ -61,6 +69,12 @@ describe("useFeedStore", () => {
     it("counts saved items", () => {
       expect(feed.countFor("saved")).toBe(1);
     });
+
+    it("counts starred items", () => {
+      state.items[0].starred = true;
+      state.items[2].starred = true;
+      expect(feed.countFor("starred")).toBe(2);
+    });
   });
 
   describe("unreadCount", () => {
@@ -91,6 +105,14 @@ describe("useFeedStore", () => {
       state.filter = "saved";
       expect(feed.visibleItems).toHaveLength(1);
       expect(feed.visibleItems.every((i) => i.saved)).toBe(true);
+    });
+
+    it("filters starred items", () => {
+      state.items[1].starred = true;
+      state.items[3].starred = true;
+      state.filter = "starred";
+      expect(feed.visibleItems).toHaveLength(2);
+      expect(feed.visibleItems.every((i) => i.starred)).toBe(true);
     });
 
     it("applies unreadOnly across filter", () => {
@@ -230,46 +252,137 @@ describe("useFeedStore", () => {
     });
   });
 
-  describe("articleBody", () => {
-    it("returns body paragraphs when present", () => {
+  describe("contentParagraphs", () => {
+    it("splits real synced content into paragraphs", () => {
       expect(
-        feed.articleBody({ body: ["Para 1", "Para 2"], excerpt: "Ex" }),
-      ).toEqual(["Para 1", "Para 2"]);
+        feed.contentParagraphs({
+          content: "First paragraph.\n\nSecond paragraph.",
+        }),
+      ).toEqual(["First paragraph.", "Second paragraph."]);
     });
 
-    it("falls back to excerpt when body is empty", () => {
-      const result = feed.articleBody({ body: [], excerpt: "Just an excerpt" });
-      expect(result[0]).toBe("Just an excerpt");
+    it("collapses single (soft-wrap) newlines within a paragraph to spaces", () => {
+      expect(
+        feed.contentParagraphs({ content: "  Line one \n wrapped  " }),
+      ).toEqual(["Line one wrapped"]);
+    });
+
+    it("handles CRLF paragraph breaks from real feeds", () => {
+      expect(
+        feed.contentParagraphs({ content: "First.\r\n\r\nSecond." }),
+      ).toEqual(["First.", "Second."]);
+    });
+
+    it("returns an empty array when content is missing", () => {
+      expect(feed.contentParagraphs({})).toEqual([]);
+    });
+
+    it("returns an empty array when content is a non-string value", () => {
+      expect(feed.contentParagraphs({ content: 42 })).toEqual([]);
+      expect(feed.contentParagraphs({ content: ["a"] })).toEqual([]);
+    });
+
+    it("returns an empty array when content is blank", () => {
+      expect(feed.contentParagraphs({ content: "   \n  " })).toEqual([]);
+    });
+
+    it("returns an empty array for markup content so raw tags are never rendered as text", () => {
+      expect(
+        feed.contentParagraphs({ content: "<iframe src=x></iframe>" }),
+      ).toEqual([]);
+      expect(
+        feed.contentParagraphs({ content: "<p>Handled by contentHtml</p>" }),
+      ).toEqual([]);
+    });
+
+    it("treats prose with a stray angle bracket as plain text, not markup", () => {
+      expect(
+        feed.contentParagraphs({ content: "3 < 5 and 5 > 3 is true" }),
+      ).toEqual(["3 < 5 and 5 > 3 is true"]);
+    });
+
+    it("treats angle-bracketed non-HTML identifiers as plain text", () => {
+      expect(
+        feed.contentParagraphs({ content: "Run deploy <env> to ship it" }),
+      ).toEqual(["Run deploy <env> to ship it"]);
+    });
+
+    it("treats prose inequalities using real tag letters as plain text", () => {
+      expect(
+        feed.contentParagraphs({ content: "if a<b and b>c then stop" }),
+      ).toEqual(["if a<b and b>c then stop"]);
+      expect(
+        feed.contentParagraphs({ content: "check x<i and y>0 first" }),
+      ).toEqual(["check x<i and y>0 first"]);
+    });
+
+    it("does not fabricate filler from excerpt/title when content is absent", () => {
+      const result = feed.contentParagraphs({
+        excerpt: "An excerpt",
+        title: "A title",
+        body: ["Old fake body"],
+        notes: ["Old fake note"],
+        desc: "Old fake desc",
+      });
+      expect(result).toEqual([]);
     });
   });
 
-  describe("podcastNotes", () => {
-    it("returns notes when present", () => {
-      expect(feed.podcastNotes({ notes: ["Note 1"], excerpt: "Ep" })).toEqual([
-        "Note 1",
+  // Routing only: contentHtml decides plain-text-vs-markup and delegates the
+  // actual sanitization to sanitizeFeedHtml. The security guarantees (dangerous
+  // markup stripped) and the sanitized structure (paragraph wrapping) are
+  // asserted in tests/stores/feedContent.test.ts and
+  // tests/utils/sanitizeHtml.test.ts, which run under jsdom where DOMPurify
+  // behaves as it does in the browser.
+  describe("contentHtml (routing)", () => {
+    it("returns an empty string for plain-text content", () => {
+      expect(feed.contentHtml({ content: "Just plain text." })).toBe("");
+      expect(feed.contentHtml({ content: "First.\n\nSecond." })).toBe("");
+    });
+
+    it("returns an empty string for prose with a stray angle bracket", () => {
+      expect(feed.contentHtml({ content: "3 < 5 and 5 > 3 is true" })).toBe("");
+    });
+
+    it("returns an empty string for angle-bracketed non-HTML identifiers", () => {
+      expect(feed.contentHtml({ content: "Run deploy <env> to ship it" })).toBe(
+        "",
+      );
+    });
+
+    it("returns an empty string when content is missing or non-string", () => {
+      expect(feed.contentHtml({})).toBe("");
+      expect(feed.contentHtml({ content: null })).toBe("");
+      expect(feed.contentHtml({ content: 42 })).toBe("");
+    });
+  });
+
+  describe("postParagraphs", () => {
+    it("splits plain-text post content into paragraphs", () => {
+      expect(feed.postParagraphs({ content: "One.\n\nTwo." })).toEqual([
+        "One.",
+        "Two.",
       ]);
     });
 
-    it("falls back to excerpt when notes is empty", () => {
-      const result = feed.podcastNotes({
-        notes: [],
-        excerpt: "Episode excerpt",
-      });
-      expect(result[0]).toBe("Episode excerpt");
+    it("shows literal angle-bracket text verbatim instead of an empty state", () => {
+      expect(feed.postParagraphs({ content: "<b>hi</b> there" })).toEqual([
+        "<b>hi</b> there",
+      ]);
+    });
+
+    it("returns an empty array when content is absent", () => {
+      expect(feed.postParagraphs({})).toEqual([]);
+      expect(feed.postParagraphs({ content: null })).toEqual([]);
     });
   });
 
-  describe("videoDesc", () => {
-    it("returns desc when present", () => {
-      expect(
-        feed.videoDesc({ desc: "Full description", title: "Video", views: "" }),
-      ).toBe("Full description");
-    });
-
-    it("generates a description from title when desc is absent", () => {
-      const result = feed.videoDesc({ title: "My Video", views: "500 views" });
-      expect(result).toContain("My Video");
-    });
+  it("no longer exposes the fabricating content helpers", () => {
+    const store = feed as unknown as Record<string, unknown>;
+    expect(store.articleBody).toBeUndefined();
+    expect(store.podcastNotes).toBeUndefined();
+    expect(store.videoDesc).toBeUndefined();
+    expect(store.tweetReplies).toBeUndefined();
   });
 
   describe("loadItems", () => {
@@ -278,6 +391,11 @@ describe("useFeedStore", () => {
 
     beforeEach(() => {
       vi.mocked(globalThis.$fetch).mockReset();
+    });
+
+    afterEach(() => {
+      vi.mocked(globalThis.$fetch).mockReset();
+      vi.unstubAllGlobals();
     });
 
     it("replaces items when offset is 0 (first page)", async () => {
@@ -335,6 +453,378 @@ describe("useFeedStore", () => {
       state.items = pageOne as never;
       await feed.loadItems({ offset: 1 });
       expect(state.items.map((i) => i.id)).toEqual([101, 102, 103]);
+    });
+
+    // A never-settling items request must time out rather than hang the load;
+    // advancing by the store's own constant proves loadItems is bounded by it.
+    it("times out a never-settling items request and surfaces an error toast", async () => {
+      const showToast = vi.fn();
+      vi.stubGlobal(
+        "useToast",
+        vi.fn(() => ({ showToast })),
+      );
+      vi.mocked(globalThis.$fetch).mockImplementation(
+        () => new Promise(() => {}),
+      );
+      state.items = [item({ id: 999 })];
+
+      const loading = feed.loadItems();
+      await vi.advanceTimersByTimeAsync(FEED_ITEMS_TIMEOUT_MS - 1);
+      expect(showToast).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await loading;
+
+      expect(showToast).toHaveBeenCalledWith(
+        "Failed to load feed items — please try again",
+      );
+      // A timed-out first-page load must not blank the existing feed.
+      expect(state.items.map((i) => i.id)).toEqual([999]);
+    });
+  });
+
+  describe("filter-scoped loading", () => {
+    beforeEach(() => {
+      vi.mocked(globalThis.$fetch).mockReset();
+      vi.mocked(globalThis.$fetch).mockResolvedValue({
+        items: [],
+        total: 0,
+        nextOffset: null,
+      });
+    });
+
+    afterEach(() => {
+      vi.mocked(globalThis.$fetch).mockReset();
+    });
+
+    it("omits the filter param when the active filter is all", async () => {
+      state.filter = "all";
+      await feed.loadItems();
+      const options = vi.mocked(globalThis.$fetch).mock.calls[0][1];
+      expect(options.query).toEqual({});
+    });
+
+    it("sends the active filter as a query param for saved", async () => {
+      state.filter = "saved";
+      await feed.loadItems();
+      const options = vi.mocked(globalThis.$fetch).mock.calls[0][1];
+      expect(options.query).toEqual({ filter: "saved" });
+    });
+
+    it("sends the active filter alongside the offset when paginating", async () => {
+      state.filter = "starred";
+      await feed.loadItems({ offset: 20 });
+      const options = vi.mocked(globalThis.$fetch).mock.calls[0][1];
+      expect(options.query).toEqual({ filter: "starred", offset: "20" });
+    });
+  });
+
+  describe("loadCounts", () => {
+    beforeEach(() => {
+      vi.mocked(globalThis.$fetch).mockReset();
+    });
+
+    afterEach(() => {
+      vi.mocked(globalThis.$fetch).mockReset();
+    });
+
+    it("populates state.counts from the counts endpoint", async () => {
+      vi.mocked(globalThis.$fetch).mockResolvedValue({
+        all: 12,
+        saved: 4,
+        starred: 3,
+        article: 6,
+        podcast: 1,
+        video: 1,
+        tweet: 4,
+      });
+      await feed.loadCounts();
+      expect(state.counts.all).toBe(12);
+      expect(state.counts.saved).toBe(4);
+    });
+
+    it("requests the counts endpoint", async () => {
+      vi.mocked(globalThis.$fetch).mockResolvedValue({
+        all: 0,
+        saved: 0,
+        starred: 0,
+      });
+      await feed.loadCounts();
+      expect(vi.mocked(globalThis.$fetch).mock.calls[0][0]).toBe(
+        "/api/feed-item-counts",
+      );
+    });
+
+    it("leaves existing counts untouched when the request fails", async () => {
+      state.counts = { saved: 5 };
+      vi.mocked(globalThis.$fetch).mockRejectedValue(new Error("boom"));
+      await feed.loadCounts();
+      expect(state.counts.saved).toBe(5);
+    });
+  });
+
+  describe("countFor with server counts", () => {
+    it("prefers the whole-account server count over the loaded-page tally", () => {
+      state.counts = { saved: 42 };
+      expect(feed.countFor("saved")).toBe(42);
+    });
+
+    it("falls back to the loaded-page tally when no server count exists", () => {
+      state.counts = {};
+      // The fixture holds one saved item (id 2).
+      expect(feed.countFor("saved")).toBe(1);
+    });
+  });
+
+  describe("optimistic count adjustment", () => {
+    it("increments the saved count when saving with counts loaded", () => {
+      state.counts = { saved: 2 };
+      const target = state.items[0];
+      target.saved = false;
+      feed.toggleSave(target);
+      expect(state.counts.saved).toBe(3);
+    });
+
+    it("decrements the starred count when unstarring", () => {
+      state.counts = { starred: 5 };
+      const target = state.items[0];
+      target.starred = true;
+      feed.toggleStar(target);
+      expect(state.counts.starred).toBe(4);
+    });
+
+    it("never invents a count before the counts have loaded", () => {
+      state.counts = {};
+      const target = state.items[0];
+      target.saved = false;
+      feed.toggleSave(target);
+      expect(state.counts.saved).toBeUndefined();
+    });
+  });
+
+  describe("loadMore pagination", () => {
+    const pageOne = [item({ id: 201 }), item({ id: 202 })];
+    const pageTwo = [item({ id: 203 }), item({ id: 204 })];
+
+    beforeEach(() => {
+      vi.mocked(globalThis.$fetch).mockReset();
+    });
+
+    afterEach(() => {
+      vi.mocked(globalThis.$fetch).mockReset();
+      vi.unstubAllGlobals();
+    });
+
+    it("records nextOffset and reflects it in hasMore after the first page", async () => {
+      vi.mocked(globalThis.$fetch).mockResolvedValue({
+        items: pageOne,
+        total: 2,
+        nextOffset: 2,
+      });
+      await feed.loadItems();
+      expect(state.nextOffset).toBe(2);
+      expect(feed.hasMore).toBe(true);
+    });
+
+    it("fetches the next page at the stored offset and appends it", async () => {
+      vi.mocked(globalThis.$fetch)
+        .mockResolvedValueOnce({ items: pageOne, total: 4, nextOffset: 2 })
+        .mockResolvedValueOnce({ items: pageTwo, total: 4, nextOffset: null });
+
+      await feed.loadItems();
+      await feed.loadMore();
+
+      expect(state.items.map((item) => item.id)).toEqual([201, 202, 203, 204]);
+      const secondCallOptions = vi.mocked(globalThis.$fetch).mock.calls[1][1];
+      expect(secondCallOptions.query).toEqual({ offset: "2" });
+      expect(state.nextOffset).toBeNull();
+      expect(feed.hasMore).toBe(false);
+    });
+
+    it("treats a missing nextOffset as the end of the feed", async () => {
+      vi.mocked(globalThis.$fetch).mockResolvedValue({
+        items: pageOne,
+        total: 2,
+      });
+      await feed.loadItems();
+      expect(state.nextOffset).toBeNull();
+      expect(feed.hasMore).toBe(false);
+    });
+
+    it("returns false and appends nothing when the page fetch fails", async () => {
+      vi.stubGlobal(
+        "useToast",
+        vi.fn(() => ({ showToast: vi.fn() })),
+      );
+      vi.mocked(globalThis.$fetch)
+        .mockResolvedValueOnce({ items: pageOne, total: 4, nextOffset: 2 })
+        .mockRejectedValueOnce(new Error("network"));
+
+      await feed.loadItems();
+      const appended = await feed.loadMore();
+
+      expect(appended).toBe(false);
+      expect(state.items.map((item) => item.id)).toEqual([201, 202]);
+      // Cursor is untouched, so a later scroll can retry the same page.
+      expect(state.nextOffset).toBe(2);
+    });
+
+    it("does not fetch a next page while a fresh first-page load is in flight", async () => {
+      // Seed a cursor, then start a real first-page load that stays pending
+      // (never resolves) at the auth/fetch await, so the guard — not a hand-set
+      // flag — is what blocks loadMore across the whole first-page window.
+      state.nextOffset = 2;
+      vi.mocked(globalThis.$fetch).mockReturnValueOnce(new Promise(() => {}));
+
+      feed.loadItems();
+      // The flag is set synchronously, before the auth round-trip's await, so it
+      // already covers loadMore here.
+      expect(state.loadingFirstPage).toBe(true);
+
+      const appended = await feed.loadMore();
+      expect(appended).toBe(false);
+    });
+
+    it("resets loadingFirstPage after the auth call rejects", async () => {
+      vi.stubGlobal(
+        "useToast",
+        vi.fn(() => ({ showToast: vi.fn() })),
+      );
+      vi.stubGlobal(
+        "useAuth",
+        vi.fn(() => ({
+          getToken: { value: vi.fn().mockRejectedValue(new Error("no token")) },
+        })),
+      );
+      setActivePinia(createPinia());
+      const store = useFeedStore();
+
+      const ok = await store.loadItems();
+
+      // The failure is swallowed to a toast, and the guard flag is released so
+      // pagination isn't permanently wedged.
+      expect(ok).toBe(false);
+      expect(store.state.loadingFirstPage).toBe(false);
+    });
+
+    it("drops a stale append when a fresh first page lands mid-flight", async () => {
+      let resolveAppend: (_value: unknown) => void = () => {};
+      vi.mocked(globalThis.$fetch).mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveAppend = resolve;
+        }),
+      );
+      state.items = pageOne as never;
+      state.nextOffset = 2;
+
+      const appending = feed.loadMore();
+      // A fresh first page replaces the list (bumps listVersion) before the
+      // append resolves.
+      state.items = [item({ id: 301 })] as never;
+      state.listVersion += 1;
+
+      resolveAppend({ items: pageTwo, total: 4, nextOffset: null });
+      const appended = await appending;
+
+      expect(appended).toBe(false);
+      // The stale page-two rows were discarded, not grafted onto the new list.
+      expect(state.items.map((item) => item.id)).toEqual([301]);
+    });
+
+    it("treats a non-advancing server cursor as the end of the feed", async () => {
+      vi.mocked(globalThis.$fetch).mockResolvedValueOnce({
+        items: pageOne,
+        total: 4,
+        nextOffset: 2,
+      });
+      await feed.loadItems();
+
+      // Page two echoes back the same offset it was handed (2), which would loop
+      // us on a page we already hold — it must be read as end-of-feed instead.
+      vi.mocked(globalThis.$fetch).mockResolvedValueOnce({
+        items: pageTwo,
+        total: 4,
+        nextOffset: 2,
+      });
+      await feed.loadMore();
+
+      expect(state.nextOffset).toBeNull();
+      expect(feed.hasMore).toBe(false);
+    });
+
+    it("treats a decreasing server cursor as the end of the feed", async () => {
+      vi.mocked(globalThis.$fetch).mockResolvedValueOnce({
+        items: pageOne,
+        total: 4,
+        nextOffset: 2,
+      });
+      await feed.loadItems();
+
+      // The server hands back an offset lower than the one requested — must not
+      // be trusted (would re-serve earlier rows) and reads as end-of-feed.
+      vi.mocked(globalThis.$fetch).mockResolvedValueOnce({
+        items: pageTwo,
+        total: 4,
+        nextOffset: 1,
+      });
+      await feed.loadMore();
+
+      expect(state.nextOffset).toBeNull();
+      expect(feed.hasMore).toBe(false);
+    });
+
+    it("throws (and toasts) on a malformed first-page payload rather than blanking the feed", async () => {
+      vi.stubGlobal(
+        "useToast",
+        vi.fn(() => ({ showToast: vi.fn() })),
+      );
+      state.items = pageOne as never;
+      vi.mocked(globalThis.$fetch).mockResolvedValueOnce({ total: 0 });
+
+      const ok = await feed.loadItems();
+
+      expect(ok).toBe(false);
+      // The existing feed is untouched, not replaced with undefined.
+      expect(state.items.map((item) => item.id)).toEqual([201, 202]);
+    });
+
+    it("is a no-op once the last page has loaded (nextOffset null)", async () => {
+      vi.mocked(globalThis.$fetch).mockResolvedValue({
+        items: pageOne,
+        total: 2,
+        nextOffset: null,
+      });
+      await feed.loadItems();
+      vi.mocked(globalThis.$fetch).mockClear();
+
+      await feed.loadMore();
+
+      expect(globalThis.$fetch).not.toHaveBeenCalled();
+      expect(state.items.map((item) => item.id)).toEqual([201, 202]);
+    });
+
+    it("does not fire overlapping requests while a page is in flight", async () => {
+      vi.mocked(globalThis.$fetch).mockResolvedValueOnce({
+        items: pageOne,
+        total: 4,
+        nextOffset: 2,
+      });
+      await feed.loadItems();
+
+      let resolveSecond: (_value: unknown) => void = () => {};
+      vi.mocked(globalThis.$fetch).mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveSecond = resolve;
+        }),
+      );
+
+      const first = feed.loadMore();
+      const second = feed.loadMore();
+      resolveSecond({ items: pageTwo, total: 4, nextOffset: null });
+      await Promise.all([first, second]);
+
+      // Two loadMore calls, but only one network request past the initial page.
+      expect(globalThis.$fetch).toHaveBeenCalledTimes(2);
+      expect(state.items.map((item) => item.id)).toEqual([201, 202, 203, 204]);
     });
   });
 
@@ -437,6 +927,17 @@ describe("useFeedStore", () => {
         expect(payload.starred).toBe(false);
       });
 
+      it("shows a confirmation toast reflecting the new starred state", async () => {
+        const feedItem = state.items[0];
+        feedItem.starred = false;
+
+        await feed.toggleStar(feedItem);
+        expect(showToast).toHaveBeenCalledWith("Starred");
+
+        await feed.toggleStar(feedItem);
+        expect(showToast).toHaveBeenCalledWith("Removed from starred");
+      });
+
       it("rolls back the local state and shows a toast when queueAction rejects", async () => {
         queueAction.mockRejectedValue(new Error("DB unavailable"));
         const feedItem = state.items[0];
@@ -453,7 +954,12 @@ describe("useFeedStore", () => {
     });
 
     describe("markAllRead", () => {
-      it("enqueues a markRead action only for items that were unread", async () => {
+      beforeEach(() => {
+        vi.mocked(globalThis.$fetch).mockReset();
+        vi.mocked(globalThis.$fetch).mockResolvedValue({ ok: true });
+      });
+
+      it("fires ONE account-scoped bulk request, never one per loaded item", async () => {
         state.items = [
           item({ feedId: 1, guid: "g1", unread: true }),
           item({ feedId: 2, guid: "g2", unread: false }),
@@ -462,31 +968,133 @@ describe("useFeedStore", () => {
 
         await feed.markAllRead();
 
-        expect(queueAction).toHaveBeenCalledTimes(2);
-
-        const calls = queueAction.mock.calls;
-        expect(calls[0][0]).toBe("markRead");
-        expect(calls[0][1].feedId).toBe(1);
-        expect(calls[0][1].guid).toBe("g1");
-        expect(typeof calls[0][1].readAt).toBe("string");
-
-        expect(calls[1][1].feedId).toBe(3);
-        expect(calls[1][1].guid).toBe("g3");
+        // A single bulk call is the whole point of the fix — the account can
+        // hold unread items beyond the loaded page, so per-item iteration
+        // (queueAction) can never reach them. This must fail if the store
+        // reverts to iterating loaded items.
+        expect(queueAction).not.toHaveBeenCalled();
+        const markAllCalls = vi
+          .mocked(globalThis.$fetch)
+          .mock.calls.filter((call) => call[0] === "/api/mark-all-read");
+        expect(markAllCalls).toHaveLength(1);
+        expect(markAllCalls[0][1]).toMatchObject({ method: "POST" });
       });
 
-      it("does not enqueue any markRead actions when all items are already read", async () => {
+      it("sends the active filter so the server can scope the update", async () => {
+        state.filter = "podcast";
+        state.items = [item({ feedId: 1, guid: "g1", unread: true })];
+
+        await feed.markAllRead();
+
+        const markAllCall = vi
+          .mocked(globalThis.$fetch)
+          .mock.calls.find((call) => call[0] === "/api/mark-all-read");
+        expect(markAllCall?.[1]).toMatchObject({
+          body: { filter: "podcast" },
+        });
+      });
+
+      it("optimistically clears unread on loaded items", async () => {
+        state.filter = "all";
         state.items = [
-          item({ feedId: 1, guid: "g1", unread: false }),
-          item({ feedId: 2, guid: "g2", unread: false }),
+          item({ feedId: 1, guid: "g1", unread: true }),
+          item({ feedId: 2, guid: "g2", unread: true }),
         ];
 
         await feed.markAllRead();
 
-        expect(queueAction).not.toHaveBeenCalled();
+        expect(state.items.every((i) => !i.unread)).toBe(true);
       });
 
-      it("rolls back items to unread and shows a toast when queueAction rejects", async () => {
-        queueAction.mockRejectedValue(new Error("DB unavailable"));
+      it("leaves items outside the active type filter untouched", async () => {
+        state.filter = "podcast";
+        const article = item({ type: "article", unread: true });
+        const podcast = item({ type: "podcast", unread: true });
+        state.items = [article, podcast];
+
+        await feed.markAllRead();
+
+        // Only the filtered-in podcast is optimistically cleared.
+        expect(podcast.unread).toBe(false);
+        expect(article.unread).toBe(true);
+      });
+
+      it("under the saved filter, leaves unsaved unread items untouched", async () => {
+        state.filter = "saved";
+        const savedItem = item({ unread: true, saved: true });
+        const unsavedItem = item({ unread: true, saved: false });
+        state.items = [savedItem, unsavedItem];
+
+        await feed.markAllRead();
+
+        expect(savedItem.unread).toBe(false);
+        expect(unsavedItem.unread).toBe(true);
+      });
+
+      it("every dashboard filter id is accepted by the server endpoint", () => {
+        // Guards against drift: adding a filter chip whose id the server does
+        // not recognize would make "Mark all read" 400 under that filter.
+        const unknown = feed.filterDefs.filter(
+          (def) => !VALID_MARK_ALL_READ_FILTERS.has(def.id),
+        );
+        expect(unknown).toEqual([]);
+      });
+
+      it("ignores a second call while the first is still in flight", async () => {
+        state.items = [item({ feedId: 1, guid: "g1", unread: true })];
+
+        // The guard flips synchronously at the top of markAllRead, so a second
+        // call issued before the first resolves is a no-op — only one request.
+        const first = feed.markAllRead();
+        const second = feed.markAllRead();
+        await Promise.all([first, second]);
+
+        const markAllCalls = vi
+          .mocked(globalThis.$fetch)
+          .mock.calls.filter((call) => call[0] === "/api/mark-all-read");
+        expect(markAllCalls).toHaveLength(1);
+      });
+
+      it("resyncs from the server (not a blind rollback) when the request times out", async () => {
+        // On timeout the bulk update may have committed after we stopped
+        // waiting, so a blind rollback would desync the UI. Instead re-read the
+        // list from the server. The mark-all-read call never settles (forcing
+        // the timeout); the follow-up feed-items read resolves.
+        vi.mocked(globalThis.$fetch).mockImplementation((url: string) => {
+          if (url === "/api/mark-all-read") {
+            return new Promise(() => {});
+          }
+          return Promise.resolve({ items: [], total: 0, nextOffset: null });
+        });
+        state.items = [item({ feedId: 1, guid: "g1", unread: true })];
+
+        const pending = feed.markAllRead();
+        await vi.advanceTimersByTimeAsync(MARK_ALL_READ_TIMEOUT_MS);
+        await pending;
+
+        const reloadCalls = vi
+          .mocked(globalThis.$fetch)
+          .mock.calls.filter((call) => call[0] === "/api/feed-items");
+        expect(reloadCalls).toHaveLength(1);
+        expect(showToast).toHaveBeenCalledWith(
+          "Still marking as read — refreshing to confirm",
+        );
+      });
+
+      it("gives feedback (no silent drop) when a second call is suppressed", async () => {
+        state.items = [item({ feedId: 1, guid: "g1", unread: true })];
+
+        const first = feed.markAllRead();
+        const second = feed.markAllRead();
+        await Promise.all([first, second]);
+
+        expect(showToast).toHaveBeenCalledWith("Still marking as read…");
+      });
+
+      it("rolls back optimistic changes and shows a toast when the request fails", async () => {
+        vi.mocked(globalThis.$fetch).mockRejectedValue(
+          new Error("network down"),
+        );
         state.items = [
           item({ feedId: 1, guid: "g1", unread: true }),
           item({ feedId: 2, guid: "g2", unread: true }),
@@ -494,9 +1102,9 @@ describe("useFeedStore", () => {
 
         await expect(feed.markAllRead()).resolves.toBeUndefined();
         expect(showToast).toHaveBeenCalledWith(
-          "Could not queue change for sync",
+          "Could not mark all as read — please try again",
         );
-        // Items are rolled back to unread since queueing failed
+        // Loaded items revert to unread since the bulk request failed.
         expect(state.items.every((i) => i.unread)).toBe(true);
       });
     });
@@ -542,6 +1150,114 @@ describe("useFeedStore", () => {
         expect(showToast).toHaveBeenCalledWith(
           "Could not queue change for sync",
         );
+      });
+
+      // Regression: #247 — search results omitted `unread`, so opening one
+      // never fired the markRead sync. Uses the real mapSearchRow() (what
+      // searchFeedItems() applies to every DB row) rather than a hand-set
+      // fixture, so this fails if the derivation regresses.
+      describe("with a real mapSearchRow() payload", () => {
+        const mockDbRow = (overrides: Partial<SearchRow> = {}): SearchRow => ({
+          id: 501,
+          feedId: 42,
+          feedSource: "rss",
+          feedTitle: "Test Feed",
+          guid: "guid-search",
+          title: "Found via search",
+          url: null,
+          author: null,
+          imageUrl: null,
+          content: null,
+          tags: null,
+          publishedAt: null,
+          readAt: null,
+          starred: false,
+          savedAt: null,
+          createdAt: null,
+          updatedAt: null,
+          ...overrides,
+        });
+
+        it("enqueues a markRead action when opening an unread search result", async () => {
+          const searchResult = mapSearchRow(mockDbRow({ readAt: null }));
+          expect(searchResult.unread).toBe(true);
+
+          await feed.openItem(searchResult);
+
+          expect(queueAction).toHaveBeenCalledOnce();
+          const [action, payload] = queueAction.mock.calls[0];
+          expect(action).toBe("markRead");
+          expect(payload.feedId).toBe(42);
+          expect(payload.guid).toBe("guid-search");
+          expect(typeof payload.readAt).toBe("string");
+        });
+
+        it("does not enqueue a markRead action when opening an already-read search result", async () => {
+          const searchResult = mapSearchRow(
+            mockDbRow({ readAt: new Date("2026-01-01T00:00:00Z") }),
+          );
+          // Asserted directly, not just via the queueAction side effect, so
+          // this fails on a dropped `unread` field, not only a falsy one.
+          expect(searchResult.unread).toBe(false);
+
+          await feed.openItem(searchResult);
+
+          expect(queueAction).not.toHaveBeenCalled();
+        });
+
+        // Regression: #275 (reconciliation half). A fresh /api/search row
+        // for an item already loaded in state.items is a distinct object —
+        // resolving it to the loaded row (rather than assigning the fresh
+        // object straight to state.activeItem) keeps every view mutating the
+        // same reference, so toggleSave from the search-opened detail can't
+        // desync from the dashboard's copy of the same item and double-count
+        // a later toggle there.
+        it("resolves to the already-loaded item so toggleSave mutates the same object the dashboard renders", async () => {
+          state.counts = { saved: 1 };
+          const loadedItem = state.items[1]; // seeded with id: 2, saved: true
+          // savedAt is deliberately left null (unlike loadedItem's saved:true)
+          // to prove the resolution is identity-based, not field-copying: the
+          // loaded row's own saved value must win, not whatever this fresh
+          // search row happens to carry.
+          const searchCopy = mapSearchRow(
+            mockDbRow({
+              id: loadedItem.id as number,
+              feedId: loadedItem.feedId as number,
+              guid: loadedItem.guid as string,
+            }),
+          );
+
+          await feed.openItem(searchCopy);
+          expect(state.activeItem).toBe(loadedItem);
+          expect(state.activeItem?.saved).toBe(true);
+
+          await feed.toggleSave(state.activeItem as Record<string, unknown>);
+
+          expect(loadedItem.saved).toBe(false);
+          expect(state.counts.saved).toBe(0);
+        });
+
+        it("falls back to the raw row when no loaded item shares its id", async () => {
+          const searchCopy = mapSearchRow(
+            mockDbRow({
+              id: 999999,
+              savedAt: new Date("2026-01-01T00:00:00Z"),
+            }),
+          );
+          expect(state.items.some((row) => row.id === searchCopy.id)).toBe(
+            false,
+          );
+
+          await feed.openItem(searchCopy);
+
+          // state is a Vue reactive() object, so a plain object assigned
+          // into it (searchCopy was never part of state.items) comes back
+          // wrapped in a fresh Proxy — toBe(searchCopy) would fail on
+          // reference identity even though it's the same underlying data.
+          // toRaw unwraps that Proxy back to the original target.
+          expect(toRaw(state.activeItem as object)).toBe(searchCopy);
+          expect(state.activeItem?.saved).toBe(true);
+        });
       });
     });
   });
@@ -713,6 +1429,248 @@ describe("useFeedStore", () => {
         .mock.calls.find((call) => call[0] === "/api/feed-items");
       expect(itemsCall).toBeUndefined();
       expect(state.loading).toBe(false);
+    });
+
+    // The post-sync items load is the wedge FEED_ITEMS_TIMEOUT_MS guards: sync
+    // resolves but /api/feed-items never settles, so without the bound refresh()
+    // would leave loading stuck forever.
+    it("clears loading when the post-sync items load never settles", async () => {
+      vi.mocked(globalThis.$fetch).mockImplementation((url: string) => {
+        if (url === "/api/feed-sync") {
+          return Promise.resolve({ queued: 1, eventIds: ["a"] });
+        }
+        return new Promise(() => {});
+      });
+
+      const refreshing = feed.refresh();
+      await vi.advanceTimersByTimeAsync(FEED_ITEMS_TIMEOUT_MS - 1);
+      expect(showToast).not.toHaveBeenCalledWith(
+        "Failed to load feed items — please try again",
+      );
+      await vi.advanceTimersByTimeAsync(1);
+      await refreshing;
+
+      expect(showToast).toHaveBeenCalledWith(
+        "Failed to load feed items — please try again",
+      );
+      expect(state.loading).toBe(false);
+    });
+  });
+
+  // setupWatchers() is gated on import.meta.client and was previously
+  // untested: an older Vitest (4.x) didn't apply vitest.config.ts's
+  // `define: { "import.meta.client": true }` to plain import.meta.<prop>
+  // chains, so `!import.meta.client` was always true and this whole
+  // function returned before doing anything. The Vitest 5 upgrade fixed
+  // that transform (verified directly below and exercised by every other
+  // test in this suite, which would fail loudly if it regressed) — this
+  // block is the first real coverage of the client-gated init path.
+  describe("setupWatchers", () => {
+    // Shared shape for stubbing useUserSettings across this suite (rule of
+    // three: the same stub literal was being repeated per test). Callers
+    // supply the `load` mock directly so both a resolved and a rejected
+    // load go through the same helper instead of two near-duplicate stubs.
+    function stubUserSettings(load: ReturnType<typeof vi.fn>, save = vi.fn()) {
+      vi.stubGlobal(
+        "useUserSettings",
+        vi.fn(() => ({ loading: ref(false), error: ref(null), load, save })),
+      );
+      return { load, save };
+    }
+
+    const resolvingSettings = (
+      settings: {
+        layout?: string;
+        showUnreadOnly?: boolean;
+      } | null,
+    ) => vi.fn().mockResolvedValue(settings);
+
+    const rejectingSettings = (error: Error) =>
+      vi.fn().mockRejectedValue(error);
+
+    afterEach(() => {
+      // This block's only vi.stubGlobal target is useUserSettings (verified:
+      // tests/setup.ts assigns every other global directly, not through
+      // vi.stubGlobal, so this can't revert anything installed there) — the
+      // same blanket-cleanup pattern already used in this file's other
+      // vi.stubGlobal-using describe blocks (see the sync-queue and refresh
+      // suites above).
+      vi.unstubAllGlobals();
+    });
+
+    it("loads persisted layout and unread-only settings from the db without echoing them back", async () => {
+      const { load, save } = stubUserSettings(
+        resolvingSettings({ layout: "grid", showUnreadOnly: true }),
+      );
+      state.layout = "timeline";
+      state.unreadOnly = false;
+
+      await feed.setupWatchers();
+      await nextTick();
+
+      expect(load).toHaveBeenCalledTimes(1);
+      expect(state.layout).toBe("grid");
+      expect(state.unreadOnly).toBe(true);
+      // The layout/unreadOnly watchers below are registered after this load,
+      // specifically so applying the loaded values doesn't re-trigger a save
+      // of the value that was just read.
+      expect(save).not.toHaveBeenCalled();
+    });
+
+    // A genuine empty/204 response resolves null and means "no saved
+    // settings yet" — this must fall back to the same defaults as a missing
+    // field, and the watchers below must still register.
+    it("falls back to defaults and still registers watchers when load() resolves null", async () => {
+      const { save } = stubUserSettings(resolvingSettings(null));
+      state.layout = "grid";
+      state.unreadOnly = true;
+
+      await feed.setupWatchers();
+
+      expect(state.layout).toBe("timeline");
+      expect(state.unreadOnly).toBe(false);
+
+      state.layout = "grid";
+      await nextTick();
+      expect(save).toHaveBeenCalledWith({ layout: "grid" });
+    });
+
+    // A rejection (network failure, expired auth) tells us nothing about the
+    // user's real settings — unlike the null case above, it must leave
+    // whatever's already in state alone rather than clobbering it with
+    // defaults, and it still must not leave the watchers below unregistered
+    // for the rest of the session (setupWatchers() only ever runs once).
+    it("keeps the current settings and still registers watchers when load() rejects", async () => {
+      const { save } = stubUserSettings(
+        rejectingSettings(new Error("network failure")),
+      );
+      state.layout = "grid";
+      state.unreadOnly = true;
+
+      await feed.setupWatchers();
+
+      expect(state.layout).toBe("grid");
+      expect(state.unreadOnly).toBe(true);
+
+      state.layout = "timeline";
+      await nextTick();
+      expect(save).toHaveBeenCalledWith({ layout: "timeline" });
+    });
+
+    it("does not retry a rejected load on a second call", async () => {
+      const { load } = stubUserSettings(
+        rejectingSettings(new Error("network failure")),
+      );
+
+      await feed.setupWatchers();
+      await feed.setupWatchers();
+
+      // setupWatchers() is guarded by a single `initialized` flag with no
+      // notion of "failed, retry me" — a second call after a failed load is
+      // still a no-op by design. The watchers registered on the first call
+      // (proved by the preceding test) are what keeps the store usable, not
+      // a retry.
+      expect(load).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps the loading flag up until the initial reveal delay elapses", async () => {
+      stubUserSettings(
+        resolvingSettings({ layout: "timeline", showUnreadOnly: false }),
+      );
+      state.loading = true;
+
+      await feed.setupWatchers();
+      await vi.advanceTimersByTimeAsync(INITIAL_REVEAL_DELAY_MS - 1);
+      expect(state.loading).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(state.loading).toBe(false);
+    });
+
+    it("only loads settings once across repeated calls", async () => {
+      const { load } = stubUserSettings(
+        resolvingSettings({ layout: "grid", showUnreadOnly: true }),
+      );
+
+      await feed.setupWatchers();
+      await feed.setupWatchers();
+
+      expect(load).toHaveBeenCalledTimes(1);
+    });
+
+    it("persists a layout change through the watcher it registers, without an extra save from the initial load", async () => {
+      const { save } = stubUserSettings(
+        resolvingSettings({ layout: "timeline", showUnreadOnly: false }),
+      );
+
+      await feed.setupWatchers();
+      state.layout = "grid";
+      await nextTick();
+
+      expect(save).toHaveBeenCalledTimes(1);
+      expect(save).toHaveBeenCalledWith({ layout: "grid" });
+    });
+
+    it("persists an unread-only change through the watcher it registers", async () => {
+      const { save } = stubUserSettings(
+        resolvingSettings({ layout: "timeline", showUnreadOnly: false }),
+      );
+
+      await feed.setupWatchers();
+      state.unreadOnly = true;
+      await nextTick();
+
+      expect(save).toHaveBeenCalledTimes(1);
+      expect(save).toHaveBeenCalledWith({ showUnreadOnly: true });
+    });
+
+    // The filter watcher is the one carrying the load-bearing behavior change
+    // (server-side filter scoping): switching filters must refetch page one
+    // for the new filter, not just re-run the cosmetic reveal timer.
+    describe("filter watcher", () => {
+      beforeEach(() => {
+        vi.mocked(globalThis.$fetch).mockReset();
+        vi.mocked(globalThis.$fetch).mockResolvedValue({
+          items: [],
+          total: 0,
+          nextOffset: null,
+        });
+      });
+
+      afterEach(() => {
+        // Restore the file-wide default (tests/setup.ts) so a scoped reset
+        // here can't leak into whatever test runs next.
+        vi.mocked(globalThis.$fetch).mockReset();
+        vi.mocked(globalThis.$fetch).mockResolvedValue([]);
+      });
+
+      it("refetches the first page for the new filter through the watcher it registers", async () => {
+        stubUserSettings(
+          resolvingSettings({ layout: "timeline", showUnreadOnly: false }),
+        );
+
+        await feed.setupWatchers();
+        const itemsCallsBefore = vi
+          .mocked(globalThis.$fetch)
+          .mock.calls.filter((call) => call[0] === "/api/feed-items").length;
+
+        state.filter = "saved";
+        await nextTick();
+        // The watcher's loadItems() call is fire-and-forget (not awaited by
+        // the watcher itself), so its own internal awaits (buildAuthHeaders,
+        // the $fetchWithTimeout race) need another microtask flush beyond
+        // nextTick.
+        await vi.advanceTimersByTimeAsync(0);
+
+        // Assert a *new* /api/feed-items call landed, not just that the most
+        // recent one (which could be stale, e.g. setupWatchers()'s own
+        // initial load) happens to carry the right query.
+        const itemsCalls = vi
+          .mocked(globalThis.$fetch)
+          .mock.calls.filter((call) => call[0] === "/api/feed-items");
+        expect(itemsCalls.length).toBe(itemsCallsBefore + 1);
+        expect(itemsCalls.at(-1)?.[1]?.query).toEqual({ filter: "saved" });
+      });
     });
   });
 });

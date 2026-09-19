@@ -6,7 +6,7 @@ vi.mock("../../../../server/utils/feedCreation", () => ({
 
 import handler from "../../../../server/api/feeds/import.post";
 import { createFeedForUser } from "../../../../server/utils/feedCreation";
-import { FREE_PLAN_FEED_LIMIT } from "../../../../server/utils/feedLimit";
+import { FREE_PLAN_FEED_LIMIT } from "../../../../server/utils/planLimits";
 
 const mockCreateFeedForUser = vi.mocked(createFeedForUser);
 

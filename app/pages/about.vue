@@ -1,16 +1,10 @@
 <script setup lang="ts">
 definePageMeta({ layout: "marketing" });
 
-useHead({
-  title: "Reader — about",
-  meta: [
-    {
-      name: "description",
-      content:
-        "Reader is a small, independent team building one calm page for the feeds you already care about — no ranking, no ads, no infinite scroll.",
-    },
-  ],
-});
+useMarketingSeo(
+  "Reader — about",
+  "Reader is a small, independent team building one calm page for the feeds you already care about — no ranking, no ads, no infinite scroll.",
+);
 
 const values = [
   {

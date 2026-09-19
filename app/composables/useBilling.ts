@@ -17,14 +17,9 @@ export const FREE_ACCOUNT_PLAN: AccountPlan = {
 };
 
 export function useBilling() {
-  const { getToken } = useAuth();
+  const { buildAuthHeaders } = useAuthHeaders();
   const loading = ref(false);
   const error = ref<string | null>(null);
-
-  async function buildAuthHeaders(): Promise<Record<string, string>> {
-    const token = await getToken.value();
-    return token ? { Authorization: `Bearer ${token}` } : {};
-  }
 
   async function loadPlan(): Promise<AccountPlan> {
     loading.value = true;
@@ -61,5 +56,26 @@ export function useBilling() {
     }
   }
 
-  return { loading, error, loadPlan, startCheckout };
+  // Opens the Stripe Billing Portal so a subscriber can cancel, downgrade, or
+  // update their payment method, then redirects the browser to it. Mirrors
+  // startCheckout: errors surface via `error` rather than being thrown so the
+  // click handler needs no try/catch.
+  async function openPortal(): Promise<void> {
+    loading.value = true;
+    error.value = null;
+    try {
+      const headers = await buildAuthHeaders();
+      const { url } = await $fetch<{ url: string }>("/api/billing/portal", {
+        method: "POST",
+        headers,
+      });
+      window.location.href = url;
+    } catch {
+      error.value = "Failed to open billing portal. Please try again.";
+    } finally {
+      loading.value = false;
+    }
+  }
+
+  return { loading, error, loadPlan, startCheckout, openPortal };
 }

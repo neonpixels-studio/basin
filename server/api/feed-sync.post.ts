@@ -15,6 +15,10 @@ async function fetchUserSyncableFeeds(userId: number) {
     where: and(
       eq(feeds.userId, userId),
       inArray(feeds.source, [...SYNCABLE_SOURCE_TYPES]),
+      // Don't queue paused sources (over the Free cap after a downgrade); the
+      // worker also enforces this, but skipping them here avoids pointless
+      // events — see netlify/functions/sync-feed.ts.
+      eq(feeds.paused, false),
     ),
     columns: {
       id: true,

@@ -1,4 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { desc } from "drizzle-orm";
+import { feedItems } from "../../../server/db/schema";
 
 const mockSelect = vi.fn();
 const mockFrom = vi.fn();
@@ -6,6 +8,7 @@ const mockInnerJoin = vi.fn();
 const mockWhere = vi.fn();
 const mockOrderBy = vi.fn();
 const mockLimit = vi.fn();
+const mockOffset = vi.fn();
 
 vi.stubGlobal("useDb", () => ({
   select: mockSelect,
@@ -13,11 +16,39 @@ vi.stubGlobal("useDb", () => ({
 
 import {
   searchFeedItems,
-  formatRelativeTime,
+  buildPrefixTsQuery,
   SEARCH_RESULT_LIMIT,
+  SEARCH_RESULT_MAX_LIMIT,
+  MAX_SEARCH_TERMS,
+  MAX_TERM_LENGTH,
+  type SearchRow,
+  type SearchResult,
 } from "../../../server/utils/search";
 
-const mockRow = {
+// search.ts composes one sql`` fragment inside another (the shared
+// to_tsquery(...) expression is nested into both the where and orderBy
+// clauses), so a bound parameter can be one level deeper than the outer
+// fragment's own queryChunks. This walks into any nested fragment (identified
+// by having its own queryChunks array) so tests can inspect the fully
+// flattened chunk list regardless of nesting depth.
+function flattenSqlChunks(sqlFragment: { queryChunks: unknown[] }): unknown[] {
+  return sqlFragment.queryChunks.flatMap((chunk) => {
+    const nested = chunk as { queryChunks?: unknown[] };
+    if (nested && Array.isArray(nested.queryChunks)) {
+      return flattenSqlChunks(nested as { queryChunks: unknown[] });
+    }
+    return [chunk];
+  });
+}
+
+// publishedAt/createdAt/updatedAt get distinct non-null values (rather than
+// all sharing `null`) so a mapSearchRow field transposed between them fails
+// the full-shape assertion below instead of passing unnoticed. readAt/
+// savedAt stay null so the default row reads as unread/unsaved for the
+// tests that build on it below (readAt<->savedAt transposition is pinned
+// separately by the unread/saved tests further down, which flip one field
+// at a time).
+const mockRow: SearchRow = {
   id: 1,
   feedId: 10,
   feedSource: "rss",
@@ -29,16 +60,18 @@ const mockRow = {
   imageUrl: "https://example.com/image.jpg",
   content: "Article content about testing",
   tags: ["test"],
-  publishedAt: null,
+  publishedAt: new Date("2026-01-01T10:00:00Z"),
   readAt: null,
   starred: false,
   savedAt: null,
-  createdAt: null,
-  updatedAt: null,
+  mediaUrl: "https://example.com/audio.mp3",
+  mediaDuration: 1234,
+  createdAt: new Date("2026-01-01T08:00:00Z"),
+  updatedAt: new Date("2026-01-01T09:00:00Z"),
 };
 
 // Expected result after the mapping step strips feedSource/feedTitle and adds type/source/time.
-const expectedResult = {
+const expectedResult: SearchResult = {
   id: 1,
   feedId: 10,
   guid: "guid-1",
@@ -48,15 +81,19 @@ const expectedResult = {
   imageUrl: "https://example.com/image.jpg",
   content: "Article content about testing",
   tags: ["test"],
-  publishedAt: null,
+  publishedAt: new Date("2026-01-01T10:00:00Z"),
   readAt: null,
   starred: false,
   savedAt: null,
-  createdAt: null,
-  updatedAt: null,
+  mediaUrl: "https://example.com/audio.mp3",
+  mediaDuration: 1234,
+  createdAt: new Date("2026-01-01T08:00:00Z"),
+  updatedAt: new Date("2026-01-01T09:00:00Z"),
   type: "article",
   source: "Test Feed",
-  time: "",
+  time: "2h",
+  unread: true,
+  saved: false,
 };
 
 describe("searchFeedItems", () => {
@@ -67,106 +104,250 @@ describe("searchFeedItems", () => {
     mockInnerJoin.mockReturnValue({ where: mockWhere });
     mockWhere.mockReturnValue({ orderBy: mockOrderBy });
     mockOrderBy.mockReturnValue({ limit: mockLimit });
-    mockLimit.mockResolvedValue([]);
+    mockLimit.mockReturnValue({ offset: mockOffset });
+    mockOffset.mockResolvedValue([]);
+    // mockRow.publishedAt is fixed at 2026-01-01T10:00:00Z so `time` derives
+    // to a stable "2h" against this frozen clock, instead of drifting as
+    // real time passes.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T12:00:00Z"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("returns matching feed items for a given user and query", async () => {
-    mockLimit.mockResolvedValue([mockRow]);
+    mockOffset.mockResolvedValue([mockRow]);
 
-    const results = await searchFeedItems(1, "testing");
+    const result = await searchFeedItems(1, "testing");
 
-    expect(results).toEqual([expectedResult]);
+    expect(result.items).toEqual([expectedResult]);
   });
 
   it("includes author and imageUrl in results", async () => {
-    mockLimit.mockResolvedValue([mockRow]);
+    mockOffset.mockResolvedValue([mockRow]);
 
-    const results = await searchFeedItems(1, "testing");
+    const result = await searchFeedItems(1, "testing");
 
-    expect(results[0].author).toBe("Jane Doe");
-    expect(results[0].imageUrl).toBe("https://example.com/image.jpg");
+    expect(result.items[0].author).toBe("Jane Doe");
+    expect(result.items[0].imageUrl).toBe("https://example.com/image.jpg");
+  });
+
+  // Regression: #276. mapSearchRow reads row.mediaUrl/row.mediaDuration
+  // unconditionally, so it would pass them through as undefined if the
+  // select below it never fetched them — that's the actual bug this closes.
+  // Pin the drizzle select() argument itself (same pattern as the orderBy
+  // pin further down in this file) so deleting the columns from the query
+  // fails this test, not just the mapping.
+  it("selects the media columns so a podcast/video opened from search can play", async () => {
+    await searchFeedItems(1, "testing");
+
+    const selection = mockSelect.mock.calls[0][0];
+    expect(selection.mediaUrl).toBe(feedItems.mediaUrl);
+    expect(selection.mediaDuration).toBe(feedItems.mediaDuration);
   });
 
   it("returns null author and imageUrl when not set", async () => {
     const noAuthorRow = { ...mockRow, author: null, imageUrl: null };
-    mockLimit.mockResolvedValue([noAuthorRow]);
+    mockOffset.mockResolvedValue([noAuthorRow]);
 
-    const results = await searchFeedItems(1, "testing");
+    const result = await searchFeedItems(1, "testing");
 
-    expect(results[0].author).toBeNull();
-    expect(results[0].imageUrl).toBeNull();
+    expect(result.items[0].author).toBeNull();
+    expect(result.items[0].imageUrl).toBeNull();
   });
 
   it("maps feedSource to the correct item type", async () => {
     const podcastRow = { ...mockRow, feedSource: "podcast" };
-    mockLimit.mockResolvedValue([podcastRow]);
+    mockOffset.mockResolvedValue([podcastRow]);
 
-    const results = await searchFeedItems(1, "testing");
+    const result = await searchFeedItems(1, "testing");
 
-    expect(results[0].type).toBe("podcast");
+    expect(result.items[0].type).toBe("podcast");
   });
 
   it("falls back to feedSource when no type mapping exists", async () => {
     const unknownRow = { ...mockRow, feedSource: "newsletter" };
-    mockLimit.mockResolvedValue([unknownRow]);
+    mockOffset.mockResolvedValue([unknownRow]);
 
-    const results = await searchFeedItems(1, "testing");
+    const result = await searchFeedItems(1, "testing");
 
-    expect(results[0].type).toBe("newsletter");
+    expect(result.items[0].type).toBe("newsletter");
   });
 
   it("uses feedTitle as source when present", async () => {
-    mockLimit.mockResolvedValue([mockRow]);
+    mockOffset.mockResolvedValue([mockRow]);
 
-    const results = await searchFeedItems(1, "testing");
+    const result = await searchFeedItems(1, "testing");
 
-    expect(results[0].source).toBe("Test Feed");
+    expect(result.items[0].source).toBe("Test Feed");
   });
 
   it("falls back to feedSource when feedTitle is null", async () => {
     const noTitleRow = { ...mockRow, feedTitle: null };
-    mockLimit.mockResolvedValue([noTitleRow]);
+    mockOffset.mockResolvedValue([noTitleRow]);
 
-    const results = await searchFeedItems(1, "testing");
+    const result = await searchFeedItems(1, "testing");
 
-    expect(results[0].source).toBe("rss");
+    expect(result.items[0].source).toBe("rss");
   });
 
   it("falls back to feedSource when feedTitle is an empty string", async () => {
     const emptyTitleRow = { ...mockRow, feedTitle: "" };
-    mockLimit.mockResolvedValue([emptyTitleRow]);
+    mockOffset.mockResolvedValue([emptyTitleRow]);
 
-    const results = await searchFeedItems(1, "testing");
+    const result = await searchFeedItems(1, "testing");
 
-    expect(results[0].source).toBe("rss");
+    expect(result.items[0].source).toBe("rss");
   });
 
   it("falls back to feedSource when feedTitle is only whitespace", async () => {
     const whitespaceTitleRow = { ...mockRow, feedTitle: "   " };
-    mockLimit.mockResolvedValue([whitespaceTitleRow]);
+    mockOffset.mockResolvedValue([whitespaceTitleRow]);
 
-    const results = await searchFeedItems(1, "testing");
+    const result = await searchFeedItems(1, "testing");
 
-    expect(results[0].source).toBe("rss");
+    expect(result.items[0].source).toBe("rss");
   });
 
-  it("returns an empty array when there are no matches", async () => {
-    mockLimit.mockResolvedValue([]);
+  it("returns an empty page when there are no matches", async () => {
+    mockOffset.mockResolvedValue([]);
 
-    const results = await searchFeedItems(1, "nonexistent");
+    const result = await searchFeedItems(1, "nonexistent");
 
-    expect(results).toEqual([]);
+    expect(result.items).toEqual([]);
+    expect(result.nextOffset).toBeNull();
   });
 
-  it("applies the result limit", async () => {
-    mockLimit.mockResolvedValue([]);
+  // Regression: #247. The null-readAt -> unread=true case is already pinned
+  // by "returns matching feed items…" above; only the non-null case adds
+  // signal here.
+  it("derives unread=false from a non-null readAt, matching feedItems.ts", async () => {
+    const readRow = { ...mockRow, readAt: new Date("2026-01-01T00:00:00Z") };
+    mockOffset.mockResolvedValue([readRow]);
+
+    const result = await searchFeedItems(1, "testing");
+
+    expect(result.items[0].unread).toBe(false);
+  });
+
+  // Regression: #275. The null-savedAt -> saved=false case is already pinned
+  // by "returns matching feed items…" above (mirrors the unread convention
+  // just above); only the non-null case adds signal here. A search result
+  // for an item already saved must carry saved=true, matching
+  // feedItems.ts's FeedItemResult — otherwise ReaderDetail's bookmark button
+  // and toggleSave's optimistic count adjustment treat it as unsaved when
+  // opened from search.
+  it("derives saved=true from a non-null savedAt, matching feedItems.ts", async () => {
+    const savedRow = { ...mockRow, savedAt: new Date("2026-01-01T00:00:00Z") };
+    mockOffset.mockResolvedValue([savedRow]);
+
+    const result = await searchFeedItems(1, "testing");
+
+    expect(result.items[0].saved).toBe(true);
+  });
+
+  it("fetches one row beyond the default page size to detect a next page", async () => {
+    mockOffset.mockResolvedValue([]);
 
     await searchFeedItems(1, "anything");
 
-    expect(mockLimit).toHaveBeenCalledWith(SEARCH_RESULT_LIMIT);
+    expect(mockLimit).toHaveBeenCalledWith(SEARCH_RESULT_LIMIT + 1);
+    expect(mockOffset).toHaveBeenCalledWith(0);
   });
 
-  it("calls select, from, innerJoin, where, orderBy, and limit in order", async () => {
+  it("sets nextOffset when there are more rows than the page size", async () => {
+    const rows = Array.from({ length: SEARCH_RESULT_LIMIT + 1 }, (_, i) => ({
+      ...mockRow,
+      id: i + 1,
+    }));
+    mockOffset.mockResolvedValue(rows);
+
+    const result = await searchFeedItems(1, "testing");
+
+    expect(result.items).toHaveLength(SEARCH_RESULT_LIMIT);
+    expect(result.nextOffset).toBe(SEARCH_RESULT_LIMIT);
+  });
+
+  it("sets nextOffset to null on the last page", async () => {
+    mockOffset.mockResolvedValue([mockRow]);
+
+    const result = await searchFeedItems(1, "testing");
+
+    expect(result.nextOffset).toBeNull();
+  });
+
+  it("applies the provided offset for a subsequent page", async () => {
+    mockOffset.mockResolvedValue([]);
+
+    await searchFeedItems(1, "testing", { offset: 20 });
+
+    expect(mockOffset).toHaveBeenCalledWith(20);
+  });
+
+  it("computes nextOffset as offset + limit for a non-first page", async () => {
+    const rows = Array.from({ length: SEARCH_RESULT_LIMIT + 1 }, (_, i) => ({
+      ...mockRow,
+      id: i + 1,
+    }));
+    mockOffset.mockResolvedValue(rows);
+
+    const result = await searchFeedItems(1, "testing", { offset: 20 });
+
+    expect(result.nextOffset).toBe(20 + SEARCH_RESULT_LIMIT);
+  });
+
+  it("uses the provided limit when within bounds", async () => {
+    mockOffset.mockResolvedValue([]);
+
+    await searchFeedItems(1, "testing", { limit: 10 });
+
+    expect(mockLimit).toHaveBeenCalledWith(11);
+  });
+
+  it("clamps an over-large limit to the maximum page size", async () => {
+    mockOffset.mockResolvedValue([]);
+
+    await searchFeedItems(1, "testing", { limit: 9999 });
+
+    expect(mockLimit).toHaveBeenCalledWith(SEARCH_RESULT_MAX_LIMIT + 1);
+  });
+
+  it("clamps a zero limit up to one", async () => {
+    mockOffset.mockResolvedValue([]);
+
+    await searchFeedItems(1, "testing", { limit: 0 });
+
+    expect(mockLimit).toHaveBeenCalledWith(2);
+  });
+
+  it("clamps a negative limit up to one", async () => {
+    mockOffset.mockResolvedValue([]);
+
+    await searchFeedItems(1, "testing", { limit: -5 });
+
+    expect(mockLimit).toHaveBeenCalledWith(2);
+  });
+
+  it("orders by ts_rank desc then id desc for deterministic pagination", async () => {
+    await searchFeedItems(1, "testing");
+
+    // The second orderBy argument must be exactly desc(feedItems.id): a rank-only
+    // sort (or a different tiebreaker) lets limit/offset paging repeat or skip
+    // rows tied on rank, so pin the exact tiebreaker rather than "any 2nd arg".
+    expect(mockOrderBy.mock.calls[0][1]).toEqual(desc(feedItems.id));
+  });
+
+  it("clamps a negative offset up to zero", async () => {
+    mockOffset.mockResolvedValue([]);
+
+    await searchFeedItems(1, "testing", { offset: -5 });
+
+    expect(mockOffset).toHaveBeenCalledWith(0);
+  });
+
+  it("calls select, from, innerJoin, where, orderBy, limit, offset in order", async () => {
     await searchFeedItems(42, "query");
 
     expect(mockSelect).toHaveBeenCalledTimes(1);
@@ -175,33 +356,184 @@ describe("searchFeedItems", () => {
     expect(mockWhere).toHaveBeenCalledTimes(1);
     expect(mockOrderBy).toHaveBeenCalledTimes(1);
     expect(mockLimit).toHaveBeenCalledTimes(1);
+    expect(mockOffset).toHaveBeenCalledTimes(1);
+  });
+
+  // Regression guard for #275: every test above feeds a hand-built row
+  // straight into the mocked .offset(), so nothing else pins that the query
+  // actually selects savedAt — dropping it from the projection would leave
+  // item.savedAt undefined at runtime, and mapSearchRow's `!== null` check
+  // would then derive saved=true for every result (worse than the original
+  // bug: every result shows a filled bookmark, and one click un-saves an
+  // item that was never saved). Same guard for readAt/unread, which had no
+  // equivalent pin either.
+  it("selects readAt and savedAt so unread/saved are derived from real columns, not undefined", async () => {
+    await searchFeedItems(1, "testing");
+
+    // Pinned to the exact column objects, not just the key names — a key
+    // present but mis-wired to the wrong column (e.g. `savedAt:
+    // feedItems.readAt`) would still pass an Object.keys-only check.
+    const selection = mockSelect.mock.calls[0][0];
+    expect(selection.readAt).toBe(feedItems.readAt);
+    expect(selection.savedAt).toBe(feedItems.savedAt);
+  });
+
+  it("builds a prefix tsquery bound as a parameter, not spliced into the SQL text", async () => {
+    await searchFeedItems(1, "podcas");
+
+    const whereChunks = flattenSqlChunks(mockWhere.mock.calls[0][0]);
+    const orderByChunks = flattenSqlChunks(mockOrderBy.mock.calls[0][0]);
+
+    // Static text chunks must never contain the raw search term — that
+    // would mean it was string-concatenated into the SQL rather than bound
+    // as a parameter. Filtering to chunks with an array `value` (rather than
+    // checking every chunk) keeps this from breaking if a future drizzle
+    // version changes how it represents columns or params internally.
+    const isStaticTextChunk = (chunk: unknown): chunk is { value: string[] } =>
+      typeof chunk === "object" &&
+      chunk !== null &&
+      Array.isArray((chunk as { value?: unknown }).value);
+
+    const staticText = whereChunks
+      .filter(isStaticTextChunk)
+      .map((chunk) => chunk.value.join(""))
+      .join("");
+    expect(staticText).not.toContain("podcas");
+    expect(staticText.length).toBeGreaterThan(0);
+
+    expect(whereChunks).toContain("podcas:*");
+    expect(orderByChunks).toContain("podcas:*");
+  });
+
+  it("does not query the database when the query has no searchable characters", async () => {
+    const result = await searchFeedItems(1, "   !!!   ");
+
+    expect(result.items).toEqual([]);
+    expect(result.nextOffset).toBeNull();
+    expect(mockSelect).not.toHaveBeenCalled();
+  });
+
+  it("still queries the database for a stop-word-only term, pinning the existing behavior", async () => {
+    // "the" clears MIN_PREFIX_TERM_LENGTH and reaches the DB as "the:*", same
+    // as it did under plainto_tsquery — Postgres's own dictionary reduces it
+    // to an empty tsquery and the query returns no rows. This isn't a
+    // regression, but it's worth pinning so a future change to the guard
+    // (e.g. an English stop-word list) is a deliberate choice, not a surprise.
+    mockOffset.mockResolvedValue([]);
+
+    const result = await searchFeedItems(1, "the");
+
+    expect(mockSelect).toHaveBeenCalledTimes(1);
+    expect(result.items).toEqual([]);
   });
 });
 
-describe("formatRelativeTime", () => {
-  it("returns empty string for null", () => {
-    expect(formatRelativeTime(null)).toBe("");
+describe("buildPrefixTsQuery", () => {
+  it("appends a prefix marker to a single term so a partial word matches", () => {
+    expect(buildPrefixTsQuery("podcas")).toBe("podcas:*");
   });
 
-  it("formats minutes for dates less than 1 hour ago", () => {
-    const thirtyMinutesAgo = new Date(Date.now() - 30 * 60_000);
-    expect(formatRelativeTime(thirtyMinutesAgo)).toBe("30m");
+  it("ANDs multiple terms together, each with its own prefix marker", () => {
+    expect(buildPrefixTsQuery("cool podcast")).toBe("cool:* & podcast:*");
   });
 
-  it("formats hours for dates less than 24 hours ago", () => {
-    const twoHoursAgo = new Date(Date.now() - 2 * 3_600_000);
-    expect(formatRelativeTime(twoHoursAgo)).toBe("2h");
+  it("collapses repeated whitespace between terms", () => {
+    expect(buildPrefixTsQuery("cool   podcast")).toBe("cool:* & podcast:*");
   });
 
-  it("formats days for dates less than 7 days ago", () => {
-    const threeDaysAgo = new Date(Date.now() - 3 * 86_400_000);
-    expect(formatRelativeTime(threeDaysAgo)).toBe("3d");
+  it("strips tsquery operator characters so they can't be interpreted as query syntax", () => {
+    expect(buildPrefixTsQuery("foo & bar:*")).toBe("foo:* & bar:*");
   });
 
-  it("formats as month and day for dates older than 7 days", () => {
-    // Use a local noon timestamp to avoid timezone-induced date shifts.
-    const oldDate = new Date(2024, 0, 5, 12, 0, 0);
-    const result = formatRelativeTime(oldDate);
-    expect(result).toMatch(/Jan 5/);
+  it("returns an empty string when there are no searchable characters", () => {
+    expect(buildPrefixTsQuery("   !!!   ")).toBe("");
+  });
+
+  it("splits on hyphens so a hyphenated word still matches like Postgres's own tokenizer", () => {
+    // Postgres's tokenizer lexes "sci-fi" into "sci" and "fi" separately;
+    // gluing the pieces together into "scifi:*" would never match either.
+    expect(buildPrefixTsQuery("sci-fi")).toBe("sci:* & fi:*");
+  });
+
+  it("keeps a too-short fragment as an exact (non-prefix) term instead of dropping it", () => {
+    // "don't" splits into "don" and "t"; "t" alone is below
+    // MIN_PREFIX_TERM_LENGTH so it would force a full index scan as "t:*" —
+    // but it must still constrain the match, so it's required as an exact
+    // lexeme rather than discarded.
+    expect(buildPrefixTsQuery("don't")).toBe("don:* & t");
+  });
+
+  it("matches a lone short term exactly instead of discarding the search", () => {
+    // A lone digit or letter (e.g. "9" in "Top 9 podcasts") is a real,
+    // searchable lexeme under plainto_tsquery — dropping it entirely would
+    // be a regression, so it's matched exactly rather than as a wildcard.
+    expect(buildPrefixTsQuery("a")).toBe("a");
+  });
+
+  it("keeps a too-short term as an exact match alongside prefix-matching the rest", () => {
+    // Every term must still constrain the query, even the ones too short to
+    // safely prefix-match — dropping "9" here would let "Top 5 podcasts"
+    // wrongly match a search for "top 9 podcasts".
+    expect(buildPrefixTsQuery("a cool")).toBe("a & cool:*");
+    expect(buildPrefixTsQuery("top 9 podcasts")).toBe("top:* & 9 & podcasts:*");
+  });
+
+  it("caps the number of ANDed terms so a very long query can't build an unbounded tsquery", () => {
+    const manyWords = Array.from(
+      { length: MAX_SEARCH_TERMS + 5 },
+      (_unused, index) => `term${index}`,
+    );
+    const tsQuery = buildPrefixTsQuery(manyWords.join(" "));
+
+    expect(tsQuery.split(" & ")).toHaveLength(MAX_SEARCH_TERMS);
+    expect(tsQuery).toContain("term0:*");
+    expect(tsQuery).not.toContain(`term${MAX_SEARCH_TERMS}:*`);
+  });
+
+  it("truncates an individual term so a single oversized word can't build an oversized lexeme", () => {
+    const longTerm = "a".repeat(MAX_TERM_LENGTH + 36);
+
+    expect(buildPrefixTsQuery(longTerm)).toBe(
+      `${"a".repeat(MAX_TERM_LENGTH)}:*`,
+    );
+  });
+
+  it("truncates by whole code point so an astral-plane character isn't split into an unmatchable surrogate", () => {
+    // U+20000 is outside the BMP (a UTF-16 surrogate pair, 2 code units per
+    // character), so a naive UTF-16 .slice(0, MAX_TERM_LENGTH) could land
+    // mid-pair. Repeating it well past MAX_TERM_LENGTH code points exercises
+    // that truncation counts whole characters, not UTF-16 units.
+    const astralChar = "\u{20000}";
+    const longAstralTerm = astralChar.repeat(MAX_TERM_LENGTH + 36);
+
+    const tsQuery = buildPrefixTsQuery(longAstralTerm);
+
+    expect(tsQuery).toBe(`${astralChar.repeat(MAX_TERM_LENGTH)}:*`);
+    // Confirms truncation landed on a whole character rather than splitting
+    // a surrogate pair, which would leave an ill-formed string.
+    expect(tsQuery.isWellFormed()).toBe(true);
+  });
+
+  it("prefix-marks a lone astral-plane character since it clears the floor by code point, not code unit", () => {
+    // "\u{20000}".length is 2 (a UTF-16 surrogate pair) but it's one code
+    // point, so counting UTF-16 units here would wrongly treat a single
+    // character as clearing MIN_PREFIX_TERM_LENGTH and mark it "x:*" — the
+    // exact broad-scan case that floor exists to prevent.
+    expect(buildPrefixTsQuery("\u{20000}")).toBe("\u{20000}");
+  });
+
+  it("caps the raw input length before splitting so a huge pasted string can't balloon into a huge term array", () => {
+    const hugeQuery = "z".repeat(10_000);
+
+    const tsQuery = buildPrefixTsQuery(hugeQuery);
+
+    // A single unbroken run of letters is one term, truncated to
+    // MAX_TERM_LENGTH regardless of how long the raw input was.
+    expect(tsQuery).toBe(`${"z".repeat(MAX_TERM_LENGTH)}:*`);
+  });
+
+  it("treats non-ASCII letters as valid term characters", () => {
+    expect(buildPrefixTsQuery("café")).toBe("café:*");
+    expect(buildPrefixTsQuery("日本語")).toBe("日本語:*");
   });
 });

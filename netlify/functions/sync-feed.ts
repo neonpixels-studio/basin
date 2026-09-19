@@ -30,6 +30,7 @@ import type {
   BlueskySessionTokens,
 } from "../../server/utils/blueskyAdapter";
 import { createDb } from "./db";
+import { initSentry, flushSentry } from "./sentry";
 import {
   IntegrationAuthError,
   ServerConfigError,
@@ -53,6 +54,7 @@ type FeedRecord = {
   title: string | null;
   source: string;
   lastFetched: Date | null;
+  paused: boolean;
 };
 
 async function fetchFeedRecord(
@@ -68,6 +70,7 @@ async function fetchFeedRecord(
       title: true,
       source: true,
       lastFetched: true,
+      paused: true,
     },
   });
 }
@@ -513,6 +516,16 @@ async function processSyncFeedEvent(
 
   const feed = await resolveFeedForSync(eventData);
 
+  // Authoritative pause enforcement for every dispatcher (scheduled cron and
+  // the on-demand "Refresh feeds" trigger alike): a source paused by a Pro→Free
+  // downgrade (see server/utils/feedPause.ts) pulls no new content regardless of
+  // how the sync was requested. Checked before the debounce so it short-circuits
+  // both modes.
+  if (feed.paused) {
+    logSyncEvent("sync-feed.paused", { feedId, userId, mode });
+    return;
+  }
+
   if (mode === "scheduled" && isWithinDebounceWindow(feed.lastFetched)) {
     logSyncEvent("sync-feed.debounced", {
       feedId,
@@ -582,9 +595,12 @@ async function recordPermanentFailure(
   }
 }
 
-export default asyncWorkloadFn<SyncFeedEvent>(async (event) => {
+// Runs the event and persists a permanent-failure record when one is thrown.
+// Split out of the exported handler so that one stays a thin
+// initSentry()/flushSentry() wrapper (see the handler's own comment for why
+// the flush must run on every exit path, including this function re-throwing).
+async function runSyncFeedEvent(event: SyncFeedEvent): Promise<void> {
   const { userId, feedId } = event.eventData;
-
   try {
     await processSyncFeedEvent(event.eventData, event.attempt);
   } catch (error) {
@@ -598,6 +614,27 @@ export default asyncWorkloadFn<SyncFeedEvent>(async (event) => {
     }
 
     throw error;
+  }
+}
+
+export default asyncWorkloadFn<SyncFeedEvent>(async (event) => {
+  try {
+    // See netlify/functions/sentry.ts: this bundle never loads
+    // sentry.server.config.ts, so blueskyAdapter.ts's Sentry calls need
+    // their own client initialized in this runtime. Called inside the try
+    // (not ahead of it): initSentry() calls loadEnv(), and before this
+    // change env loading happened inside processSyncFeedEvent() (via
+    // createDb()), where a failure lands in runSyncFeedEvent's own catch and
+    // gets persisted through recordPermanentFailure(). Calling it outside
+    // the try would let that same class of failure bypass both the failure
+    // record and the flush below.
+    initSentry();
+    await runSyncFeedEvent(event);
+  } finally {
+    // Runs on every exit path (success, or runSyncFeedEvent re-throwing) —
+    // see flushSentry()'s comment for why skipping this on any path would
+    // silently drop that path's Sentry events.
+    await flushSentry();
   }
 });
 

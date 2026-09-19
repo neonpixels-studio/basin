@@ -409,3 +409,29 @@ describe("parsePodcastFeed", () => {
     expect(mockParseURL).not.toHaveBeenCalled();
   });
 });
+
+describe("parsePodcastFeedFromXml tags", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("maps episode categories to normalized tags", async () => {
+    mockParseString.mockResolvedValue(
+      makeFeedOutput([
+        makePodcastItem({ categories: ["Comedy", "comedy", "  Society  "] }),
+      ]),
+    );
+
+    const [item] = await parsePodcastFeedFromXml("<rss/>", FEED_ID);
+    expect(item.tags).toEqual(["comedy", "society"]);
+  });
+
+  it("leaves tags null when the episode has no categories", async () => {
+    mockParseString.mockResolvedValue(
+      makeFeedOutput([makePodcastItem({ categories: undefined })]),
+    );
+
+    const [item] = await parsePodcastFeedFromXml("<rss/>", FEED_ID);
+    expect(item.tags).toBeNull();
+  });
+});

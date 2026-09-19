@@ -2,6 +2,39 @@ import { config } from "@vue/test-utils";
 import { vi, beforeEach } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 
+// Stub the real Sentry SDK for every test file. Several app/server modules
+// (appearance store, useAccount, useSyncQueue, server/utils/*) import
+// app/lib/sentry.ts, which this setup file transitively loads (via the
+// eager `useAppearanceStore` import below) before any test-local `vi.mock`
+// call would normally hoist. A module is only ever evaluated once per test
+// file's module graph, so without a mock registered here first, app/lib/
+// sentry.ts would bind to the real `@sentry/nuxt` package (or, worse, to a
+// *different* mock instance than the one an individual test file asserts
+// against — the two would silently diverge). `mockSentryScope` is exported
+// so tests/lib/sentry.test.ts can assert on `setExtras` directly instead of
+// re-mocking this module itself. Named with the `mock` prefix so Vitest
+// allows referencing it inside the hoisted factory below.
+export const mockSentryScope = { setExtras: vi.fn() };
+
+vi.mock("@sentry/nuxt", () => ({
+  withScope: vi.fn((callback: (_scope: typeof mockSentryScope) => unknown) =>
+    callback(mockSentryScope),
+  ),
+  captureException: vi.fn(),
+  captureMessage: vi.fn(),
+  setUser: vi.fn(),
+}));
+
+// A valid tombstone pepper for every test by default, so any suite that reaches
+// getOrCreateUser or the account-deletion sweep doesn't throw TombstonePepperError.
+// The fail-closed tests override it to "" via vi.stubEnv to assert the throw.
+// Guard on falsiness, not just nullish: an exported TOMBSTONE_ID_PEPPER="" (a dev
+// copying the empty value from .env.example into their shell) is not nullish, so
+// ??= would leave it blank and every such suite would fail with TombstonePepperError.
+if (!process.env.TOMBSTONE_ID_PEPPER) {
+  process.env.TOMBSTONE_ID_PEPPER = "test-tombstone-pepper-0123456789";
+}
+
 // Real composables as globals — mirrors Nuxt's auto-import behavior.
 import { useToast } from "../app/composables/useToast.js";
 import { useSearch } from "../app/composables/useSearch.js";
@@ -10,14 +43,33 @@ import { FREE_ACCOUNT_PLAN } from "../app/composables/useBilling.ts";
 import { useAppearanceStore } from "../app/stores/appearance.ts";
 import { useFeedStore } from "../app/stores/feed.ts";
 import { useInputValidation } from "../app/composables/useInputValidation.ts";
+import { useAuthHeaders } from "../app/composables/useAuthHeaders.ts";
 import { usePodcastPlayer } from "../app/composables/usePodcastPlayer.ts";
+import {
+  useReverification,
+  isReverificationCancelledError,
+} from "../app/composables/useReverification.ts";
+import { useMarketingSeo } from "../app/composables/useMarketingSeo.ts";
 
 globalThis.useToast = useToast;
 globalThis.useSearch = useSearch;
 globalThis.useAppearanceStore = useAppearanceStore;
 globalThis.useFeedStore = useFeedStore;
 globalThis.useInputValidation = useInputValidation;
+// Real composable as a global — mirrors Nuxt auto-import. It reads whatever
+// useAuth a test stubs (called at invocation time, not definition time).
+globalThis.useAuthHeaders = useAuthHeaders;
 globalThis.usePodcastPlayer = usePodcastPlayer;
+// Real composables as globals — reverification wrapping + its cancellation guard
+// (mirrors Nuxt auto-import; both read whatever useClerk a test stubs).
+globalThis.useReverification = useReverification;
+globalThis.isReverificationCancelledError = isReverificationCancelledError;
+// Real composable as a global, wrapped in vi.fn so page tests can assert on
+// the title/description each page passed in without re-asserting the full
+// og/twitter/canonical shape per page (that shape has its own dedicated
+// suite: tests/composables/useMarketingSeo.test.ts). Reads whatever
+// useRoute/useRuntimeConfig a test stubs (called at invocation time).
+globalThis.useMarketingSeo = vi.fn(useMarketingSeo);
 
 // Default stub for useUserSettings — returns defaults, no-ops on save.
 // Individual tests can override this with vi.stubGlobal if needed.
@@ -50,19 +102,29 @@ globalThis.useRouter = vi.fn(() => ({
 globalThis.definePageMeta = vi.fn();
 globalThis.useHead = vi.fn();
 globalThis.useSeoMeta = vi.fn();
+// Default runtime config — mirrors nuxt.config.ts's runtimeConfig.public
+// shape closely enough for the marketing pages' canonicalUrl() (see
+// app/utils/siteMeta.ts). Tests that care about a specific siteUrl override
+// with vi.stubGlobal.
+globalThis.useRuntimeConfig = vi.fn(() => ({
+  public: { siteUrl: "https://reader.example" },
+}));
 
 // Nuxt / Nitro handler wrappers — identity so the inner function is what gets exported
 globalThis.defineNuxtRouteMiddleware = (fn: Function) => fn;
 globalThis.defineEventHandler = (fn: Function) => fn;
+globalThis.defineNuxtPlugin = (fn: Function) => fn;
 
 // H3 / Nitro server globals used by API handlers under test
 globalThis.createError = ({
   statusCode,
   statusMessage,
+  data,
 }: {
   statusCode: number;
   statusMessage: string;
-}) => Object.assign(new Error(statusMessage), { statusCode });
+  data?: unknown;
+}) => Object.assign(new Error(statusMessage), { statusCode, data });
 globalThis.isError = (input: unknown): input is { statusCode: number } =>
   input instanceof Error &&
   typeof (input as { statusCode?: unknown }).statusCode === "number";
@@ -98,6 +160,12 @@ globalThis.useFeeds = vi.fn(() => ({
   remove: vi.fn(),
 }));
 
+globalThis.useAccountExport = vi.fn(() => ({
+  exporting: ref(false),
+  error: ref(null),
+  exportData: vi.fn(),
+}));
+
 globalThis.useConnections = vi.fn(() => ({
   items: ref([]),
   loading: ref(false),
@@ -115,6 +183,14 @@ globalThis.useBilling = vi.fn(() => ({
   error: ref(null),
   loadPlan: vi.fn().mockResolvedValue({ ...FREE_ACCOUNT_PLAN }),
   startCheckout: vi.fn(),
+}));
+
+// useAccount stub — reports a successful deletion by default. Tests that need to
+// assert on the failure path override with vi.stubGlobal.
+globalThis.useAccount = vi.fn(() => ({
+  deleting: ref(false),
+  error: ref(null),
+  deleteAccount: vi.fn().mockResolvedValue(true),
 }));
 
 // Clerk composable stubs
@@ -204,6 +280,7 @@ config.global.stubs = {
   SettingsConnections: true,
   SettingsReading: true,
   SettingsAccount: true,
+  SettingsDeleteAccount: true,
   // Clerk components
   SignIn: true,
   SignUp: true,

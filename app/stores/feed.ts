@@ -5,7 +5,12 @@ import {
   connections as seedConnections,
 } from "~/data/mock";
 import { SOURCES } from "~/lib/icons";
-import { $fetchWithTimeout } from "~/utils/fetchWithTimeout";
+import { $fetchWithTimeout, FetchTimeoutError } from "~/utils/fetchWithTimeout";
+import {
+  sanitizeFeedHtml,
+  looksLikeHtml,
+  hasBlockLevelMarkup,
+} from "~/utils/sanitizeHtml";
 
 const clone = (x: unknown) => JSON.parse(JSON.stringify(x));
 
@@ -13,6 +18,27 @@ const clone = (x: unknown) => JSON.parse(JSON.stringify(x));
 // can't wedge the refresh loading state. Exported so tests advance their fake
 // timers by the exact same value.
 export const FEED_SYNC_TIMEOUT_MS = 15000;
+
+// Bounds every /api/feed-items load — dashboard mount and the post-sync reload in
+// refresh() — so a never-settling response can't hang the caller. Independent of
+// FEED_SYNC_TIMEOUT_MS: a slow-but-successful sync followed by a hung items load
+// can hold refresh()'s loading state for the sum of the two. Exported so tests
+// advance their fake timers by the exact same value.
+export const FEED_ITEMS_TIMEOUT_MS = 15000;
+
+// Bounds the account-scoped /api/mark-all-read request so a never-settling
+// response can't wedge the caller. Exported so tests advance their fake timers
+// by the exact same value.
+export const MARK_ALL_READ_TIMEOUT_MS = 15000;
+
+// Bounds the /api/feed-item-counts request so a never-settling response can't
+// wedge the caller (loadCounts is best effort, but must still settle).
+const FEED_COUNTS_TIMEOUT_MS = 15000;
+
+// setupWatchers() keeps the loading skeleton up for this long after mount so
+// the reveal doesn't flash for a near-instant settings load. Exported so
+// tests advance their fake timers by the exact same value.
+export const INITIAL_REVEAL_DELAY_MS = 650;
 
 export const useFeedStore = defineStore("feed", () => {
   const { getToken } = useAuth();
@@ -29,6 +55,24 @@ export const useFeedStore = defineStore("feed", () => {
     activeItem: null as Record<string, unknown> | null,
     detailLoading: false,
     newFeedUrl: "",
+    // Server pagination cursor for /api/feed-items. Null means the first page
+    // hasn't loaded yet or the last page returned no further offset (end of feed).
+    nextOffset: null as number | null,
+    loadingMore: false,
+    // True only while a first page (mount load or refresh) is actually in
+    // flight. loadMore checks this — not the cosmetic `loading` reveal timer —
+    // so it won't fire mid-refresh yet also won't be blocked by the stagger.
+    loadingFirstPage: false,
+    // Bumped whenever the item list is replaced (a fresh first page or refresh),
+    // never on an append. Consumers watch it to reset scroll windows on a new
+    // list without resetting when older pages are appended.
+    listVersion: 0,
+    // Whole-account totals per dashboard filter id, loaded from
+    // /api/feed-item-counts so the filter chips reflect every matching item and
+    // not just the paginated page currently held in `items`. Empty until the
+    // first load resolves, at which point countFor prefers these over the
+    // loaded-page tally.
+    counts: {} as Record<string, number>,
   });
 
   const timers: Record<string, ReturnType<typeof setTimeout> | null> = {
@@ -38,6 +82,7 @@ export const useFeedStore = defineStore("feed", () => {
   };
   let initialized = false;
   let refreshing = false;
+  let markingAllRead = false;
 
   const filterDefs = [
     { id: "all", label: "All", c: "var(--accent)" },
@@ -46,9 +91,28 @@ export const useFeedStore = defineStore("feed", () => {
     { id: "video", label: "YouTube", c: "var(--src-video)" },
     { id: "tweet", label: "Bluesky", c: "var(--src-tweet)" },
     { id: "saved", label: "Saved", c: "var(--accent)" },
+    { id: "starred", label: "Starred", c: "var(--accent)" },
   ];
 
   const skeletonKinds = ["article", "video", "tweet", "podcast", "article"];
+
+  // Single predicate for "does this item belong to dashboard filter <id>",
+  // shared by visibleItems, countFor, and the mark-all-read optimistic update.
+  function itemMatchesFilter(
+    item: Record<string, unknown>,
+    filter: string,
+  ): boolean {
+    if (filter === "all") {
+      return true;
+    }
+    if (filter === "saved") {
+      return item.saved === true;
+    }
+    if (filter === "starred") {
+      return item.starred === true;
+    }
+    return item.type === filter;
+  }
 
   const unreadCount = computed(
     () => state.items.filter((i: Record<string, unknown>) => i.unread).length,
@@ -56,15 +120,12 @@ export const useFeedStore = defineStore("feed", () => {
 
   const visibleItems = computed(() => {
     let list = state.items;
-    if (state.unreadOnly)
+    if (state.unreadOnly) {
       list = list.filter((i: Record<string, unknown>) => i.unread);
-    if (state.filter === "saved")
-      return list.filter((i: Record<string, unknown>) => i.saved);
-    if (state.filter !== "all")
-      return list.filter(
-        (i: Record<string, unknown>) => i.type === state.filter,
-      );
-    return list;
+    }
+    return list.filter((i: Record<string, unknown>) =>
+      itemMatchesFilter(i, state.filter),
+    );
   });
 
   const decks = computed(() => {
@@ -80,9 +141,25 @@ export const useFeedStore = defineStore("feed", () => {
 
   async function loadSettingsFromDb() {
     const { load } = useUserSettings();
-    const settings = await load();
-    state.layout = settings.layout ?? "timeline";
-    state.unreadOnly = settings.showUnreadOnly ?? false;
+    // A genuine empty/204 response resolves null and means "no saved
+    // settings yet" — falling back to defaults is correct. A rejection
+    // (network failure, expired auth) tells us nothing about the user's
+    // real settings, so it must neither clobber whatever's already in
+    // state nor throw out of setupWatchers() — the latter would leave the
+    // layout/unreadOnly/filter watchers below permanently unregistered for
+    // the rest of the session, since setupWatchers() only ever runs once.
+    let settings;
+    try {
+      settings = await load();
+    } catch (error) {
+      console.error(
+        "Failed to load user settings; keeping current values",
+        error,
+      );
+      return;
+    }
+    state.layout = settings?.layout ?? "timeline";
+    state.unreadOnly = settings?.showUnreadOnly ?? false;
   }
 
   async function buildAuthHeaders(): Promise<Record<string, string>> {
@@ -90,10 +167,22 @@ export const useFeedStore = defineStore("feed", () => {
     return token ? { Authorization: `Bearer ${token}` } : {};
   }
 
-  async function loadItems(params: { limit?: number; offset?: number } = {}) {
-    const { showToast } = useToast();
-    const headers = await buildAuthHeaders();
+  const LOAD_ITEMS_ERROR_MESSAGE =
+    "Failed to load feed items — please try again";
 
+  interface FeedItemsResponse {
+    items: Record<string, unknown>[];
+    total: number;
+    nextOffset: number | null;
+  }
+
+  // "all" carries no restriction, so it is sent as no param at all — keeping the
+  // default request identical to before the server-side filter existed.
+  function buildItemsQuery(params: {
+    limit?: number;
+    offset?: number;
+    filter?: string;
+  }): Record<string, string> {
     const query: Record<string, string> = {};
     if (params.limit !== undefined) {
       query.limit = String(params.limit);
@@ -101,26 +190,156 @@ export const useFeedStore = defineStore("feed", () => {
     if (params.offset !== undefined) {
       query.offset = String(params.offset);
     }
+    if (params.filter && params.filter !== "all") {
+      query.filter = params.filter;
+    }
+    return query;
+  }
+
+  function appendPage(response: FeedItemsResponse) {
+    const seen = new Set(state.items.map((item) => item.id));
+    state.items = [
+      ...state.items,
+      ...response.items.filter((item) => !seen.has(item.id)),
+    ];
+  }
+
+  // The cursor must move strictly forward; a server that echoes back the same
+  // (or an earlier) offset would otherwise loop us on a page we already hold,
+  // so treat any non-advancing cursor as end-of-feed.
+  function resolveNextOffset(
+    rawNext: unknown,
+    currentOffset: number,
+  ): number | null {
+    if (typeof rawNext !== "number") {
+      return null;
+    }
+    return rawNext > currentOffset ? rawNext : null;
+  }
+
+  // Apply a fetched page. Returns false only when a first page superseded this
+  // append mid-flight (listVersion moved), so the stale rows are dropped.
+  function applyItemsResponse(
+    response: FeedItemsResponse,
+    currentOffset: number,
+    isFirstPage: boolean,
+    requestVersion: number,
+  ): boolean {
+    // Surface a malformed payload as a load error (caught below → toast) rather
+    // than assigning undefined/id-less rows to state.items, which would crash
+    // every downstream consumer or wedge dedupe on a single `undefined` id.
+    const malformed =
+      !Array.isArray(response?.items) ||
+      response.items.some((item) => item?.id === undefined);
+    if (malformed) {
+      throw new TypeError("feed-items response items malformed");
+    }
+    if (!isFirstPage && state.listVersion !== requestVersion) {
+      return false;
+    }
+    if (isFirstPage) {
+      state.items = response.items;
+      state.listVersion += 1;
+    } else {
+      appendPage(response);
+    }
+    state.nextOffset = resolveNextOffset(response.nextOffset, currentOffset);
+    return true;
+  }
+
+  // Resolves to true when the page was fetched and applied, false when the
+  // request failed or was superseded — so callers (loadMore) can tell success
+  // from a swallowed error rather than blindly advancing their scroll window.
+  async function loadItems(
+    params: { limit?: number; offset?: number } = {},
+  ): Promise<boolean> {
+    const { showToast } = useToast();
+    const offset = params.offset ?? 0;
+    const isFirstPage = offset === 0;
+    // Snapshot the list generation before any await. If a fresh first page
+    // lands while this append is in flight, listVersion moves and we drop the
+    // stale append rather than grafting old-offset rows onto the new list.
+    const requestVersion = state.listVersion;
+    // Set before any await so loadMore's guard closes the whole first-page
+    // window, including the auth token round-trip, not just the items fetch.
+    if (isFirstPage) {
+      state.loadingFirstPage = true;
+    }
 
     try {
-      const response = await $fetch<{
-        items: Record<string, unknown>[];
-        total: number;
-        nextOffset: number | null;
-      }>("/api/feed-items", { headers, query });
-
-      if ((params.offset ?? 0) > 0) {
-        const seen = new Set(state.items.map((i) => i.id));
-        state.items = [
-          ...state.items,
-          ...response.items.filter((i) => !seen.has(i.id)),
-        ];
-      } else {
-        state.items = response.items;
-      }
+      const headers = await buildAuthHeaders();
+      const query = buildItemsQuery({ ...params, filter: state.filter });
+      const response = await $fetchWithTimeout<FeedItemsResponse>(
+        "/api/feed-items",
+        FEED_ITEMS_TIMEOUT_MS,
+        { headers, query },
+      );
+      return applyItemsResponse(response, offset, isFirstPage, requestVersion);
     } catch {
-      showToast("Failed to load feed items — please try again");
+      showToast(LOAD_ITEMS_ERROR_MESSAGE);
+      return false;
+    } finally {
+      if (isFirstPage) {
+        state.loadingFirstPage = false;
+      }
     }
+  }
+
+  const hasMore = computed(() => typeof state.nextOffset === "number");
+
+  // Fetch and append the next page of feed items. Guarded so a burst of
+  // intersection events can't fire overlapping requests, a first-page (re)load
+  // in flight can't be raced by a stale-offset append, and it no-ops once the
+  // last page has been reached. Returns whether a page was fetched and applied.
+  async function loadMore(): Promise<boolean> {
+    if (
+      state.loadingMore ||
+      state.loadingFirstPage ||
+      state.nextOffset === null
+    ) {
+      return false;
+    }
+    state.loadingMore = true;
+    try {
+      return await loadItems({ offset: state.nextOffset });
+    } finally {
+      state.loadingMore = false;
+    }
+  }
+
+  interface FeedCountsResponse {
+    all: number;
+    saved: number;
+    starred: number;
+    [itemType: string]: number;
+  }
+
+  // Load whole-account totals per filter for the chip counts. Deliberately best
+  // effort: a failure leaves the previous counts in place and countFor falls
+  // back to the loaded-page tally, so the feed still renders. No toast — the
+  // counts are a secondary annotation, not the primary content.
+  async function loadCounts(): Promise<void> {
+    try {
+      const headers = await buildAuthHeaders();
+      const response = await $fetchWithTimeout<FeedCountsResponse>(
+        "/api/feed-item-counts",
+        FEED_COUNTS_TIMEOUT_MS,
+        { headers },
+      );
+      state.counts = { ...response };
+    } catch {
+      // Keep the existing counts; the chips degrade to the loaded-page tally.
+    }
+  }
+
+  // Keep a chip count in step with an optimistic save/star toggle so the number
+  // moves with the item instead of waiting for the next counts reload. No-op
+  // until server counts have loaded, so it can never invent a count from zero.
+  function adjustCount(id: string, delta: number) {
+    if (state.counts[id] === undefined) {
+      return;
+    }
+    state.counts[id] = Math.max(0, state.counts[id] + delta);
   }
 
   async function setupWatchers() {
@@ -143,13 +362,21 @@ export const useFeedStore = defineStore("feed", () => {
         save({ showUnreadOnly });
       },
     );
+    // Switching filter must refetch the first page for the new filter, not just
+    // re-run the cosmetic reveal timer: the server now scopes the result set, so
+    // Saved/Starred/type views span every matching item rather than whatever the
+    // previous filter's page happened to hold. Counts are account-wide and don't
+    // change with the active filter, so they are not reloaded here.
     watch(
       () => state.filter,
-      () => runFeedLoad(420),
+      () => {
+        runFeedLoad(420);
+        loadItems();
+      },
     );
     setTimeout(() => {
       state.loading = false;
-    }, 650);
+    }, INITIAL_REVEAL_DELAY_MS);
   }
 
   function revealAfterLoad() {
@@ -207,6 +434,9 @@ export const useFeedStore = defineStore("feed", () => {
       const queued = await triggerFeedSync();
       showToast(syncToastMessage(queued));
       await loadItems();
+      // Counts are a secondary annotation; refresh a fresh snapshot in the
+      // background rather than holding the loading state on it.
+      loadCounts();
     } catch {
       showToast(REFRESH_ERROR_MESSAGE);
     } finally {
@@ -215,20 +445,32 @@ export const useFeedStore = defineStore("feed", () => {
     }
   }
 
+  // Prefer the whole-account total from the server; fall back to the loaded-page
+  // tally only until those counts land (or if their request failed), so the chip
+  // is never stuck at 0 before the first counts load resolves.
   function countFor(id: string) {
-    if (id === "all") return state.items.length;
-    if (id === "saved")
-      return state.items.filter((i: Record<string, unknown>) => i.saved).length;
-    return state.items.filter((i: Record<string, unknown>) => i.type === id)
-      .length;
+    if (state.counts[id] !== undefined) {
+      return state.counts[id];
+    }
+    return state.items.filter((i: Record<string, unknown>) =>
+      itemMatchesFilter(i, id),
+    ).length;
   }
 
   const SYNC_ERROR_MESSAGE = "Could not queue change for sync";
+  const MARK_ALL_READ_ERROR_MESSAGE =
+    "Could not mark all as read — please try again";
+  // A timeout means we stopped waiting, not that the server did nothing — the
+  // bulk update may have committed after we aborted. Resync rather than guess.
+  const MARK_ALL_READ_UNCONFIRMED_MESSAGE =
+    "Still marking as read — refreshing to confirm";
+  const MARK_ALL_READ_IN_FLIGHT_MESSAGE = "Still marking as read…";
 
   async function toggleSave(item: Record<string, unknown>) {
     const { showToast } = useToast();
     const previousSaved = item.saved;
     item.saved = !item.saved;
+    adjustCount("saved", item.saved ? 1 : -1);
     showToast(item.saved ? "Saved for later" : "Removed from saved");
 
     const { queueAction } = useSyncQueue();
@@ -240,6 +482,7 @@ export const useFeedStore = defineStore("feed", () => {
       });
     } catch {
       item.saved = previousSaved;
+      adjustCount("saved", item.saved ? 1 : -1);
       showToast(SYNC_ERROR_MESSAGE);
     }
   }
@@ -248,6 +491,8 @@ export const useFeedStore = defineStore("feed", () => {
     const { showToast } = useToast();
     const previousStarred = item.starred;
     item.starred = !item.starred;
+    adjustCount("starred", item.starred ? 1 : -1);
+    showToast(item.starred ? "Starred" : "Removed from starred");
 
     const { queueAction } = useSyncQueue();
     try {
@@ -258,37 +503,120 @@ export const useFeedStore = defineStore("feed", () => {
       });
     } catch {
       item.starred = previousStarred;
+      adjustCount("starred", item.starred ? 1 : -1);
       showToast(SYNC_ERROR_MESSAGE);
     }
   }
 
+  // Deliberately a direct request, not a useSyncQueue().queueAction like the
+  // per-item mutations: the queue models one row (feedId + guid) per action,
+  // whereas this is a single account-scoped bulk update whose whole purpose is
+  // to reach items the client never loaded. It mirrors refresh()/triggerFeedSync,
+  // the store's other account-wide server call. Trade-off: no offline replay —
+  // an offline click rolls back and toasts, rather than being queued.
+  // @todo add an account-scoped markAllRead action to the sync outbox so an
+  // offline click replays on reconnect instead of failing.
+  async function requestMarkAllRead(filter: string): Promise<void> {
+    const headers = await buildAuthHeaders();
+    await $fetchWithTimeout("/api/mark-all-read", MARK_ALL_READ_TIMEOUT_MS, {
+      method: "POST",
+      headers,
+      body: { filter },
+    });
+  }
+
+  // Marks every unread item in the account (scoped to the active filter) read
+  // via a single account-scoped request, not one per loaded row — so items
+  // beyond the currently-paginated page are marked too and the toast is honest.
+  // A timeout can't distinguish "server did nothing" from "server committed
+  // after we stopped waiting", so the only honest recovery is to re-read the
+  // list from the server rather than roll the optimistic change back.
+  async function resyncAfterMarkAllReadTimeout(
+    showToast: (_m: string) => void,
+  ) {
+    showToast(MARK_ALL_READ_UNCONFIRMED_MESSAGE);
+    await loadItems();
+  }
+
+  function rollbackMarkAllRead(
+    affected: Record<string, unknown>[],
+    showToast: (_m: string) => void,
+  ) {
+    affected.forEach((i: Record<string, unknown>) => {
+      i.unread = true;
+    });
+    showToast(MARK_ALL_READ_ERROR_MESSAGE);
+  }
+
   async function markAllRead() {
     const { showToast } = useToast();
-    const unreadItems = state.items.filter(
-      (i: Record<string, unknown>) => i.unread === true,
+    // Guard against overlapping account-wide requests (e.g. a double-click, or a
+    // second click after switching filter): a second optimistic pass whose
+    // rollback could resurrect items an earlier request already marked read
+    // server-side. Give feedback so the suppressed click isn't silent. Mirrors
+    // refresh().
+    if (markingAllRead) {
+      showToast(MARK_ALL_READ_IN_FLIGHT_MESSAGE);
+      return;
+    }
+    markingAllRead = true;
+    const filter = state.filter;
+    const affected = state.items.filter(
+      (i: Record<string, unknown>) =>
+        i.unread === true && itemMatchesFilter(i, filter),
     );
-    unreadItems.forEach((i: Record<string, unknown>) => {
+    affected.forEach((i: Record<string, unknown>) => {
       i.unread = false;
     });
     showToast("Marked all as read");
 
-    const { queueAction } = useSyncQueue();
-    const now = new Date().toISOString();
-    for (const feedItem of unreadItems) {
-      try {
-        await queueAction("markRead", {
-          feedId: feedItem.feedId,
-          guid: feedItem.guid,
-          readAt: now,
-        });
-      } catch {
-        feedItem.unread = true;
-        showToast(SYNC_ERROR_MESSAGE);
+    try {
+      await requestMarkAllRead(filter);
+    } catch (error) {
+      if (error instanceof FetchTimeoutError) {
+        await resyncAfterMarkAllReadTimeout(showToast);
+        return;
       }
+      rollbackMarkAllRead(affected, showToast);
+    } finally {
+      markingAllRead = false;
     }
   }
 
-  async function openItem(item: Record<string, unknown>) {
+  // A caller (e.g. SearchOverlay's chooseRow) can hand in a fresh object for
+  // an item that's already loaded in state.items — a separate /api/search
+  // response row, not the same reference. Without reconciling by id first,
+  // toggling unread/saved/starred from that detached copy would adjust the
+  // global count correctly for that one toggle but leave the stale duplicate
+  // in state.items out of sync, so a later toggle on that duplicate would
+  // double-count. Operating on the loaded row (when one exists) instead keeps
+  // every view mutating the same object.
+  //
+  // Deliberately keeps the loaded row's own unread/saved/starred rather than
+  // copying the fresher search row's values onto it: an unsynced optimistic
+  // toggle sitting in the outbox is local state we don't want a stale server
+  // response clobbering. Trade-off: if the item's real saved/unread state
+  // changed elsewhere (another device, another tab) since this page's items
+  // loaded, the search row's fresher value is discarded here and a toggle
+  // against the now-stale loaded value can itself drift from the server by
+  // one count until the next counts reload.
+  // @todo weigh reconciling specific server-owned fields (not the whole row)
+  // from the fresher row onto the loaded one, guarded so it never overwrites
+  // a field with a pending unsynced local change.
+  function resolveOpenedItem(
+    item: Record<string, unknown>,
+  ): Record<string, unknown> {
+    if (item.id === undefined || item.id === null) {
+      return item;
+    }
+    return (
+      state.items.find((row: Record<string, unknown>) => row.id === item.id) ??
+      item
+    );
+  }
+
+  async function openItem(rawItem: Record<string, unknown>) {
+    const item = resolveOpenedItem(rawItem);
     const wasUnread = item.unread === true;
     item.unread = false;
     state.activeItem = item;
@@ -378,40 +706,78 @@ export const useFeedStore = defineStore("feed", () => {
       tweet: "TweetCard",
     })[type];
 
-  const articleBody = (item: Record<string, unknown>) =>
-    item.body && (item.body as unknown[]).length
-      ? (item.body as string[])
-      : [
-          item.excerpt as string,
-          "Read the full piece at the source for the complete story, figures, and links.",
-        ];
+  const PARAGRAPH_BREAK = /\n\s*\n/;
+  const SOFT_WRAP = /\s*\n\s*/g;
 
-  const podcastNotes = (item: Record<string, unknown>) =>
-    item.notes && (item.notes as unknown[]).length
-      ? (item.notes as string[])
-      : [
-          (item.excerpt as string) ||
-            "Episode notes weren't provided for this show.",
-        ];
+  function itemContent(item: Record<string, unknown>): string {
+    return typeof item.content === "string" ? item.content.trim() : "";
+  }
 
-  const videoDesc = (item: Record<string, unknown>) =>
-    (item.desc as string) ||
-    `${item.title} — watch the full video on the channel. ${item.views || ""}.`;
+  // Blank lines separate paragraphs; single (soft-wrap) newlines collapse to
+  // spaces. Shared by the plain-text and markup paragraph builders.
+  function splitTextBlocks(text: string): string[] {
+    return text
+      .split(PARAGRAPH_BREAK)
+      .map((block) => block.replace(SOFT_WRAP, " ").trim())
+      .filter(Boolean);
+  }
 
-  const tweetReplies = () => [
-    {
-      who: "replyguy",
-      handle: "@in_the_replies",
-      text: "this is going straight into my notes app, thank you",
-      likes: "12",
-    },
-    {
-      who: "Builder",
-      handle: "@ships_daily",
-      text: "needed to read this today honestly",
-      likes: "4",
-    },
-  ];
+  // Split a synced item's real plain-text `content` into display paragraphs.
+  // Markup content is handled by contentHtml instead, so return an empty array
+  // for it here — never fall back to rendering the raw tags as escaped text. Also
+  // returns [] when the feed carried no content, so the view can show an honest
+  // empty state instead of inventing filler.
+  const contentParagraphs = (item: Record<string, unknown>) => {
+    const content = itemContent(item);
+    if (!content || looksLikeHtml(content)) {
+      return [];
+    }
+    return splitTextBlocks(content);
+  };
+
+  // Verbatim-text paragraphs for the post/tweet detail, which shows content as
+  // typed and never renders HTML. Unlike contentParagraphs it does not gate on
+  // markup: a Bluesky post is plain text, so any angle brackets a user typed are
+  // shown as-is rather than collapsing the post to an empty state.
+  const postParagraphs = (item: Record<string, unknown>) => {
+    const content = itemContent(item);
+    if (!content) {
+      return [];
+    }
+    return splitTextBlocks(content);
+  };
+
+  // Sanitize one blank-line-separated block of inline content and wrap it in a
+  // <p>. Dropping blocks that sanitize to nothing avoids phantom empty paragraphs
+  // (e.g. a stripped <script> between two text blocks).
+  function sanitizeInlineBlock(block: string): string {
+    const sanitized = sanitizeFeedHtml(block);
+    return sanitized ? `<p>${sanitized}</p>` : "";
+  }
+
+  // Sanitized, allowlisted HTML for feed content that carries markup (RSS
+  // content:encoded, podcast itunes:summary). Returns "" for plain-text content
+  // (which the view renders as paragraphs) or when content is absent/stripped to
+  // nothing, so the view only renders markup when there genuinely is some.
+  //
+  // Content that already has block structure (its own <p>, <ul>, <table>, …) is
+  // sanitized whole: splitting it on blank lines would tear a multi-line element
+  // (a <ul> or <table> spanning blank lines) apart and collapse <pre> whitespace.
+  // Inline-only content (plain text with a link, say) has no such structure, so
+  // its blank lines are the only paragraph breaks and get wrapped into <p>.
+  const contentHtml = (item: Record<string, unknown>): string => {
+    const content = itemContent(item);
+    if (!content || !looksLikeHtml(content)) {
+      return "";
+    }
+    if (hasBlockLevelMarkup(content)) {
+      return sanitizeFeedHtml(content);
+    }
+    return splitTextBlocks(content)
+      .map(sanitizeInlineBlock)
+      .filter(Boolean)
+      .join("");
+  };
 
   const sourceMeta = (type: string) => SOURCES[type as keyof typeof SOURCES];
 
@@ -424,6 +790,9 @@ export const useFeedStore = defineStore("feed", () => {
     decks,
     countFor,
     loadItems,
+    loadMore,
+    loadCounts,
+    hasMore,
     setupWatchers,
     runFeedLoad,
     refresh,
@@ -437,10 +806,9 @@ export const useFeedStore = defineStore("feed", () => {
     removeFeed,
     toggleConn,
     cardComponentName,
-    articleBody,
-    podcastNotes,
-    videoDesc,
-    tweetReplies,
+    contentParagraphs,
+    postParagraphs,
+    contentHtml,
     sourceMeta,
   };
 });

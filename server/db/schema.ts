@@ -19,7 +19,7 @@ const tsvector = customType<{ data: string }>({
     return "tsvector";
   },
 });
-import { relations } from "drizzle-orm";
+import { relations, sql } from "drizzle-orm";
 import { SYNC_STATUS } from "../utils/syncStatus";
 
 export const users = pgTable("users", {
@@ -27,6 +27,35 @@ export const users = pgTable("users", {
   providerId: text("provider_id").notNull().unique(),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+// Records a one-way hash of the provider id (Clerk user id) of a deleted
+// account. server/utils/tombstone.ts owns the full rationale (why a still-valid
+// session can otherwise resurrect an empty row); server/utils/tombstoneHash.ts
+// owns why we store sha256(provider_id + pepper) rather than the raw id
+// (issue #215). The hash is the primary key so re-deleting an account re-stamps
+// deletedAt via upsert (restarting the retention window) instead of raising a
+// unique violation.
+//
+// A row only ever needs to outlive the deleted account's longest valid session.
+// Only *enforcement* is windowed, not storage: tombstone.ts ignores any row older
+// than the maximum Clerk session lifetime (measured against deletedAt) so the
+// lockout self-heals without a scheduled job, but rows are retained indefinitely
+// (Clerk never reuses a user id) as a record that the provider id was deleted
+// rather than pruned — pruning would risk reopening the resurrection gap if the
+// window undercut a still-valid token's TTL. deletedAt tracks the latest deletion
+// (a re-deletion re-stamps it), not the first, so it is not a full deletion
+// history. It is stored with a time zone so that age comparison against the app
+// clock is unaffected by the server's local time zone. The column keeps its
+// `provider_id` name (the hash is what a provider id maps to), holding either a
+// hash (rows written since #215) or a legacy raw id until
+// scripts/backfill-hash-tombstones.ts migrates it — the same tolerant storage
+// shape crypto.ts uses for legacy plaintext tokens.
+export const deletionTombstones = pgTable("deletion_tombstones", {
+  providerId: text("provider_id").primaryKey(),
+  deletedAt: timestamp("deleted_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
 });
 
 export const feeds = pgTable(
@@ -49,6 +78,25 @@ export const feeds = pgTable(
     syncStatus: text("sync_status").notNull().default(SYNC_STATUS.OK),
     syncError: text("sync_error"),
     syncFailedAt: timestamp("sync_failed_at"),
+    // Backoff for permanently-failing syncs. consecutiveFailures counts how
+    // many permanent failures in a row the feed has hit; nextRetryAt is the
+    // earliest time the scheduler is allowed to re-sync it. Both grow with
+    // each failure (exponential, capped — see server/utils/feedSyncBackoff.ts)
+    // and reset to 0 / null on the next successful sync, so a healthy feed is
+    // never gated. nextRetryAt is additionally cleared to null — without
+    // touching consecutiveFailures — when the failure's cause may have been
+    // repaired (an account reconnect or a feed-URL re-add; see UNGATED_SYNC_STATE
+    // in feedSyncBackoff.ts) to let the feed retry once. So syncStatus = "ok"
+    // does not imply consecutiveFailures = 0: a still-broken feed carries its
+    // count between that un-gated retry and its next failure.
+    consecutiveFailures: integer("consecutive_failures").notNull().default(0),
+    nextRetryAt: timestamp("next_retry_at"),
+    // Paused sources are kept (not removed) but excluded from scheduled sync,
+    // so they stop pulling new content while their existing items stay intact.
+    // Set when a Pro→Free downgrade pushes an account over the Free source cap
+    // (server/utils/feedPause.ts), honoring the pricing page's promise
+    // (app/pages/pricing.vue). Cleared again when the account upgrades back.
+    paused: boolean("paused").notNull().default(false),
     createdAt: timestamp("created_at").defaultNow(),
     updatedAt: timestamp("updated_at").defaultNow(),
   },
@@ -84,6 +132,14 @@ export const feedItems = pgTable(
     uniqueIndex("feed_items_feed_id_guid_idx").on(table.feedId, table.guid),
     index("feed_items_tags_gin_idx").using("gin", table.tags),
     index("feed_items_search_vector_gin_idx").using("gin", table.searchVector),
+    // Supports the retention prune in
+    // netlify/functions/scheduled-feed-items-cleanup.ts. Partial to match the
+    // prune predicate exactly: the job only ever scans rows old enough to drop
+    // and never a starred or saved item, so indexing those preserved rows would
+    // only bloat the index without ever being read by the range query.
+    index("feed_items_retention_created_at_idx")
+      .on(table.createdAt)
+      .where(sql`${table.starred} = false and ${table.savedAt} is null`),
   ],
 );
 

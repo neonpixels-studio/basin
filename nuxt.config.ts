@@ -1,5 +1,6 @@
 import tailwindcss from "@tailwindcss/vite";
 import { fileURLToPath } from "node:url";
+import { requireValidSiteUrlForBuild } from "./server/utils/siteUrlValidation";
 
 const mainCss = fileURLToPath(
   new URL("./app/assets/css/main.css", import.meta.url),
@@ -14,6 +15,11 @@ const marketingCss = fileURLToPath(
 // TokenEncryptionKeyError on the first OAuth callback or token refresh.
 const TOKEN_ENCRYPTION_KEY_PATTERN = /^[0-9a-f]{64}$/i;
 
+// Must match the minimum server/utils/tombstoneHash.ts enforces — checked again
+// here so a missing/too-short pepper fails the build instead of throwing
+// TombstonePepperError on the first account deletion or new-user check.
+const MIN_TOMBSTONE_PEPPER_LENGTH = 16;
+
 // `nuxt build` (both npm run build and build:dev — Netlify production and
 // preview both go through this same command) always runs with
 // NODE_ENV=production; only `nuxt dev` doesn't. Hard-failing unconditionally
@@ -24,6 +30,35 @@ const TOKEN_ENCRYPTION_KEY_PATTERN = /^[0-9a-f]{64}$/i;
 // precise TokenEncryptionKeyError at the real call site if dev code path
 // ever touches an integration without a key.
 const isProductionBuild = process.env.NODE_ENV === "production";
+
+// Google Analytics (GA4) measurement ID. Read INLINE from process.env like the
+// other baked values so it's set per environment: it's only present in
+// .env.production, so preview (.env.dev), local (.env), and e2e (.env.e2e)
+// builds bake an empty string and skip the gtag.js snippet entirely (see
+// googleAnalyticsHeadScripts below). Mirrors the NUXT_DISABLE_SIGNUPS
+// prod-only pattern.
+const GA_MEASUREMENT_ID = process.env.NUXT_PUBLIC_GA_MEASUREMENT_ID || "";
+
+// The gtag.js loader + init pair, or nothing when no measurement ID is set for
+// this environment — so Google Analytics loads in production only.
+function googleAnalyticsHeadScripts() {
+  if (!GA_MEASUREMENT_ID) {
+    return [];
+  }
+
+  return [
+    {
+      async: true,
+      src: `https://www.googletagmanager.com/gtag/js?id=${GA_MEASUREMENT_ID}`,
+    },
+    {
+      innerHTML: `window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', '${GA_MEASUREMENT_ID}');`,
+    },
+  ];
+}
 
 // A missing or malformed key here would otherwise bake an empty (or invalid)
 // string into the server bundle (see the nitro.replace comment below) and
@@ -48,6 +83,43 @@ function requireTokenEncryptionKeyForBuild(): string {
   return key;
 }
 
+// Fails a bad NUXT_SITE_URL at deploy time instead of the first OAuth Connect
+// click or billing redirect — see ./server/utils/siteUrlValidation for the
+// rule set and why the guard logic (and its tests) live there rather than
+// here. Only blocks an actual deployable build, matching
+// requireTokenEncryptionKeyForBuild and requireTombstonePepperForBuild
+// above/below, so `nuxt dev` still works without a site URL set.
+function requireSiteUrlForBuild(): string {
+  return requireValidSiteUrlForBuild(
+    process.env.NUXT_SITE_URL,
+    isProductionBuild,
+  );
+}
+
+// A missing or too-short pepper here would bake an empty/weak value into the
+// server bundle (same nitro.replace mechanism as the encryption key below) and
+// silently ship deletion tombstones that store guessable hashes — fail the
+// build instead of the deploy. Only blocks a deployable production build so a
+// contributor can still run `nuxt dev`/typecheck without a local pepper.
+function requireTombstonePepperForBuild(): string {
+  const pepper = process.env.TOMBSTONE_ID_PEPPER ?? "";
+
+  if (!isProductionBuild) {
+    return pepper;
+  }
+
+  if (pepper.length < MIN_TOMBSTONE_PEPPER_LENGTH) {
+    throw new Error(
+      "TOMBSTONE_ID_PEPPER must be set to at least " +
+        `${MIN_TOMBSTONE_PEPPER_LENGTH} characters before building — deletion ` +
+        "tombstones cannot be hashed without it. Generate one with " +
+        "`openssl rand -hex 32` and add it to this environment's dotenvx file.",
+    );
+  }
+
+  return pepper;
+}
+
 export default defineNuxtConfig({
   compatibilityDate: "2024-11-01",
   modules: ["@pinia/nuxt", "@clerk/nuxt", "@sentry/nuxt/module"],
@@ -68,10 +140,27 @@ export default defineNuxtConfig({
   // resolve to empty in the deployed function unless the vars are set in Netlify.
   runtimeConfig: {
     databaseUrl: process.env.NUXT_DATABASE_URL || "",
+    // basin's own public base URL, the trusted origin OAuth redirect URIs and
+    // billing redirect targets are anchored to instead of the (spoofable)
+    // request Host/origin, so a forged Host can't hijack the OAuth flow or the
+    // post-billing bounce (see server/utils/siteUrl.ts, which throws a 500 if it
+    // is unset or malformed at request time). Read INLINE like the values below
+    // so dotenvx-decrypted values bake into the server bundle at build time.
+    // Must be set per environment in the dotenvx files. Read through
+    // requireSiteUrlForBuild() rather than raw process.env so a missing or
+    // malformed value fails the build instead of only the first request that
+    // needs it (see requireSiteUrlForBuild above).
+    siteUrl: requireSiteUrlForBuild(),
     googleClientId: process.env.NUXT_GOOGLE_CLIENT_ID || "",
     googleClientSecret: process.env.NUXT_GOOGLE_CLIENT_SECRET || "",
     disableSignups: process.env.NUXT_DISABLE_SIGNUPS || "",
-    clerk: { secretKey: process.env.NUXT_CLERK_SECRET_KEY || "" },
+    clerk: {
+      secretKey: process.env.NUXT_CLERK_SECRET_KEY || "",
+      // Read by @clerk/nuxt's verifyWebhook to authenticate incoming Clerk
+      // webhooks (Svix signature). Verifies user.deleted so a Clerk-side
+      // account deletion cascades into our database.
+      webhookSigningSecret: process.env.NUXT_CLERK_WEBHOOK_SIGNING_SECRET || "",
+    },
     stripeSecretKey: process.env.NUXT_STRIPE_SECRET_KEY || "",
     stripeWebhookSecret: process.env.NUXT_STRIPE_WEBHOOK_SECRET || "",
     stripePriceProMonthly: process.env.NUXT_STRIPE_PRICE_PRO_MONTHLY || "",
@@ -86,6 +175,15 @@ export default defineNuxtConfig({
       sentry: {
         dsn: process.env.SENTRY_DSN || "",
       },
+      // Same NUXT_SITE_URL as the private `siteUrl` key above, also exposed
+      // publicly here: unlike that key (kept private for the OAuth/billing
+      // redirect trust boundary — see server/utils/siteUrl.ts), this value
+      // isn't secret. It's the origin every public marketing page's
+      // og:url/canonical link ships to the browser as page metadata (see
+      // app/utils/siteMeta.ts). It needs its own `public` copy because the
+      // private key resolves to empty once the client takes over after
+      // hydration.
+      siteUrl: process.env.NUXT_SITE_URL || "",
     },
   },
   devtools: { enabled: true },
@@ -106,6 +204,12 @@ export default defineNuxtConfig({
       "process.env.SENTRY_DSN": JSON.stringify(process.env.SENTRY_DSN || ""),
       "process.env.TOKEN_ENCRYPTION_KEY": JSON.stringify(
         requireTokenEncryptionKeyForBuild(),
+      ),
+      // server/utils/tombstoneHash.ts reads TOMBSTONE_ID_PEPPER via raw
+      // process.env for the same reason as the key above; bake it in so the
+      // server/api/* (Nitro) call sites resolve it at runtime.
+      "process.env.TOMBSTONE_ID_PEPPER": JSON.stringify(
+        requireTombstonePepperForBuild(),
       ),
     },
   },
@@ -129,6 +233,7 @@ export default defineNuxtConfig({
             "Every feed you follow — articles, podcasts, videos, posts — in one quiet, chronological place.",
         },
       ],
+      script: googleAnalyticsHeadScripts(),
       link: [
         { rel: "preconnect", href: "https://fonts.googleapis.com" },
         {

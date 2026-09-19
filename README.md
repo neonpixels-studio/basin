@@ -29,9 +29,22 @@ matching file:
 | `.env.e2e`        | e2e tests / CI     | `DOTENV_PRIVATE_KEY_E2E`        |
 | `.env.production` | Netlify production | `DOTENV_PRIVATE_KEY_PRODUCTION` |
 
-Only the database URL differs per environment; the Clerk, Google, and Sentry
-values are identical across all of them. See [`.env.example`](.env.example) for
-the full variable reference and where to obtain each value.
+The database URL, the Stripe keys, and `NUXT_SITE_URL` differ per environment;
+the Clerk, Google, and Sentry values are identical across all of them.
+`NUXT_SITE_URL` is the deployed origin (localhost for local/e2e, the stable
+preview alias for `.env.dev`, the production origin for `.env.production`) —
+OAuth redirect URIs and billing redirect targets are built from it. Because the
+Google OAuth client is shared across environments, every environment's
+`<NUXT_SITE_URL>/api/auth/youtube/callback` must be registered as an authorized
+redirect URI on that one client (localhost, the preview alias, and the
+production origin), and the YouTube connect flow must be started from the
+configured origin — the state cookie and callback have to share a host, so
+Netlify preview deploys must be reached via the pinned `.env.dev` alias, not a
+per-deploy hostname. `npm run build` and `npm run build:dev` fail outright if
+`NUXT_SITE_URL` is missing, malformed, or not https for that environment —
+both must have a real value set before building, not just `.env`/`.env.e2e`.
+See [`.env.example`](.env.example) for the full variable reference and where
+to obtain each value.
 
 **First-time setup:** restore `.env.keys` from your password manager, then point
 local dev at your own Neon branch so it never touches production data:
@@ -80,6 +93,24 @@ migrate them:
 ```bash
 npm run tokens:backfill                      # local (.env)
 dotenvx run -f .env.production -- node scripts/backfill-encrypt-tokens.ts
+```
+
+### Deletion tombstones
+
+When an account is deleted, `deletion_tombstones` keeps a marker so a session
+minted just before deletion cannot resurrect an empty `users` row (Clerk
+verifies JWTs networklessly). The marker is `sha256(provider_id + pepper)`, not
+the raw Clerk id, so the retained value is a one-way equality token rather than
+a re-linkable pseudonymous identifier — see
+[`server/utils/tombstoneHash.ts`](server/utils/tombstoneHash.ts). Requires
+`TOMBSTONE_ID_PEPPER` (see [`.env.example`](.env.example)); treat it as
+permanent once set, since changing it orphans every existing tombstone. Lookups
+tolerate legacy raw rows written before hashing was added, but run the one-off
+backfill once per environment to migrate them:
+
+```bash
+npm run tombstones:backfill                  # local (.env)
+dotenvx run -f .env.production -- node scripts/backfill-hash-tombstones.ts
 ```
 
 ### Database commands
@@ -134,6 +165,12 @@ Authentication is handled by [Clerk](https://clerk.com) via the [`@clerk/nuxt`](
 3. `server/middleware/auth.ts` — runs on every server request; reads `event.context.auth()` (set by Clerk) and upserts the user into Neon via `getOrCreateUser()`
 4. `event.context.user` is then available in all downstream API route handlers
 
+### Account deletion webhook
+
+`server/api/clerk/webhook.post.ts` verifies Clerk's Svix signature (via `@clerk/nuxt`'s `verifyWebhook`, wrapped in `server/utils/clerk.ts` so nothing else touches the SDK) and, on `user.deleted`, cascades the deletion into Neon: it purges billing, records a deletion tombstone, and deletes the `users` row (whose `ON DELETE CASCADE` removes feeds, feed items, integrations with their stored OAuth tokens, settings, and subscriptions). The cleanup logic is shared with the in-app deletion route in `server/utils/accountDeletion.ts`. Without this, deleting an account directly in Clerk would leave that data — including encrypted OAuth tokens — orphaned indefinitely.
+
+To enable it, add a webhook endpoint in the Clerk Dashboard under **Configure → Webhooks** pointing at `<your-app-url>/api/clerk/webhook`, subscribed to the `user.deleted` event, then copy its **Signing Secret** into `NUXT_CLERK_WEBHOOK_SIGNING_SECRET`.
+
 ### Client composables
 
 ```ts
@@ -180,6 +217,13 @@ The paid Pro plan (monthly or yearly, both with a 14-day free trial) is handled 
    | `NUXT_STRIPE_WEBHOOK_SECRET`    | Verifies webhook requests are really from Stripe |
    | `NUXT_STRIPE_PRICE_PRO_MONTHLY` | Price ID for the monthly Pro plan                |
    | `NUXT_STRIPE_PRICE_PRO_YEARLY`  | Price ID for the yearly Pro plan                 |
+   | `NUXT_SITE_URL`                 | basin's public base URL for billing redirects    |
+
+Checkout and billing-portal redirect targets (success, cancel, and return URLs)
+are built from `NUXT_SITE_URL` — basin's own public base URL — rather than the
+request's `Host` header, so a forged `Host` can't hijack the post-billing
+redirect. Set `NUXT_SITE_URL` per environment (e.g. `http://localhost:3000`
+locally, the real domain in production).
 
 Local Stripe CLI users can forward webhooks during development with `stripe listen --forward-to localhost:3000/api/billing/webhook`, which prints a temporary signing secret to use for `NUXT_STRIPE_WEBHOOK_SECRET`.
 

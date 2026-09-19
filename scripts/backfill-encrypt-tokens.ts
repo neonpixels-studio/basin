@@ -13,9 +13,9 @@
 // Usage:
 //   dotenvx run -f .env -- node scripts/backfill-encrypt-tokens.ts
 //   dotenvx run -f .env.production -- node scripts/backfill-encrypt-tokens.ts
-import { pathToFileURL } from "node:url";
 import { neon } from "@neondatabase/serverless";
 import { encryptToken, isEncryptedToken } from "../server/utils/crypto.ts";
+import { isDirectInvocation } from "./isDirectInvocation.ts";
 
 type IntegrationTokenRow = {
   id: number;
@@ -200,15 +200,7 @@ async function main(): Promise<void> {
   }
 }
 
-function isDirectInvocation(): boolean {
-  const entrypoint = process.argv[1];
-  if (!entrypoint) {
-    return false;
-  }
-  return import.meta.url === pathToFileURL(entrypoint).href;
-}
-
-if (isDirectInvocation()) {
+if (isDirectInvocation(import.meta.url)) {
   main().catch((error) => {
     console.error("backfill-encrypt-tokens failed:", error);
     process.exit(1);

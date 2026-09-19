@@ -3,16 +3,10 @@ import { ref } from "vue";
 
 definePageMeta({ layout: "marketing" });
 
-useHead({
-  title: "Reader — contact",
-  meta: [
-    {
-      name: "description",
-      content:
-        "Bug, feature idea, a source you wish we supported, or just hello — it all reaches the same small team.",
-    },
-  ],
-});
+useMarketingSeo(
+  "Reader — contact",
+  "Bug, feature idea, a source you wish we supported, or just hello — it all reaches the same small team.",
+);
 
 const CONTACT_EMAIL = "hello@reader.app";
 

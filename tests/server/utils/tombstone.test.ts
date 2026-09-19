@@ -1,0 +1,250 @@
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { inArray } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
+import { deletionTombstones } from "../../../server/db/schema";
+import {
+  hashProviderId,
+  TombstonePepperError,
+} from "../../../server/utils/tombstoneHash";
+// @sentry/nuxt is mocked once, globally, in tests/setup.ts — see that file's
+// comment for why a module-scoped mock here instead would silently miss the
+// calls app/lib/sentry.ts makes.
+import * as SentrySDK from "@sentry/nuxt";
+import { mockSentryScope } from "../../setup";
+
+// Fixed so hashProviderId is deterministic across the assertions below.
+const TEST_TOMBSTONE_PEPPER = "test-tombstone-pepper-0123456789";
+
+const mockTombstoneFindFirst = vi.fn();
+const mockOnConflictDoUpdate = vi.fn();
+const mockValues = vi.fn();
+const mockInsert = vi.fn();
+
+vi.stubGlobal("useDb", () => ({
+  query: { deletionTombstones: { findFirst: mockTombstoneFindFirst } },
+  insert: mockInsert,
+}));
+
+import {
+  isProviderTombstoned,
+  recordDeletionTombstone,
+  MAX_CLERK_SESSION_LIFETIME_MS,
+} from "../../../server/utils/tombstone";
+
+const dialect = new PgDialect();
+
+// Compare two drizzle SQL conditions by their rendered SQL + params, so a test
+// fails if the lookup ever drops or changes its provider_id filter.
+function sameCondition(actual: unknown, expected: unknown): boolean {
+  const actualQuery = dialect.sqlToQuery(actual as never);
+  const expectedQuery = dialect.sqlToQuery(expected as never);
+  return (
+    actualQuery.sql === expectedQuery.sql &&
+    JSON.stringify(actualQuery.params) === JSON.stringify(expectedQuery.params)
+  );
+}
+
+describe("tombstone", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.stubEnv("TOMBSTONE_ID_PEPPER", TEST_TOMBSTONE_PEPPER);
+    mockInsert.mockReturnValue({ values: mockValues });
+    mockValues.mockReturnValue({
+      onConflictDoUpdate: mockOnConflictDoUpdate,
+    });
+    mockOnConflictDoUpdate.mockResolvedValue(undefined);
+  });
+
+  // Pin the retention window to the literal policy value independently of the
+  // export, so shrinking or growing the constant fails the suite instead of
+  // silently sliding every window-relative assertion below with it.
+  it("retains tombstones for the seven-day Clerk session window", () => {
+    expect(MAX_CLERK_SESSION_LIFETIME_MS).toBe(7 * 24 * 60 * 60 * 1000);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  describe("isProviderTombstoned", () => {
+    // Freeze the clock so window-boundary assertions compare against the exact
+    // instant the test builds deletedAt from, rather than a few ms later.
+    beforeEach(() => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("is true when a recent tombstone row exists for the provider id", async () => {
+      mockTombstoneFindFirst.mockResolvedValue({
+        providerId: "clerk_gone",
+        deletedAt: new Date(),
+      });
+
+      await expect(isProviderTombstoned("clerk_gone")).resolves.toBe(true);
+    });
+
+    it("is true when a tombstone has no deletedAt (fails closed) and logs the provider id", async () => {
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      mockTombstoneFindFirst.mockResolvedValue({
+        providerId: hashProviderId("clerk_gone"),
+        deletedAt: null,
+      });
+
+      await expect(isProviderTombstoned("clerk_gone")).resolves.toBe(true);
+      expect(errorSpy).toHaveBeenCalledWith(
+        expect.stringContaining("clerk_gone"),
+      );
+      expect(SentrySDK.captureMessage).toHaveBeenCalledWith(
+        expect.stringContaining("missing deleted_at"),
+      );
+      // The raw provider id must never reach Sentry — only the peppered hash
+      // (see tombstoneHash.ts / issue #215), which is what console.error
+      // above (asserted with the raw id) is for.
+      expect(mockSentryScope.setExtras).toHaveBeenCalledWith(
+        expect.objectContaining({
+          providerIdHash: hashProviderId("clerk_gone"),
+        }),
+      );
+      // .at(-1) (not [0]): resilient to this suite's shared, module-level
+      // Sentry mock (see tests/setup.ts) ever accumulating an earlier call
+      // before the outer describe's vi.resetAllMocks() runs.
+      const [extras] = mockSentryScope.setExtras.mock.calls.at(-1)!;
+      expect(JSON.stringify(extras)).not.toContain("clerk_gone");
+      errorSpy.mockRestore();
+    });
+
+    it("ignores a tombstone older than the maximum Clerk session lifetime", async () => {
+      const justPastWindow = new Date(
+        Date.now() - MAX_CLERK_SESSION_LIFETIME_MS - 1000,
+      );
+      mockTombstoneFindFirst.mockResolvedValue({
+        providerId: "clerk_gone",
+        deletedAt: justPastWindow,
+      });
+
+      await expect(isProviderTombstoned("clerk_gone")).resolves.toBe(false);
+    });
+
+    it("ignores a tombstone exactly at the window boundary (strict comparison)", async () => {
+      const exactlyAtWindow = new Date(
+        Date.now() - MAX_CLERK_SESSION_LIFETIME_MS,
+      );
+      mockTombstoneFindFirst.mockResolvedValue({
+        providerId: "clerk_gone",
+        deletedAt: exactlyAtWindow,
+      });
+
+      await expect(isProviderTombstoned("clerk_gone")).resolves.toBe(false);
+    });
+
+    it("still blocks a tombstone one millisecond inside the window boundary", async () => {
+      // The true inside edge: age === MAX - 1. Catches an off-by-one that flips
+      // the strict `<` to `<=` on the inside, which a minute of slack would miss.
+      const oneMsInsideWindow = new Date(
+        Date.now() - (MAX_CLERK_SESSION_LIFETIME_MS - 1),
+      );
+      mockTombstoneFindFirst.mockResolvedValue({
+        providerId: "clerk_gone",
+        deletedAt: oneMsInsideWindow,
+      });
+
+      await expect(isProviderTombstoned("clerk_gone")).resolves.toBe(true);
+    });
+
+    it("looks up by both the peppered hash and the raw provider id so legacy rows still match", async () => {
+      mockTombstoneFindFirst.mockResolvedValue(undefined);
+
+      await isProviderTombstoned("clerk_gone");
+
+      expect(
+        sameCondition(
+          mockTombstoneFindFirst.mock.calls[0][0].where,
+          inArray(deletionTombstones.providerId, [
+            hashProviderId("clerk_gone"),
+            "clerk_gone",
+          ]),
+        ),
+      ).toBe(true);
+    });
+
+    it("is false when no tombstone row exists", async () => {
+      mockTombstoneFindFirst.mockResolvedValue(undefined);
+
+      await expect(isProviderTombstoned("clerk_live")).resolves.toBe(false);
+    });
+
+    it("fails closed: throws (never reports 'not tombstoned') when the pepper is unset", async () => {
+      vi.stubEnv("TOMBSTONE_ID_PEPPER", "");
+
+      await expect(isProviderTombstoned("clerk_gone")).rejects.toThrow(
+        TombstonePepperError,
+      );
+      expect(mockTombstoneFindFirst).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("recordDeletionTombstone", () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("stores the peppered hash (never the raw id) and re-stamps deletedAt on conflict so re-deleting restarts the retention window", async () => {
+      await recordDeletionTombstone("clerk_gone");
+
+      const insertedValue = mockValues.mock.calls[0][0].providerId;
+      expect(mockInsert).toHaveBeenCalledWith(deletionTombstones);
+      expect(insertedValue).toBe(hashProviderId("clerk_gone"));
+      expect(insertedValue).not.toBe("clerk_gone");
+
+      // A bare onConflictDoNothing would leave an expired row in place, so a
+      // second deletion after the window would go untombstoned. Assert the
+      // conflict path targets the provider id and refreshes deletedAt.
+      const upsertArgs = mockOnConflictDoUpdate.mock.calls[0][0];
+      expect(upsertArgs.target).toBe(deletionTombstones.providerId);
+      const renderedSet = dialect.sqlToQuery(upsertArgs.set.deletedAt);
+      expect(renderedSet.sql).toContain("now()");
+    });
+
+    it("re-arms an expired tombstone so a second deletion blocks again", async () => {
+      // The scenario the upsert exists for, driven end-to-end through a shared
+      // stored row: first deletion blocks, the window elapses and self-heals,
+      // then a second deletion re-stamps deletedAt and blocks again. A regression
+      // to onConflictDoNothing leaves the stale row and fails the final assertion.
+      let storedDeletedAt = new Date();
+      mockTombstoneFindFirst.mockImplementation(async () => ({
+        providerId: "clerk_gone",
+        deletedAt: storedDeletedAt,
+      }));
+      mockOnConflictDoUpdate.mockImplementation(async () => {
+        storedDeletedAt = new Date();
+      });
+
+      await recordDeletionTombstone("clerk_gone");
+      await expect(isProviderTombstoned("clerk_gone")).resolves.toBe(true);
+
+      vi.advanceTimersByTime(MAX_CLERK_SESSION_LIFETIME_MS + 1000);
+      await expect(isProviderTombstoned("clerk_gone")).resolves.toBe(false);
+
+      await recordDeletionTombstone("clerk_gone");
+      await expect(isProviderTombstoned("clerk_gone")).resolves.toBe(true);
+    });
+
+    it("fails closed: throws and writes nothing when the pepper is unset", async () => {
+      vi.stubEnv("TOMBSTONE_ID_PEPPER", "");
+
+      await expect(recordDeletionTombstone("clerk_gone")).rejects.toThrow(
+        TombstonePepperError,
+      );
+      expect(mockInsert).not.toHaveBeenCalled();
+    });
+  });
+});

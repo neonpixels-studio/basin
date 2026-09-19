@@ -18,10 +18,27 @@ describe("contact page (/contact)", () => {
       "fetch",
       vi.fn(() => Promise.resolve({ ok: true } as Response)),
     );
+    vi.stubGlobal("useRoute", () => ({
+      path: "/contact",
+      params: {},
+      query: {},
+    }));
+    vi.mocked(globalThis.useMarketingSeo).mockClear();
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  // The og/twitter/canonical shape is asserted once, in
+  // tests/composables/useMarketingSeo.test.ts — this only checks the page
+  // wires up the composable with its own title/description.
+  it("wires up marketing SEO meta for this page", () => {
+    mountWithValidForm();
+    expect(globalThis.useMarketingSeo).toHaveBeenCalledWith(
+      "Reader — contact",
+      "Bug, feature idea, a source you wish we supported, or just hello — it all reaches the same small team.",
+    );
   });
 
   it("renders the contact form with name, email, and message fields", () => {

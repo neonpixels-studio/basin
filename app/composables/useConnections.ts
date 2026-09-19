@@ -43,7 +43,7 @@ function formatSince(iso: string | null): string {
 }
 
 export function useConnections() {
-  const { getToken } = useAuth();
+  const { buildAuthHeaders } = useAuthHeaders();
   const { showToast } = useToast();
 
   const items = ref<Connection[]>(
@@ -59,17 +59,12 @@ export function useConnections() {
   const loading = ref(false);
   const error = ref<string | null>(null);
 
-  async function authHeaders(): Promise<Record<string, string>> {
-    const token = await getToken.value();
-    return token ? { Authorization: `Bearer ${token}` } : {};
-  }
-
   async function load() {
     loading.value = true;
     error.value = null;
     try {
       const rows = await $fetch<DbIntegration[]>("/api/integrations", {
-        headers: await authHeaders(),
+        headers: await buildAuthHeaders(),
       });
       const byProvider = new Map(rows.map((row) => [row.provider, row]));
       items.value = PROVIDERS.map((provider) => {
@@ -122,7 +117,7 @@ export function useConnections() {
         "/api/auth/bluesky",
         {
           method: "POST",
-          headers: await authHeaders(),
+          headers: await buildAuthHeaders(),
           body: { handle, appPassword },
         },
       );
@@ -152,7 +147,7 @@ export function useConnections() {
     try {
       await $fetch(`/api/integrations/${id}`, {
         method: "DELETE",
-        headers: await authHeaders(),
+        headers: await buildAuthHeaders(),
       });
     } catch {
       items.value[index] = previous;

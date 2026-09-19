@@ -80,7 +80,14 @@ export const rateLimitStore: RateLimitStore = new Map();
 // costly billing write should be added here explicitly. Matched on a directory
 // boundary (see matchesRoute) so a sibling like /api/authors or
 // /api/billing/checkout-history is NOT swept into the strict tier.
-const SENSITIVE_ROUTE_BASES = ["/api/auth", "/api/billing/checkout"];
+// `/api/account` is the DELETE that erases the account: it makes two paid
+// external calls (Stripe + Clerk) per request and is the most destructive
+// route in the app, so it belongs on the strict tier, not the loose default.
+const SENSITIVE_ROUTE_BASES = [
+  "/api/auth",
+  "/api/billing/checkout",
+  "/api/account",
+];
 
 // Machine-to-machine endpoints that must never be rate limited: Stripe delivers
 // webhooks from its own IP pool and retries aggressively, and the handler

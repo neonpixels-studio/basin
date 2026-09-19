@@ -8,7 +8,10 @@ const TEST_USER_EMAIL = "e2e-test@reader-app.dev";
 test.describe("Settings > Account", () => {
   test.beforeEach(async ({ page }) => {
     await page.goto("/settings/account");
-    await expect(page.locator("h2").getByText("Account")).toBeVisible({
+    // `exact` so this doesn't also match the "Delete account" section heading.
+    await expect(
+      page.locator("h2").getByText("Account", { exact: true }),
+    ).toBeVisible({
       timeout: 10_000,
     });
   });

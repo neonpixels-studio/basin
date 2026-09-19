@@ -8,6 +8,9 @@ export const ICONS = {
   bookmark: '<path d="M6 4h12v17l-6-4-6 4V4Z"/>',
   bookmarkFill:
     '<path d="M6 4h12v17l-6-4-6 4V4Z" fill="currentColor" stroke="none"/>',
+  star: '<path d="M12 3.5l2.6 5.3 5.9.85-4.25 4.15 1 5.85L12 16.9l-5.25 2.75 1-5.85L3.5 9.65l5.9-.85L12 3.5Z"/>',
+  starFill:
+    '<path d="M12 3.5l2.6 5.3 5.9.85-4.25 4.15 1 5.85L12 16.9l-5.25 2.75 1-5.85L3.5 9.65l5.9-.85L12 3.5Z" fill="currentColor" stroke="none"/>',
   check: '<path d="M5 12.5l4.5 4.5L19 6.5"/>',
   checkAll:
     '<path d="M4 12.5l4 4L15 7"/><path d="M11 16.5l1 1L21 7" opacity="0.55"/>',

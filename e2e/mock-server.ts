@@ -86,11 +86,21 @@ function handleFeedXml(_req: IncomingMessage, res: ServerResponse): void {
   );
 }
 
+// ── Grant revocation on disconnect ───────────────────────────────────────
+// Google token revocation and Bluesky session teardown both answer 2xx on
+// success; the handlers only assert the response is ok, so an empty body is
+// enough. Keeps disconnect e2e tests from hitting the real providers.
+function handleRevokeOk(_req: IncomingMessage, res: ServerResponse): void {
+  jsonResponse(res, {});
+}
+
 const routes: Record<RouteKey, RouteHandler> = {
   "POST /token": handleTokenExchange,
   "GET /youtube/v3/channels": handleYouTubeChannels,
   "GET /feed-proxy": handleFeedProxy,
   "GET /feed.xml": handleFeedXml,
+  "POST /revoke": handleRevokeOk,
+  "POST /xrpc/com.atproto.server.deleteSession": handleRevokeOk,
 };
 
 function handleNotFound(

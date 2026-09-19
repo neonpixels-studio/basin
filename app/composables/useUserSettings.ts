@@ -1,5 +1,6 @@
 /* useUserSettings — API layer for reading/writing user settings from the
    database. Called by useAppearanceStore and useFeedStore during init. */
+import { captureException } from "~/lib/sentry";
 
 export interface UserSettings {
   theme: string;
@@ -28,14 +29,9 @@ export const USER_SETTINGS_DEFAULTS: UserSettings = {
 };
 
 export function useUserSettings() {
-  const { getToken } = useAuth();
+  const { buildAuthHeaders } = useAuthHeaders();
   const loading = ref(false);
   const error = ref<string | null>(null);
-
-  async function buildAuthHeaders(): Promise<Record<string, string>> {
-    const token = await getToken.value();
-    return token ? { Authorization: `Bearer ${token}` } : {};
-  }
 
   async function load(): Promise<UserSettings> {
     loading.value = true;
@@ -43,7 +39,13 @@ export function useUserSettings() {
     try {
       const headers = await buildAuthHeaders();
       return await $fetch<UserSettings>("/api/settings/reading", { headers });
-    } catch {
+    } catch (caughtError) {
+      // This is the layer that actually holds the real fetch failure —
+      // callers (e.g. useAppearanceStore.loadFromDb) only ever see the
+      // static "Failed to load settings" string via `error`, and load()
+      // itself never rejects, so this is the only place a real settings-load
+      // failure can reach Sentry at all.
+      captureException(caughtError, { stage: "user-settings-load" });
       error.value = "Failed to load settings";
       return { ...USER_SETTINGS_DEFAULTS };
     } finally {
@@ -60,7 +62,11 @@ export function useUserSettings() {
         body: patch,
         headers,
       });
-    } catch {
+    } catch (caughtError) {
+      // Same reasoning as load()'s catch above: this is the only place a
+      // real settings-save failure (the caught error, not the generic
+      // string callers see via `error`) can reach Sentry.
+      captureException(caughtError, { stage: "user-settings-save" });
       error.value = "Failed to save settings";
       return null;
     }

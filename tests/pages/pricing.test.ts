@@ -33,6 +33,18 @@ describe("pricing page (/pricing)", () => {
     stubAuth(false);
     stubBilling();
     stubRoute();
+    vi.mocked(globalThis.useMarketingSeo).mockClear();
+  });
+
+  // The og/twitter/canonical shape is asserted once, in
+  // tests/composables/useMarketingSeo.test.ts — this only checks the page
+  // wires up the composable with its own title/description.
+  it("wires up marketing SEO meta for this page", () => {
+    shallowMount(PricingPage);
+    expect(globalThis.useMarketingSeo).toHaveBeenCalledWith(
+      "Pricing — Reader",
+      "Simple, quiet pricing. Start free forever. Upgrade to Pro when you outgrow ten sources.",
+    );
   });
 
   it("renders the price header", () => {

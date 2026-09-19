@@ -1,6 +1,7 @@
 import RssParser from "rss-parser";
 import { MAX_ITEMS_PER_SYNC } from "../../netlify/functions/types";
 import { assertSafeFeedUrl, type NewFeedItem } from "./rssAdapter";
+import { normalizeTags } from "./tagNormalizer";
 
 // iTunes namespace fields we pull from each item.
 interface ItunesItemFields {
@@ -179,7 +180,7 @@ function mapItemToFeedItem(
     savedAt: null,
     readAt: null,
     starred: false,
-    tags: null,
+    tags: normalizeTags(item.categories),
     searchVector: null,
     mediaUrl: item.enclosure?.url ?? null,
     mediaDuration,

@@ -2,7 +2,7 @@
 
 exports[`VideoCard > matches snapshot 1`] = `
 "<article class="card card-video">
-  <div class="thumb ph ratio-16x9" data-label="https://example.com/thumb.jpg">
+  <div class="thumb ratio-16x9"><img class="thumb-img" src="https://example.com/thumb.jpg" alt="" loading="lazy" referrerpolicy="no-referrer">
     <!--v-if--><span class="thumb-play"><r-icon-stub name="play" size="22"></r-icon-stub></span><span class="thumb-dur">12:34</span>
   </div>
   <div class="card-body">
@@ -10,7 +10,7 @@ exports[`VideoCard > matches snapshot 1`] = `
       <source-tag-stub item="[object Object]"></source-tag-stub>
       <card-actions-stub item="[object Object]"></card-actions-stub>
     </div>
-    <h3 class="card-title">Test Video Title</h3><span class="card-meta">10K views</span>
+    <h3 class="card-title">Test Video Title</h3>
   </div>
 </article>"
 `;

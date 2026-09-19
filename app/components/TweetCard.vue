@@ -1,8 +1,9 @@
 <script setup>
 import { computed } from "vue";
+import { contentText } from "~/utils/itemContent";
 
 const props = defineProps({ item: { type: Object, required: true } });
-defineEmits(["save", "open"]);
+defineEmits(["save", "star", "open"]);
 
 const initials = computed(() =>
   props.item.source
@@ -11,11 +12,7 @@ const initials = computed(() =>
     .slice(0, 2)
     .join(""),
 );
-const likes = computed(() => (props.item.meta || "").split("·")[0].trim());
-const reposts = computed(() => {
-  const parts = (props.item.meta || "").split("·");
-  return parts[1] ? parts[1].trim() : "0";
-});
+const postText = computed(() => contentText(props.item.content));
 </script>
 
 <template>
@@ -28,16 +25,23 @@ const reposts = computed(() => {
       </div>
       <span class="tw-glyph src-tweet"><RIcon name="chat" :size="15" /></span>
     </div>
-    <p class="tw-text">{{ item.text }}</p>
+    <p v-if="postText" class="tw-text">{{ postText }}</p>
     <div class="tw-actions">
-      <span><RIcon name="heart" :size="15" />{{ likes }}</span>
-      <span><RIcon name="repost" :size="15" />{{ reposts }}</span>
       <button
         class="icon-btn ml-auto"
         :class="{ on: item.saved }"
+        :title="item.saved ? 'Saved' : 'Save for later'"
         @click.stop="$emit('save')"
       >
         <RIcon :name="item.saved ? 'bookmarkFill' : 'bookmark'" :size="15" />
+      </button>
+      <button
+        class="icon-btn"
+        :class="{ on: item.starred }"
+        :title="item.starred ? 'Starred' : 'Star'"
+        @click.stop="$emit('star')"
+      >
+        <RIcon :name="item.starred ? 'starFill' : 'star'" :size="15" />
       </button>
     </div>
   </article>
@@ -95,7 +99,7 @@ const reposts = computed(() => {
 .tw-actions {
   display: flex;
   align-items: center;
-  gap: 20px;
+  gap: 2px;
   margin-top: 14px;
   color: var(--muted);
   font-size: 12px;

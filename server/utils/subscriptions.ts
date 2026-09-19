@@ -3,8 +3,10 @@
 // Stripe SDK calls (server/utils/stripe.ts) separate from persistence.
 import { and, eq, isNull, lte, ne, or } from "drizzle-orm";
 import type Stripe from "stripe";
-import { processedStripeEvents, subscriptions } from "../db/schema";
+import { processedStripeEvents, subscriptions, users } from "../db/schema";
+import { pauseFeedsOverFreeLimit, reactivateAllFeeds } from "./feedPause";
 import { createStripeCustomer, deleteStripeCustomer } from "./stripe";
+import { captureException } from "../../app/lib/sentry";
 
 export type PlanName = "free" | "pro";
 
@@ -14,6 +16,41 @@ const ACTIVE_SUBSCRIPTION_STATUSES = new Set(["trialing", "active"]);
 
 export function planForStatus(status: string): PlanName {
   return ACTIVE_SUBSCRIPTION_STATUSES.has(status) ? "pro" : "free";
+}
+
+function logFeedPauseChange(
+  userId: number,
+  action: "paused" | "reactivated",
+  count: number,
+): void {
+  if (count === 0) {
+    return;
+  }
+  console.log(
+    JSON.stringify({ event: `subscription.feeds-${action}`, userId, count }),
+  );
+}
+
+// Applies the pricing page's source promise after a plan change is persisted,
+// keyed off the *resulting* plan rather than the pro→free delta so it is
+// self-healing: the persisted row is already updated by the time this runs, so
+// on a Stripe retry a delta check would see free→free and skip the effect,
+// permanently losing a pause whose first attempt failed. Deriving the action
+// from the resulting plan instead means the retry re-runs the same idempotent
+// effect. Free accounts pause every source beyond the cap; Pro accounts
+// (unlimited) reactivate any paused source. Both are idempotent, so running
+// them on every applied event — including free→free and pro→pro — is safe.
+async function applyPlanChangeToFeeds(
+  userId: number,
+  plan: PlanName,
+): Promise<void> {
+  if (plan === "free") {
+    const { pausedCount } = await pauseFeedsOverFreeLimit(userId);
+    logFeedPauseChange(userId, "paused", pausedCount);
+    return;
+  }
+  const { reactivatedCount } = await reactivateAllFeeds(userId);
+  logFeedPauseChange(userId, "reactivated", reactivatedCount);
 }
 
 export interface AccountPlan {
@@ -32,11 +69,20 @@ export const FREE_PLAN: AccountPlan = {
   cancelAtPeriodEnd: false,
 };
 
-export async function getAccountPlan(userId: number): Promise<AccountPlan> {
-  const db = useDb();
-  const subscription = await db.query.subscriptions.findFirst({
+// Loads the user's subscription row (userId is unique, so at most one). Shared
+// by every by-userId lookup in this module so the query lives in one place.
+function findSubscriptionByUserId(
+  db: ReturnType<typeof useDb>,
+  userId: number,
+) {
+  return db.query.subscriptions.findFirst({
     where: eq(subscriptions.userId, userId),
   });
+}
+
+export async function getAccountPlan(userId: number): Promise<AccountPlan> {
+  const db = useDb();
+  const subscription = await findSubscriptionByUserId(db, userId);
   if (!subscription) {
     // Return a copy — FREE_PLAN is a shared module-level object and callers
     // must not be able to mutate it for other requests.
@@ -52,14 +98,58 @@ export async function getAccountPlan(userId: number): Promise<AccountPlan> {
   };
 }
 
+// Resolves the Stripe customer id for the user's own subscription row, or null
+// when they have none. Ownership-scoped: the caller passes the authenticated
+// user id, never a client-supplied customer id, so a request can only reach its
+// own billing. Unlike getOrCreateStripeCustomerId this never creates a customer
+// — the billing portal is only meaningful for a user who already has one.
+export async function getStripeCustomerId(
+  userId: number,
+): Promise<string | null> {
+  const db = useDb();
+  const subscription = await findSubscriptionByUserId(db, userId);
+  return subscription?.stripeCustomerId ?? null;
+}
+
+function isStripeResourceMissing(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as { code?: string }).code === "resource_missing"
+  );
+}
+
+// Purges the user's Stripe billing ahead of account deletion. Deleting the
+// customer both cancels any active subscription (honouring "cancel before
+// deletion") and removes the stored billing PII the privacy page promises to
+// erase — more complete than cancelling the subscription alone. A no-op when
+// there is no subscription row. Tolerant of `resource_missing` so a retry
+// after the customer was already deleted (e.g. Clerk deletion failed on the
+// first attempt) doesn't wedge the whole deletion.
+export async function deleteBillingRecords(userId: number): Promise<void> {
+  const db = useDb();
+  const subscription = await findSubscriptionByUserId(db, userId);
+  if (!subscription?.stripeCustomerId) {
+    return;
+  }
+  try {
+    await deleteStripeCustomer(subscription.stripeCustomerId);
+  } catch (caughtError) {
+    if (!isStripeResourceMissing(caughtError)) {
+      throw caughtError;
+    }
+    console.warn(
+      `Stripe customer ${subscription.stripeCustomerId} was already gone (resource_missing) when purging billing for user ${userId}; treating as done.`,
+    );
+  }
+}
+
 export async function getOrCreateStripeCustomerId(
   userId: number,
   email: string | null,
 ): Promise<string> {
   const db = useDb();
-  const existing = await db.query.subscriptions.findFirst({
-    where: eq(subscriptions.userId, userId),
-  });
+  const existing = await findSubscriptionByUserId(db, userId);
   if (existing) {
     return existing.stripeCustomerId;
   }
@@ -74,9 +164,7 @@ export async function getOrCreateStripeCustomerId(
     .values({ userId, stripeCustomerId: customer.id })
     .onConflictDoNothing({ target: subscriptions.userId });
 
-  const persisted = await db.query.subscriptions.findFirst({
-    where: eq(subscriptions.userId, userId),
-  });
+  const persisted = await findSubscriptionByUserId(db, userId);
   const winningCustomerId = persisted?.stripeCustomerId ?? customer.id;
 
   // If we lost the race our freshly-created customer is now orphaned in Stripe
@@ -91,6 +179,10 @@ export async function getOrCreateStripeCustomerId(
         `Failed to delete orphaned Stripe customer ${customer.id}:`,
         cleanupError,
       );
+      captureException(cleanupError, {
+        stage: "delete-orphaned-stripe-customer",
+        stripeCustomerId: customer.id,
+      });
     });
   }
   return winningCustomerId;
@@ -207,6 +299,16 @@ async function wasEventAlreadyProcessed(
   return Boolean(processedEvent);
 }
 
+async function userExists(
+  db: ReturnType<typeof useDb>,
+  userId: number,
+): Promise<boolean> {
+  const user = await db.query.users.findFirst({
+    where: eq(users.id, userId),
+  });
+  return Boolean(user);
+}
+
 // Records that an event was applied, so a redelivery of the same event id is
 // a no-op instead of being reapplied. Always called *after* the subscription
 // write below has succeeded, never before, so a crash between the two can
@@ -254,14 +356,31 @@ export async function upsertSubscriptionFromStripe(
     return;
   }
 
+  // Account deletion deletes the Stripe customer, which fires this event
+  // moments after the users row (and its cascade-deleted subscriptions row) is
+  // gone. Without existingByCustomer the metadata fallback still resolves the
+  // deleted user's id, and inserting a subscriptions row for it would violate
+  // the user_id FK and 500 the webhook into Stripe's multi-day retry loop.
+  // Drop the event when the user no longer exists — the same "can't attribute
+  // to a known user" outcome as the branch above. This narrows but does not
+  // fully close the window (check-then-insert is not atomic): a delete that
+  // lands between this check and the write below still 500s once, which
+  // self-heals on Stripe's retry (by then the check sees the user is gone).
+  // Only reachable via the metadata fallback — when existingByCustomer resolved
+  // the userId, the FK already guarantees the user exists, so we skip the query
+  // on that hot path.
+  if (!existingByCustomer && !(await userExists(db, userId))) {
+    console.warn(
+      `Dropping Stripe event ${event.id}: user ${userId} no longer exists (likely account deletion).`,
+    );
+    return;
+  }
+
   // Resolve the row we write to by userId (the stable owner key) so the
   // metadata-fallback path updates an existing row rather than colliding on
   // the user_id unique constraint.
   const existing =
-    existingByCustomer ??
-    (await db.query.subscriptions.findFirst({
-      where: eq(subscriptions.userId, userId),
-    }));
+    existingByCustomer ?? (await findSubscriptionByUserId(db, userId));
 
   const eventCreatedAt = new Date(event.created * 1000);
   if (isStaleEvent(existing, subscription, eventCreatedAt)) {
@@ -304,6 +423,11 @@ export async function upsertSubscriptionFromStripe(
   if (written.length === 0) {
     return;
   }
+
+  // Runs before markEventProcessed so a failure here leaves the event unmarked
+  // and Stripe's retry re-runs the (idempotent) effect — see
+  // applyPlanChangeToFeeds for why this is keyed off the resulting plan.
+  await applyPlanChangeToFeeds(userId, values.plan);
 
   // Only recorded once the write above has actually succeeded — see
   // markEventProcessed's comment for why this ordering matters.

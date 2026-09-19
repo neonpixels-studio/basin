@@ -33,6 +33,11 @@ describe("auth.global middleware", () => {
     },
   );
 
+  it("does not redirect unauthenticated user on /pricing/ (trailing slash)", () => {
+    authMiddleware({ path: "/pricing/" } as any);
+    expect(mockNavigateTo).not.toHaveBeenCalled();
+  });
+
   it("redirects unauthenticated user on protected routes to /login", () => {
     authMiddleware({ path: "/dashboard" } as any);
     expect(mockNavigateTo).toHaveBeenCalledWith("/login");

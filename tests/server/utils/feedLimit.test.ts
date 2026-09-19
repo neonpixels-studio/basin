@@ -17,10 +17,8 @@ vi.mock("../../../server/utils/subscriptions", () => ({
   getAccountPlan: vi.fn(),
 }));
 
-import {
-  assertWithinFeedLimit,
-  FREE_PLAN_FEED_LIMIT,
-} from "../../../server/utils/feedLimit";
+import { assertWithinFeedLimit } from "../../../server/utils/feedLimit";
+import { FREE_PLAN_FEED_LIMIT } from "../../../server/utils/planLimits";
 import { getAccountPlan } from "../../../server/utils/subscriptions";
 
 const mockGetAccountPlan = vi.mocked(getAccountPlan);

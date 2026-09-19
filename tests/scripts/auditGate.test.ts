@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import {
   advisoryIdFromUrl,
   assertUsableReport,
@@ -6,10 +6,13 @@ import {
   isAllowlistExpired,
   parseAuditReport,
   partitionByAllowlist,
+  UNIDENTIFIED_ADVISORY_ID,
 } from "../../scripts/audit-gate.js";
+import * as auditAllowlist from "../../scripts/audit-allowlist.js";
 import {
   ALLOWED_ADVISORIES,
   ALLOWLIST_REVIEW_BY,
+  createAllowlistLookup,
   isAdvisoryAllowed,
 } from "../../scripts/audit-allowlist.js";
 
@@ -18,6 +21,7 @@ import {
 // stay valid regardless of which advisories the real list currently suppresses.
 const TEST_ID = "GHSA-0000-test-abcd";
 const TEST_PACKAGE = "test-package-fixture";
+const TEST_SOURCE = "synthetic-test-source-value";
 
 function advisoryVia(id: string, severity: string) {
   return {
@@ -25,6 +29,27 @@ function advisoryVia(id: string, severity: string) {
     url: `https://github.com/advisories/${id}`,
     severity,
     title: `${severity} advisory ${id}`,
+  };
+}
+
+// A chained "depends on vulnerable versions of X" advisory carries no upstream
+// GHSA url, so the id falls back to `source-<via.source>` — the shape shared
+// by every url-less-chained-advisory test below.
+function urlLessChainedReport(packageName: string, source: string) {
+  return {
+    vulnerabilities: {
+      [packageName]: {
+        via: [
+          {
+            name: packageName,
+            url: null,
+            source,
+            severity: "high",
+            title: "Depends on vulnerable versions",
+          },
+        ],
+      },
+    },
   };
 }
 
@@ -95,12 +120,16 @@ describe("collectBlockingAdvisories", () => {
     };
     const advisories = collectBlockingAdvisories(report);
     expect(advisories).toHaveLength(1);
-    expect(advisories[0].id).not.toBeNull();
+    expect(advisories[0].id).toBe(UNIDENTIFIED_ADVISORY_ID);
     expect(advisories[0].severity).toBe("high");
   });
 });
 
 describe("partitionByAllowlist", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("blocks all advisories when the allowlist is empty", () => {
     const advisories = [
       {
@@ -199,6 +228,33 @@ describe("partitionByAllowlist", () => {
     expect(blocking).toEqual([]);
     expect(suppressed).toHaveLength(advisories.length);
   });
+
+  // No entry in the real allowlist currently uses the url-less `source-<id>`
+  // shape (the last one, for @netlify/async-workloads, was removed 2026-09-07
+  // — see the audit-allowlist.js header comment). This still verifies the
+  // derive-then-suppress round trip through the REAL `partitionByAllowlist`
+  // (not a hand-rolled stand-in for its ternary), by swapping the
+  // module-level `isAdvisoryAllowed` it calls for a lookup built from a
+  // fixture entry via the real `createAllowlistLookup` factory. Restored by
+  // the `afterEach` above.
+  it("suppresses a url-less chained advisory whose derived source id is allowlisted", () => {
+    const report = urlLessChainedReport(TEST_PACKAGE, TEST_SOURCE);
+    const advisories = collectBlockingAdvisories(report);
+    const derivedId = `source-${TEST_SOURCE}`;
+    expect(advisories.map((advisory) => advisory.id)).toEqual([derivedId]);
+
+    vi.spyOn(auditAllowlist, "isAdvisoryAllowed").mockImplementation(
+      createAllowlistLookup([
+        { id: derivedId, packages: [TEST_PACKAGE], reason: "fixture" },
+      ]),
+    );
+
+    const { suppressed, blocking } = partitionByAllowlist(advisories);
+    expect(blocking).toEqual([]);
+    expect(suppressed.map((advisory) => advisory.package)).toEqual([
+      TEST_PACKAGE,
+    ]);
+  });
 });
 
 describe("isAdvisoryAllowed (real allowlist)", () => {
@@ -235,39 +291,25 @@ describe("isAdvisoryAllowed (real allowlist)", () => {
     }
   });
 
-  // The chained @netlify/async-workloads advisory carries no upstream GHSA url,
-  // so the gate derives its key as `source-<via.source>`. This asserts a url-less
-  // advisory round-trips through collect + partition and is suppressed, i.e. the
-  // `source-…` id in the allowlist matches what audit-gate actually computes.
-  it("suppresses a url-less chained advisory whose derived source id is allowlisted", () => {
-    const chainedEntry = ALLOWED_ADVISORIES.find((entry) =>
-      entry.id.startsWith("source-"),
-    );
-    expect(chainedEntry).toBeDefined();
-    const sourceValue = chainedEntry!.id.slice("source-".length);
-    const [packageName] = chainedEntry!.packages;
-    const report = {
-      vulnerabilities: {
-        [packageName]: {
-          via: [
-            {
-              name: packageName,
-              url: null,
-              source: sourceValue,
-              severity: "high",
-              title: "Depends on vulnerable versions",
-            },
-          ],
-        },
-      },
-    };
+  // A url-less chained advisory (npm gives no GHSA url, only a numeric
+  // `source`) has no stable upstream id, so the gate derives its allowlist key
+  // as `source-<via.source>`. This is a fixture-based mechanism test — it does
+  // NOT assume the real allowlist currently contains a `source-` entry (it may
+  // not, if the last one was pruned as stale); it only asserts the derivation
+  // and blocking/suppression wiring behave correctly for that id shape,
+  // mirroring the fixture-ID pattern used by the `partitionByAllowlist` tests
+  // above. If a future `source-` entry gets added to the real allowlist,
+  // `isAdvisoryAllowed` is already covered generically by the
+  // "allows each real id::package pair" test.
+  it("derives a source-prefixed id for a url-less chained advisory and blocks it when unallowlisted", () => {
+    const report = urlLessChainedReport(TEST_PACKAGE, TEST_SOURCE);
     const advisories = collectBlockingAdvisories(report);
     expect(advisories.map((advisory) => advisory.id)).toEqual([
-      chainedEntry!.id,
+      `source-${TEST_SOURCE}`,
     ]);
     const { suppressed, blocking } = partitionByAllowlist(advisories);
-    expect(blocking).toEqual([]);
-    expect(suppressed).toHaveLength(1);
+    expect(suppressed).toEqual([]);
+    expect(blocking).toHaveLength(1);
   });
 });
 

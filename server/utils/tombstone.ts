@@ -1,0 +1,109 @@
+// Isolates the deletion-tombstone table behind two small functions so the
+// account-deletion sweep and getOrCreateUser can be unit-tested without a live
+// database. A tombstone records a one-way hash of the provider id (Clerk user
+// id) of a deleted account so a still-valid session cannot resurrect an empty
+// `users` row. The raw provider id is never stored — see server/utils/
+// tombstoneHash.ts for why (issue #215).
+import { inArray, sql } from "drizzle-orm";
+import { deletionTombstones } from "../db/schema";
+import { hashProviderId } from "./tombstoneHash";
+import { captureMessage } from "../../app/lib/sentry";
+
+// A tombstone only needs to outlive any session token that was minted just
+// before the account was deleted: Clerk verifies JWTs networklessly, so such a
+// token stays valid until it expires and until then could resurrect an empty
+// `users` row. The maximum lifetime of such a token is the Clerk session
+// lifetime, so once a tombstone is older than that window every pre-deletion
+// token has already expired and the tombstone has served its purpose. Bounding
+// retention to this window is what stops a failed deleteClerkUser from locking a
+// still-live identity out forever: the lockout self-heals once the window
+// passes. Keep this at or above the Clerk dashboard's session-lifetime setting
+// (Clerk's default maximum is 7 days).
+export const MAX_CLERK_SESSION_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
+
+// Records that this provider id's account was deleted, storing only the peppered
+// hash (see tombstoneHash.ts, issue #215). Idempotent on the primary key, but
+// because retention is now bounded the conflict path re-stamps deletedAt with the
+// DB clock (matching defaultNow) rather than no-oping: the window must anchor to
+// the *latest* deletion — a stale row from an earlier, already-expired deletion
+// would leave a second deletion unprotected. Webhook retries for the same deletion
+// just re-stamp now() seconds later, which is harmless.
+export async function recordDeletionTombstone(
+  providerId: string,
+): Promise<void> {
+  // Hash first so a missing pepper throws before any DB write — the deletion
+  // sweep must never delete account data and then fail to record the tombstone.
+  const providerIdHash = hashProviderId(providerId);
+  await useDb()
+    .insert(deletionTombstones)
+    .values({ providerId: providerIdHash })
+    .onConflictDoUpdate({
+      target: deletionTombstones.providerId,
+      set: { deletedAt: sql`now()` },
+    });
+}
+
+// True when this provider id belongs to a deleted account whose tombstone is
+// still within the resurrection window, so getOrCreateUser must refuse to
+// re-create the user instead of silently re-inserting a row. Matches either the
+// peppered hash (rows written since #215) or the raw provider id (legacy rows not
+// yet migrated by scripts/backfill-hash-tombstones.ts), so hardening the stored
+// value never reopens the resurrection gap. A tombstone older than the maximum
+// Clerk session lifetime is ignored (see isTombstoneActive) so a failed Clerk
+// deletion cannot lock a live identity out permanently.
+export async function isProviderTombstoned(
+  providerId: string,
+): Promise<boolean> {
+  const providerIdHash = hashProviderId(providerId);
+  const tombstone = await useDb().query.deletionTombstones.findFirst({
+    where: inArray(deletionTombstones.providerId, [
+      providerIdHash,
+      // @todo Drop the raw-id arm once every environment has run
+      // scripts/backfill-hash-tombstones.ts, so no legacy raw rows remain.
+      providerId,
+    ]),
+  });
+  if (!tombstone) {
+    return false;
+  }
+  return isTombstoneActive(providerId, providerIdHash, tombstone.deletedAt);
+}
+
+// A tombstone still blocks resurrection until the maximum Clerk session lifetime
+// has elapsed since the deletion. A missing deletedAt fails closed (keep
+// blocking): we cannot prove the window has passed, and a false negative here
+// would resurrect a deleted account.
+function isTombstoneActive(
+  providerId: string,
+  providerIdHash: string,
+  deletedAt: Date | null,
+): boolean {
+  if (!deletedAt) {
+    // The column is NOT NULL, so this only fires on a malformed row. Fail loud
+    // and closed: keep blocking (matching readClerkAuthContext's fail-closed
+    // stance) but surface the impossible row — including its provider id — so it
+    // can be reconciled rather than silently locking an identity out.
+    console.error(
+      `deletion_tombstones row for provider id ${providerId} is missing deleted_at; blocking re-creation until reconciled`,
+    );
+    // Send the hash the caller already derived above, never the raw provider
+    // id (this module exists specifically to keep raw Clerk provider ids out
+    // of storage — see the file header and tombstoneHash.ts — so it must not
+    // leak to a third party here either) and never re-derive it: hashing can
+    // throw (a misconfigured pepper), which would turn "log a data-integrity
+    // problem and block re-creation" into a thrown 500 in this fail-closed
+    // path. The raw id already reached first-party logs via console.error
+    // above, where the reconciliation this message asks for actually happens.
+    captureMessage(
+      "deletion_tombstones row is missing deleted_at; blocking re-creation until reconciled",
+      { providerIdHash },
+    );
+    return true;
+  }
+  // The window is measured against the app server's clock while deletedAt is
+  // written by the database (defaultNow()). Any skew between the two clocks
+  // shifts the boundary by that offset; both run on NTP-synced infrastructure,
+  // so the skew is far smaller than the multi-day window and is accepted here.
+  const tombstoneAgeMs = Date.now() - deletedAt.getTime();
+  return tombstoneAgeMs < MAX_CLERK_SESSION_LIFETIME_MS;
+}

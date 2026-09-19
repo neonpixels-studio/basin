@@ -1,8 +1,28 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { shallowMount } from "@vue/test-utils";
 import AboutPage from "~/pages/about.vue";
 
 describe("about page (/about)", () => {
+  beforeEach(() => {
+    vi.mocked(globalThis.useMarketingSeo).mockClear();
+    vi.stubGlobal("useRoute", () => ({
+      path: "/about",
+      params: {},
+      query: {},
+    }));
+  });
+
+  // The og/twitter/canonical shape is asserted once, in
+  // tests/composables/useMarketingSeo.test.ts — this only checks the page
+  // wires up the composable with its own title/description.
+  it("wires up marketing SEO meta for this page", () => {
+    shallowMount(AboutPage);
+    expect(globalThis.useMarketingSeo).toHaveBeenCalledWith(
+      "Reader — about",
+      "Reader is a small, independent team building one calm page for the feeds you already care about — no ranking, no ads, no infinite scroll.",
+    );
+  });
+
   it("renders the page header", () => {
     const wrapper = shallowMount(AboutPage);
     expect(wrapper.find(".page-top").exists()).toBe(true);

@@ -1,3 +1,5 @@
+import { downloadTextFile } from "~/utils/downloadTextFile";
+
 export interface Feed {
   id: number;
   url: string;
@@ -39,26 +41,8 @@ export interface OpmlImportSummary {
   truncatedCount: number;
 }
 
-// Isolated so the network/parse concerns above stay testable without a real
-// DOM download; this is the one part of export that touches browser APIs.
-function downloadTextFile(
-  filename: string,
-  content: string,
-  mimeType: string,
-): void {
-  const blob = new Blob([content], { type: mimeType });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  URL.revokeObjectURL(url);
-}
-
 export function useFeeds() {
-  const { getToken } = useAuth();
+  const { buildAuthHeaders } = useAuthHeaders();
   const { showToast } = useToast();
 
   const items = ref<Feed[]>([]);
@@ -75,17 +59,12 @@ export function useFeeds() {
   const exporting = ref(false);
   const importSummary = ref<OpmlImportSummary | null>(null);
 
-  async function authHeaders(): Promise<Record<string, string>> {
-    const token = await getToken.value();
-    return token ? { Authorization: `Bearer ${token}` } : {};
-  }
-
   async function load() {
     loading.value = true;
     error.value = null;
     try {
       items.value = await $fetch<Feed[]>("/api/feeds", {
-        headers: await authHeaders(),
+        headers: await buildAuthHeaders(),
       });
     } catch {
       error.value = "Failed to load feeds";
@@ -95,7 +74,7 @@ export function useFeeds() {
   }
 
   async function discoverFeedUrl(rawUrl: string): Promise<string | null> {
-    const headers = await authHeaders();
+    const headers = await buildAuthHeaders();
     try {
       const result = await $fetch<{ feedUrl: string }>("/api/feeds/discover", {
         method: "POST",
@@ -131,7 +110,7 @@ export function useFeeds() {
         {
           method: "POST",
           body: { url: resolvedUrl },
-          headers: await authHeaders(),
+          headers: await buildAuthHeaders(),
         },
       );
       detectedSource.value = result.detectedSource;
@@ -158,7 +137,7 @@ export function useFeeds() {
           url: resolvedUrl,
           sourceOverride: sourceOverride.value ?? undefined,
         },
-        headers: await authHeaders(),
+        headers: await buildAuthHeaders(),
       });
       items.value.unshift(feed);
       newUrl.value = "";
@@ -218,7 +197,7 @@ export function useFeeds() {
       const result = await $fetch<OpmlImportResult>("/api/feeds/import", {
         method: "POST",
         body: { opml: opmlText },
-        headers: await authHeaders(),
+        headers: await buildAuthHeaders(),
       });
 
       mergeImportedFeeds(result.imported);
@@ -247,7 +226,7 @@ export function useFeeds() {
 
     try {
       const opmlText = await $fetch<string>("/api/feeds/export", {
-        headers: await authHeaders(),
+        headers: await buildAuthHeaders(),
         responseType: "text",
       });
       downloadTextFile(OPML_EXPORT_FILENAME, opmlText, OPML_EXPORT_MIME_TYPE);
@@ -268,7 +247,7 @@ export function useFeeds() {
     try {
       await $fetch(`/api/feeds/${id}`, {
         method: "DELETE",
-        headers: await authHeaders(),
+        headers: await buildAuthHeaders(),
       });
     } catch {
       items.value.splice(index, 0, removed);

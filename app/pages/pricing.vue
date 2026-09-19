@@ -3,16 +3,10 @@ import type { BillingInterval } from "~/composables/useBilling";
 
 definePageMeta({ layout: "marketing" });
 
-useHead({
-  title: "Pricing — Reader",
-  meta: [
-    {
-      name: "description",
-      content:
-        "Simple, quiet pricing. Start free forever. Upgrade to Pro when you outgrow ten sources.",
-    },
-  ],
-});
+useMarketingSeo(
+  "Pricing — Reader",
+  "Simple, quiet pricing. Start free forever. Upgrade to Pro when you outgrow ten sources.",
+);
 
 const MONTHLY = { amt: "$8", bill: "billed monthly · 14-day free trial" };
 const YEARLY = { amt: "$6", bill: "billed $72/year · 14-day free trial" };

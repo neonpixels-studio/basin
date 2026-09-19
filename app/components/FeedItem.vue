@@ -6,7 +6,7 @@ import PodcastCard from "./PodcastCard.vue";
 import TweetCard from "./TweetCard.vue";
 
 const props = defineProps({ item: { type: Object, required: true } });
-defineEmits(["save", "open"]);
+defineEmits(["save", "star", "open"]);
 
 const map = {
   article: ArticleCard,
@@ -22,6 +22,7 @@ const comp = computed(() => map[props.item.type]);
     :is="comp"
     :item="item"
     @save="$emit('save')"
+    @star="$emit('star')"
     @open="$emit('open')"
   />
 </template>

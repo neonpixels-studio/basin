@@ -16,7 +16,7 @@ import {
 
 const BLOCKING_SEVERITIES = new Set(["high", "critical"]);
 const EXIT_FAILURE = 1;
-const UNIDENTIFIED_ADVISORY_ID = "UNIDENTIFIED";
+export const UNIDENTIFIED_ADVISORY_ID = "UNIDENTIFIED";
 
 function readStdin() {
   return new Promise((resolve, reject) => {
