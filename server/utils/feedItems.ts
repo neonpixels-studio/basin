@@ -1,7 +1,10 @@
 import { desc, eq, and, sql, inArray, type SQL } from "drizzle-orm";
 import { feedItems, feeds } from "../db/schema";
 import { FEED_SOURCE_TO_ITEM_TYPE } from "../../app/utils/feedSources";
-import { formatRelativeTime } from "../../app/utils/feedTime";
+import {
+  deriveFeedItemFields,
+  type FeedItemDerivedFields,
+} from "./feedItemMapper";
 import {
   SAVED_FILTER,
   STARRED_FILTER,
@@ -13,14 +16,14 @@ import {
 export const FEED_ITEMS_DEFAULT_LIMIT = 50;
 export const FEED_ITEMS_MAX_LIMIT = 200;
 
-export interface FeedItemResult {
+// Extends FeedItemDerivedFields (type/source/time/unread/saved) rather than
+// redeclaring those fields — see feedItemMapper.ts for why. `handle` has no
+// search.ts equivalent, so it stays local here.
+export interface FeedItemResult extends FeedItemDerivedFields {
   id: number;
   feedId: number;
   guid: string;
-  type: string;
-  source: string;
   handle: string;
-  time: string;
   title: string;
   url: string | null;
   author: string | null;
@@ -35,8 +38,6 @@ export interface FeedItemResult {
   mediaDuration: number | null;
   createdAt: Date | null;
   updatedAt: Date | null;
-  unread: boolean;
-  saved: boolean;
 }
 
 export interface FeedItemsPage {
@@ -83,7 +84,9 @@ function feedItemsConditions(
   return conditions;
 }
 
-function mapRow(row: {
+// Exported so tests can build a typo-safe fixture (Partial<FeedItemRow>)
+// instead of a bare Record<string, unknown>. Mirrors search.ts's SearchRow.
+export interface FeedItemRow {
   id: number;
   feedId: number;
   feedSource: string;
@@ -103,15 +106,18 @@ function mapRow(row: {
   mediaDuration: number | null;
   createdAt: Date | null;
   updatedAt: Date | null;
-}): FeedItemResult {
+}
+
+// Enumerates every raw column explicitly (rather than spreading the row) so
+// an unexpected extra column never leaks into the API response unreviewed.
+// `handle` reuses `source`'s value rather than re-deriving it, so the two
+// can't diverge if the fallback rule changes.
+function mapRow(row: FeedItemRow): FeedItemResult {
+  const { type, source, time, unread, saved } = deriveFeedItemFields(row);
   return {
     id: row.id,
     feedId: row.feedId,
     guid: row.guid,
-    type: FEED_SOURCE_TO_ITEM_TYPE[row.feedSource] ?? row.feedSource,
-    source: row.feedTitle?.trim() || row.feedSource,
-    handle: row.feedTitle?.trim() || row.feedSource,
-    time: formatRelativeTime(row.publishedAt),
     title: row.title,
     url: row.url,
     author: row.author,
@@ -126,8 +132,12 @@ function mapRow(row: {
     mediaDuration: row.mediaDuration,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
-    unread: row.readAt === null,
-    saved: row.savedAt !== null,
+    type,
+    source,
+    time,
+    unread,
+    handle: source,
+    saved,
   };
 }
 

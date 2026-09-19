@@ -1,7 +1,9 @@
 import { sql, eq, desc } from "drizzle-orm";
 import { feedItems, feeds } from "../db/schema";
-import { FEED_SOURCE_TO_ITEM_TYPE } from "../../app/utils/feedSources";
-import { formatRelativeTime } from "../../app/utils/feedTime";
+import {
+  deriveFeedItemFields,
+  type FeedItemDerivedFields,
+} from "./feedItemMapper";
 
 // Default page size for a search request. No longer a hard ceiling on how many
 // results a query can ever surface — callers page past it via limit/offset.
@@ -106,16 +108,14 @@ export interface SearchPage {
   nextOffset: number | null;
 }
 
-export interface SearchResult {
+// Extends FeedItemDerivedFields (type/source/time/unread/saved) rather than
+// redeclaring those fields — see feedItemMapper.ts for why. SearchResult
+// still omits `handle`, which FeedItemResult carries — out of scope here
+// (see #275's follow-up suggestions).
+export interface SearchResult extends FeedItemDerivedFields {
   id: number;
   feedId: number;
   guid: string;
-  // Derived from the parent feed's source column — matches SOURCES keys in icons.js
-  type: string;
-  // Human-readable feed title for display in the search results
-  source: string;
-  // Short relative time string (e.g. "2h", "3d") matching the mock item `time` field
-  time: string;
   title: string;
   url: string | null;
   author: string | null;
@@ -130,17 +130,6 @@ export interface SearchResult {
   mediaDuration: number | null;
   createdAt: Date | null;
   updatedAt: Date | null;
-  // Derived the same way as FeedItemResult.unread (feedItems.ts) so any
-  // consumer that keys off `unread` — e.g. the feed store's openItem — behaves
-  // identically whether the item came from the dashboard feed or search.
-  unread: boolean;
-  // Derived the same way as FeedItemResult.saved (feedItems.ts) so consumers
-  // that key off `saved` — ReaderDetail's bookmark button and toggleSave's
-  // optimistic count adjustment — behave identically whether the item came
-  // from the dashboard feed or search. Scoped to this one field: SearchResult
-  // still omits handle/mediaUrl/mediaDuration, which FeedItemResult carries —
-  // out of scope here (see #275's follow-up suggestions).
-  saved: boolean;
 }
 
 // Exported so tests can build a typo-safe fixture (Partial<SearchRow>)
@@ -170,19 +159,34 @@ export interface SearchRow {
 
 // Extracted so tests (and any future caller) can exercise the exact
 // row-to-SearchResult derivation — including `unread` — without standing up
-// the drizzle query chain. Mirrors feedItems.ts's mapRow.
-export function mapSearchRow({
-  feedSource,
-  feedTitle,
-  ...item
-}: SearchRow): SearchResult {
+// the drizzle query chain. Enumerates every raw column explicitly (rather
+// than spreading the row) so an unexpected extra column never leaks into the
+// API response unreviewed.
+export function mapSearchRow(row: SearchRow): SearchResult {
+  const { type, source, time, unread, saved } = deriveFeedItemFields(row);
   return {
-    ...item,
-    type: FEED_SOURCE_TO_ITEM_TYPE[feedSource] ?? feedSource,
-    source: feedTitle?.trim() || feedSource,
-    time: formatRelativeTime(item.publishedAt),
-    unread: item.readAt === null,
-    saved: item.savedAt !== null,
+    id: row.id,
+    feedId: row.feedId,
+    guid: row.guid,
+    title: row.title,
+    url: row.url,
+    author: row.author,
+    imageUrl: row.imageUrl,
+    content: row.content,
+    tags: row.tags,
+    publishedAt: row.publishedAt,
+    readAt: row.readAt,
+    starred: row.starred,
+    savedAt: row.savedAt,
+    mediaUrl: row.mediaUrl,
+    mediaDuration: row.mediaDuration,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    type,
+    source,
+    time,
+    unread,
+    saved,
   };
 }
 
