@@ -133,5 +133,20 @@ describe("useUserSettings", () => {
         expect.objectContaining({ method: "PATCH", body: { theme: "light" } }),
       );
     });
+
+    // Regression: a settings save is often the last thing to happen before
+    // a route change (toggle unread-only, then navigate away). Without
+    // `keepalive`, the browser aborts any request still in flight when the
+    // page that issued it is unloaded, silently dropping that write.
+    it("sends the PATCH request with keepalive so it survives a navigation away from the page", async () => {
+      const mockFetch = vi.fn().mockResolvedValue(mockSettings);
+      vi.stubGlobal("$fetch", mockFetch);
+      const { save } = useUserSettings();
+      await save({ showUnreadOnly: true });
+      expect(mockFetch).toHaveBeenCalledWith(
+        "/api/settings/reading",
+        expect.objectContaining({ keepalive: true }),
+      );
+    });
   });
 });

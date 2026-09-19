@@ -26,6 +26,17 @@ test.describe("Dashboard", () => {
 
   test("unread-only toggle changes displayed items", async ({ page }) => {
     const chip = page.locator(".fchip").first();
+    // showUnreadOnly is persisted server-side (see useUserSettings.save()),
+    // so this test can't assume it starts inactive — a save from a previous
+    // run (e.g. a prior failed attempt that didn't get to toggle back) can
+    // leave it active before this test even begins. Normalize to inactive
+    // first so the two real assertions below are about the click behavior,
+    // not about whatever this account's persisted state happened to be.
+    if (await chip.evaluate((el) => el.classList.contains("active"))) {
+      await chip.click();
+      await expect(chip).not.toHaveClass(/active/);
+    }
+
     await chip.click();
     // After toggling, the chip becomes active
     await expect(chip).toHaveClass(/active/);
