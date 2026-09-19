@@ -126,6 +126,8 @@ export interface SearchResult {
   readAt: Date | null;
   starred: boolean | null;
   savedAt: Date | null;
+  mediaUrl: string | null;
+  mediaDuration: number | null;
   createdAt: Date | null;
   updatedAt: Date | null;
   // Derived the same way as FeedItemResult.unread (feedItems.ts) so any
@@ -153,6 +155,8 @@ export interface SearchRow {
   readAt: Date | null;
   starred: boolean | null;
   savedAt: Date | null;
+  mediaUrl: string | null;
+  mediaDuration: number | null;
   createdAt: Date | null;
   updatedAt: Date | null;
 }
@@ -210,6 +214,8 @@ export async function searchFeedItems(
       readAt: feedItems.readAt,
       starred: feedItems.starred,
       savedAt: feedItems.savedAt,
+      mediaUrl: feedItems.mediaUrl,
+      mediaDuration: feedItems.mediaDuration,
       createdAt: feedItems.createdAt,
       updatedAt: feedItems.updatedAt,
     })

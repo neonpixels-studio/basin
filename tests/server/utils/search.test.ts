@@ -21,6 +21,8 @@ import {
   SEARCH_RESULT_MAX_LIMIT,
   MAX_SEARCH_TERMS,
   MAX_TERM_LENGTH,
+  type SearchRow,
+  type SearchResult,
 } from "../../../server/utils/search";
 
 // search.ts composes one sql`` fragment inside another (the shared
@@ -39,7 +41,7 @@ function flattenSqlChunks(sqlFragment: { queryChunks: unknown[] }): unknown[] {
   });
 }
 
-const mockRow = {
+const mockRow: SearchRow = {
   id: 1,
   feedId: 10,
   feedSource: "rss",
@@ -55,12 +57,14 @@ const mockRow = {
   readAt: null,
   starred: false,
   savedAt: null,
+  mediaUrl: null,
+  mediaDuration: null,
   createdAt: null,
   updatedAt: null,
 };
 
 // Expected result after the mapping step strips feedSource/feedTitle and adds type/source/time.
-const expectedResult = {
+const expectedResult: SearchResult = {
   id: 1,
   feedId: 10,
   guid: "guid-1",
@@ -74,6 +78,8 @@ const expectedResult = {
   readAt: null,
   starred: false,
   savedAt: null,
+  mediaUrl: null,
+  mediaDuration: null,
   createdAt: null,
   updatedAt: null,
   type: "article",
@@ -109,6 +115,21 @@ describe("searchFeedItems", () => {
 
     expect(result.items[0].author).toBe("Jane Doe");
     expect(result.items[0].imageUrl).toBe("https://example.com/image.jpg");
+  });
+
+  // Regression: #276. The row-to-SearchResult mapping (mapSearchRow) spreads
+  // `...item` through unconditionally, so it would pass mediaUrl/
+  // mediaDuration along even if the select below it never fetched them —
+  // that's the actual bug this closes. Pin the drizzle select() argument
+  // itself (same pattern as the orderBy pin further down in this file) so
+  // deleting the columns from the query fails this test, not just the
+  // mapping.
+  it("selects the media columns so a podcast/video opened from search can play", async () => {
+    await searchFeedItems(1, "testing");
+
+    const selection = mockSelect.mock.calls[0][0];
+    expect(selection.mediaUrl).toBe(feedItems.mediaUrl);
+    expect(selection.mediaDuration).toBe(feedItems.mediaDuration);
   });
 
   it("returns null author and imageUrl when not set", async () => {
