@@ -17,8 +17,10 @@ export interface FeedItemDerivationInput {
 // can't derive these fields differently again — basin#247 (`unread`) and
 // basin#281 (`saved`) both drifted between the two mappers before landing
 // here. Both destructure this function's return value field-by-field (never
-// spread) so a field this function later grows is a missing-property
-// compile error at each call site until wired deliberately.
+// spread), matching FeedItemResult/SearchResult declaring every derived
+// field as required: a field added here without being added to both result
+// interfaces is a missing-property compile error at each mapper's return
+// statement.
 export interface FeedItemDerivedFields {
   // Derived from the parent feed's source column — matches SOURCES keys in icons.js
   type: string;

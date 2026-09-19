@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { PgDialect } from "drizzle-orm/pg-core";
 
 const mockSelect = vi.fn();
@@ -19,6 +19,7 @@ import {
   FEED_ITEMS_DEFAULT_LIMIT,
   FEED_ITEMS_MAX_LIMIT,
   type FeedItemRow,
+  type FeedItemResult,
 } from "../../../server/utils/feedItems";
 
 // Render the drizzle SQL passed to a mocked .where() into real SQL so filter
@@ -32,6 +33,9 @@ function renderWhere(): { sql: string; params: unknown[] } {
 
 // Typed against FeedItemRow (exported by feedItems.ts) so a misspelled key
 // here fails to compile instead of silently being accepted.
+// Date/media columns get distinct non-null values (rather than all sharing
+// `null`) so a mapRow field swap — e.g. createdAt/updatedAt transposed —
+// fails the full-shape assertion below instead of passing unnoticed.
 const mockRow: FeedItemRow = {
   id: 1,
   feedId: 10,
@@ -44,14 +48,42 @@ const mockRow: FeedItemRow = {
   imageUrl: "https://example.com/image.jpg",
   content: "Article content",
   tags: ["test"],
-  publishedAt: null,
+  publishedAt: new Date("2026-01-01T10:00:00Z"),
   readAt: null,
   starred: false,
   savedAt: null,
-  mediaUrl: null,
-  mediaDuration: null,
-  createdAt: null,
-  updatedAt: null,
+  mediaUrl: "https://example.com/audio.mp3",
+  mediaDuration: 1234,
+  createdAt: new Date("2026-01-01T08:00:00Z"),
+  updatedAt: new Date("2026-01-01T09:00:00Z"),
+};
+
+// Expected result after the mapping step derives type/source/handle/time/
+// unread/saved and passes the rest of the columns through unchanged.
+const expectedResult: FeedItemResult = {
+  id: 1,
+  feedId: 10,
+  guid: "guid-1",
+  title: "Test Article",
+  url: "https://example.com/article",
+  author: "Jane Doe",
+  imageUrl: "https://example.com/image.jpg",
+  content: "Article content",
+  tags: ["test"],
+  publishedAt: new Date("2026-01-01T10:00:00Z"),
+  readAt: null,
+  starred: false,
+  savedAt: null,
+  mediaUrl: "https://example.com/audio.mp3",
+  mediaDuration: 1234,
+  createdAt: new Date("2026-01-01T08:00:00Z"),
+  updatedAt: new Date("2026-01-01T09:00:00Z"),
+  type: "article",
+  source: "Test Feed",
+  handle: "Test Feed",
+  time: "2h",
+  unread: true,
+  saved: false,
 };
 
 describe("fetchFeedItems", () => {
@@ -64,6 +96,25 @@ describe("fetchFeedItems", () => {
     mockOrderBy.mockReturnValue({ limit: mockLimit });
     mockLimit.mockReturnValue({ offset: mockOffset });
     mockOffset.mockResolvedValue([]);
+    // mockRow.publishedAt is fixed at 2026-01-01T10:00:00Z so `time` derives
+    // to a stable "2h" against this frozen clock, instead of drifting as
+    // real time passes.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T12:00:00Z"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // Pins the full mapRow output — including every raw passthrough column —
+  // against distinct, non-null fixture values so a field transposed in
+  // mapRow (e.g. createdAt/updatedAt swapped) fails this assertion instead
+  // of passing unnoticed the way #276 (missing mediaUrl/mediaDuration) did.
+  it("maps a row to the full FeedItemResult shape", async () => {
+    mockOffset.mockResolvedValue([mockRow]);
+    const result = await fetchFeedItems(1, {});
+    expect(result.items).toEqual([expectedResult]);
   });
 
   it("returns empty items array when no rows are found", async () => {

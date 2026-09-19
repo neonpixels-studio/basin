@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { desc } from "drizzle-orm";
 import { feedItems } from "../../../server/db/schema";
 
@@ -41,6 +41,13 @@ function flattenSqlChunks(sqlFragment: { queryChunks: unknown[] }): unknown[] {
   });
 }
 
+// publishedAt/createdAt/updatedAt get distinct non-null values (rather than
+// all sharing `null`) so a mapSearchRow field transposed between them fails
+// the full-shape assertion below instead of passing unnoticed. readAt/
+// savedAt stay null so the default row reads as unread/unsaved for the
+// tests that build on it below (readAt<->savedAt transposition is pinned
+// separately by the unread/saved tests further down, which flip one field
+// at a time).
 const mockRow: SearchRow = {
   id: 1,
   feedId: 10,
@@ -53,14 +60,14 @@ const mockRow: SearchRow = {
   imageUrl: "https://example.com/image.jpg",
   content: "Article content about testing",
   tags: ["test"],
-  publishedAt: null,
+  publishedAt: new Date("2026-01-01T10:00:00Z"),
   readAt: null,
   starred: false,
   savedAt: null,
-  mediaUrl: null,
-  mediaDuration: null,
-  createdAt: null,
-  updatedAt: null,
+  mediaUrl: "https://example.com/audio.mp3",
+  mediaDuration: 1234,
+  createdAt: new Date("2026-01-01T08:00:00Z"),
+  updatedAt: new Date("2026-01-01T09:00:00Z"),
 };
 
 // Expected result after the mapping step strips feedSource/feedTitle and adds type/source/time.
@@ -74,17 +81,17 @@ const expectedResult: SearchResult = {
   imageUrl: "https://example.com/image.jpg",
   content: "Article content about testing",
   tags: ["test"],
-  publishedAt: null,
+  publishedAt: new Date("2026-01-01T10:00:00Z"),
   readAt: null,
   starred: false,
   savedAt: null,
-  mediaUrl: null,
-  mediaDuration: null,
-  createdAt: null,
-  updatedAt: null,
+  mediaUrl: "https://example.com/audio.mp3",
+  mediaDuration: 1234,
+  createdAt: new Date("2026-01-01T08:00:00Z"),
+  updatedAt: new Date("2026-01-01T09:00:00Z"),
   type: "article",
   source: "Test Feed",
-  time: "",
+  time: "2h",
   unread: true,
   saved: false,
 };
@@ -99,6 +106,15 @@ describe("searchFeedItems", () => {
     mockOrderBy.mockReturnValue({ limit: mockLimit });
     mockLimit.mockReturnValue({ offset: mockOffset });
     mockOffset.mockResolvedValue([]);
+    // mockRow.publishedAt is fixed at 2026-01-01T10:00:00Z so `time` derives
+    // to a stable "2h" against this frozen clock, instead of drifting as
+    // real time passes.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T12:00:00Z"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("returns matching feed items for a given user and query", async () => {

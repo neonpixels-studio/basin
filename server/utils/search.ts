@@ -136,9 +136,9 @@ export interface SearchResult {
   // Derived the same way as FeedItemResult.saved (feedItems.ts) so consumers
   // that key off `saved` — ReaderDetail's bookmark button and toggleSave's
   // optimistic count adjustment — behave identically whether the item came
-  // from the dashboard feed or search. Scoped to this one field: SearchResult
-  // still omits handle/mediaUrl/mediaDuration, which FeedItemResult carries —
-  // out of scope here (see #275's follow-up suggestions).
+  // from the dashboard feed or search. SearchResult still omits `handle`,
+  // which FeedItemResult carries — out of scope here (see #275's follow-up
+  // suggestions).
   saved: boolean;
 }
 
