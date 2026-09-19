@@ -7,6 +7,7 @@
 import { inArray, sql } from "drizzle-orm";
 import { deletionTombstones } from "../db/schema";
 import { hashProviderId } from "./tombstoneHash";
+import { captureMessage } from "../../app/lib/sentry";
 
 // A tombstone only needs to outlive any session token that was minted just
 // before the account was deleted: Clerk verifies JWTs networklessly, so such a
@@ -53,9 +54,10 @@ export async function recordDeletionTombstone(
 export async function isProviderTombstoned(
   providerId: string,
 ): Promise<boolean> {
+  const providerIdHash = hashProviderId(providerId);
   const tombstone = await useDb().query.deletionTombstones.findFirst({
     where: inArray(deletionTombstones.providerId, [
-      hashProviderId(providerId),
+      providerIdHash,
       // @todo Drop the raw-id arm once every environment has run
       // scripts/backfill-hash-tombstones.ts, so no legacy raw rows remain.
       providerId,
@@ -64,7 +66,7 @@ export async function isProviderTombstoned(
   if (!tombstone) {
     return false;
   }
-  return isTombstoneActive(providerId, tombstone.deletedAt);
+  return isTombstoneActive(providerId, providerIdHash, tombstone.deletedAt);
 }
 
 // A tombstone still blocks resurrection until the maximum Clerk session lifetime
@@ -73,6 +75,7 @@ export async function isProviderTombstoned(
 // would resurrect a deleted account.
 function isTombstoneActive(
   providerId: string,
+  providerIdHash: string,
   deletedAt: Date | null,
 ): boolean {
   if (!deletedAt) {
@@ -82,6 +85,18 @@ function isTombstoneActive(
     // can be reconciled rather than silently locking an identity out.
     console.error(
       `deletion_tombstones row for provider id ${providerId} is missing deleted_at; blocking re-creation until reconciled`,
+    );
+    // Send the hash the caller already derived above, never the raw provider
+    // id (this module exists specifically to keep raw Clerk provider ids out
+    // of storage — see the file header and tombstoneHash.ts — so it must not
+    // leak to a third party here either) and never re-derive it: hashing can
+    // throw (a misconfigured pepper), which would turn "log a data-integrity
+    // problem and block re-creation" into a thrown 500 in this fail-closed
+    // path. The raw id already reached first-party logs via console.error
+    // above, where the reconciliation this message asks for actually happens.
+    captureMessage(
+      "deletion_tombstones row is missing deleted_at; blocking re-creation until reconciled",
+      { providerIdHash },
     );
     return true;
   }

@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { useSyncQueue } from "~/composables/useSyncQueue";
 import { syncQueueStore } from "~/composables/syncQueueStore";
+// @sentry/nuxt is mocked once, globally, in tests/setup.ts — see that file's
+// comment for why a module-scoped mock here instead would silently miss the
+// calls app/lib/sentry.ts makes.
+import * as SentrySDK from "@sentry/nuxt";
+import { mockSentryScope } from "../setup";
 
 vi.mock("~/composables/syncQueueStore", () => ({
   syncQueueStore: {
@@ -86,8 +91,9 @@ describe("useSyncQueue", () => {
       const items = [makeItem({ id: 1 }), makeItem({ id: 2 })];
       vi.mocked(syncQueueStore.getPendingItems).mockResolvedValue(items);
       mockFetch.mockResolvedValue({ ok: true });
+      const markSyncedError = new Error("DB write failed");
       vi.mocked(syncQueueStore.markSynced).mockRejectedValueOnce(
-        new Error("DB write failed"),
+        markSyncedError,
       );
 
       const { flushSyncQueue } = useSyncQueue();
@@ -98,6 +104,7 @@ describe("useSyncQueue", () => {
       // The pass continued to item 2 rather than stopping.
       expect(mockFetch).toHaveBeenCalledTimes(2);
       expect(syncQueueStore.markSynced).toHaveBeenCalledWith(fakeDb, 2);
+      expect(SentrySDK.captureException).toHaveBeenCalledWith(markSyncedError);
     });
 
     it("stops the pass (without quarantining) when recording an outcome throws unexpectedly", async () => {
@@ -109,8 +116,9 @@ describe("useSyncQueue", () => {
       const items = [makeItem({ id: 1 }), makeItem({ id: 2 })];
       vi.mocked(syncQueueStore.getPendingItems).mockResolvedValue(items);
       mockFetch.mockRejectedValueOnce(new Error("Network error"));
+      const recordFailureError = new Error("DB write failed");
       vi.mocked(syncQueueStore.recordRetryableFailure).mockRejectedValueOnce(
-        new Error("DB write failed"),
+        recordFailureError,
       );
 
       const { flushSyncQueue } = useSyncQueue();
@@ -118,6 +126,9 @@ describe("useSyncQueue", () => {
 
       expect(mockFetch).toHaveBeenCalledTimes(1);
       expect(syncQueueStore.quarantine).not.toHaveBeenCalled();
+      expect(SentrySDK.captureException).toHaveBeenCalledWith(
+        recordFailureError,
+      );
     });
 
     it("quarantines a permanently-failing (403) item without blocking items behind it", async () => {
@@ -322,6 +333,90 @@ describe("useSyncQueue", () => {
     });
   });
 
+  describe("flushSyncQueue() outer failure", () => {
+    it("reports to Sentry exactly once when the flush pass fails outright (e.g. IndexedDB unavailable)", async () => {
+      // mockRejectedValue (not -Once): the client DB stays broken for every
+      // call, including the refresh a naive `finally` would still attempt —
+      // this is what catches a regression back to double-reporting the same
+      // failure once for the flush pass and again for the count refresh.
+      const dbError = new Error("IndexedDB unavailable");
+      mockUseClientDb.mockRejectedValue(dbError);
+
+      const { flushSyncQueue } = useSyncQueue();
+      await expect(flushSyncQueue()).resolves.toBeUndefined();
+
+      expect(SentrySDK.captureException).toHaveBeenCalledTimes(1);
+      expect(SentrySDK.captureException).toHaveBeenCalledWith(dbError);
+    });
+
+    it("still refreshes the count exactly once when the client DB opened fine but reading pending items failed", async () => {
+      // Unlike the client-DB-broken case above, the connection itself is
+      // healthy here — the count read must still happen (otherwise the
+      // banner goes stale on a failure unrelated to useClientDb()), but only
+      // once, reusing the already-open connection rather than opening (and
+      // risking failing on) a second one.
+      const pendingItemsError = new Error("object store missing");
+      vi.mocked(syncQueueStore.getPendingItems).mockRejectedValue(
+        pendingItemsError,
+      );
+      vi.mocked(syncQueueStore.countFailedItems).mockResolvedValue(2);
+
+      const { flushSyncQueue, failedCount } = useSyncQueue();
+      await expect(flushSyncQueue()).resolves.toBeUndefined();
+
+      expect(mockUseClientDb).toHaveBeenCalledTimes(1);
+      expect(SentrySDK.captureException).toHaveBeenCalledTimes(1);
+      expect(SentrySDK.captureException).toHaveBeenCalledWith(
+        pendingItemsError,
+      );
+      expect(failedCount.value).toBe(2);
+    });
+
+    it("resolves (and reports each failure once, under its own stage) when both reading pending items and refreshing the count fail", async () => {
+      // The uncovered path this guards: refreshing the count from the catch
+      // path used to be unguarded, so a countFailedItems() rejection here
+      // (on an otherwise-healthy connection) would itself become an
+      // unhandled rejection out of flushSyncQueue() — exactly what the outer
+      // try/catch exists to prevent.
+      const pendingItemsError = new Error("object store missing");
+      const countError = new Error("count read also failed");
+      vi.mocked(syncQueueStore.getPendingItems).mockRejectedValue(
+        pendingItemsError,
+      );
+      vi.mocked(syncQueueStore.countFailedItems).mockRejectedValue(countError);
+
+      const { flushSyncQueue } = useSyncQueue();
+      await expect(flushSyncQueue()).resolves.toBeUndefined();
+
+      expect(SentrySDK.captureException).toHaveBeenCalledTimes(2);
+      expect(SentrySDK.captureException).toHaveBeenCalledWith(
+        pendingItemsError,
+      );
+      expect(SentrySDK.captureException).toHaveBeenCalledWith(countError);
+    });
+
+    it("labels a happy-path count-refresh failure with its own stage, not the flush pass's", async () => {
+      const happyPathCountError = new Error("count read failed");
+      vi.mocked(syncQueueStore.getPendingItems).mockResolvedValue([]);
+      vi.mocked(syncQueueStore.countFailedItems).mockRejectedValue(
+        happyPathCountError,
+      );
+
+      const { flushSyncQueue } = useSyncQueue();
+      await expect(flushSyncQueue()).resolves.toBeUndefined();
+
+      expect(SentrySDK.captureException).toHaveBeenCalledTimes(1);
+      expect(SentrySDK.captureException).toHaveBeenCalledWith(
+        happyPathCountError,
+      );
+      expect(mockSentryScope.setExtras).toHaveBeenCalledWith(
+        expect.objectContaining({
+          stage: "sync-queue-refresh-failed-count",
+        }),
+      );
+    });
+  });
+
   describe("refreshFailedCount()", () => {
     it("sets failedCount from the store", async () => {
       vi.mocked(syncQueueStore.countFailedItems).mockResolvedValue(2);
@@ -339,11 +434,13 @@ describe("useSyncQueue", () => {
       await refreshFailedCount();
       expect(failedCount.value).toBe(4);
 
+      const countError = new Error("DB unavailable");
       vi.mocked(syncQueueStore.countFailedItems).mockRejectedValueOnce(
-        new Error("DB unavailable"),
+        countError,
       );
       await expect(refreshFailedCount()).resolves.toBeUndefined();
       expect(failedCount.value).toBe(4);
+      expect(SentrySDK.captureException).toHaveBeenCalledWith(countError);
     });
   });
 

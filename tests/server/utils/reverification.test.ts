@@ -5,6 +5,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 vi.mock("@clerk/nuxt/server", () => ({ clerkClient: vi.fn() }));
 vi.mock("@clerk/nuxt/webhooks", () => ({ verifyWebhook: vi.fn() }));
 
+// @sentry/nuxt is mocked once, globally, in tests/setup.ts — see that file's
+// comment for why a module-scoped mock here instead would silently miss the
+// calls app/lib/sentry.ts makes.
+import * as SentrySDK from "@sentry/nuxt";
+
 import {
   assertRecentReverification,
   REVERIFICATION_MAX_AGE_MINUTES,
@@ -92,6 +97,9 @@ describe("assertRecentReverification", () => {
     const event = { context: { auth: () => ({ sessionClaims: {} }) } };
     expect(() => assertRecentReverification(event as never)).toThrow();
     expect(errorSpy).toHaveBeenCalledOnce();
+    expect(SentrySDK.captureMessage).toHaveBeenCalledWith(
+      expect.stringContaining("fva"),
+    );
   });
 
   it("rejects with 403 when both factors are the -1 sentinel", () => {

@@ -3,6 +3,10 @@ import { flushPromises } from "@vue/test-utils";
 import { setActivePinia, createPinia } from "pinia";
 import { ref, nextTick } from "vue";
 import { useAppearanceStore } from "~/stores/appearance";
+// @sentry/nuxt is mocked once, globally, in tests/setup.ts — see that file's
+// comment for why a module-scoped mock here instead would silently miss the
+// calls app/lib/sentry.ts makes.
+import * as SentrySDK from "@sentry/nuxt";
 
 // Builds a promise this test controls the resolution/rejection of, so a
 // specific loadFromDb() call's `await load()` can be held open while a
@@ -339,11 +343,13 @@ describe("useAppearanceStore loadFromDb ownership guard", () => {
     await nextTick();
 
     // No competing account switch — this load simply fails on its own.
-    failingLoad.reject(new Error("network error"));
+    const loadError = new Error("network error");
+    failingLoad.reject(loadError);
     await flushPromises();
 
     // Every failure path still uncloaks, per loadFromDb()'s own doc comment.
     expect(store.ready).toBe(true);
+    expect(SentrySDK.captureException).toHaveBeenCalledWith(loadError);
 
     // Toggling isLoaded (not userId, which is unchanged) re-fires init()'s
     // watcher for the same account — this only retries if the failed call's

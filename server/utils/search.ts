@@ -125,12 +125,21 @@ export interface SearchResult {
   readAt: Date | null;
   starred: boolean | null;
   savedAt: Date | null;
+  mediaUrl: string | null;
+  mediaDuration: number | null;
   createdAt: Date | null;
   updatedAt: Date | null;
   // Derived by the shared deriveFeedItemFields (feedItemMapper.ts) so any
   // consumer that keys off `unread` — e.g. the feed store's openItem — behaves
   // identically whether the item came from the dashboard feed or search.
   unread: boolean;
+  // Derived the same way as FeedItemResult.saved (feedItems.ts) so consumers
+  // that key off `saved` — ReaderDetail's bookmark button and toggleSave's
+  // optimistic count adjustment — behave identically whether the item came
+  // from the dashboard feed or search. Scoped to this one field: SearchResult
+  // still omits handle/mediaUrl/mediaDuration, which FeedItemResult carries —
+  // out of scope here (see #275's follow-up suggestions).
+  saved: boolean;
 }
 
 // Exported so tests can build a typo-safe fixture (Partial<SearchRow>)
@@ -152,6 +161,8 @@ export interface SearchRow {
   readAt: Date | null;
   starred: boolean | null;
   savedAt: Date | null;
+  mediaUrl: string | null;
+  mediaDuration: number | null;
   createdAt: Date | null;
   updatedAt: Date | null;
 }
@@ -177,11 +188,16 @@ export function mapSearchRow(row: SearchRow): SearchResult {
     readAt: row.readAt,
     starred: row.starred,
     savedAt: row.savedAt,
+    mediaUrl: row.mediaUrl,
+    mediaDuration: row.mediaDuration,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     // Passing the row itself (not a hand-copied subset) means the four
     // derived fields can never be wired from the wrong column here.
     ...deriveFeedItemFields(row),
+    // Same fallback as feedItems.ts's mapRow: not part of deriveFeedItemFields
+    // (search results have no per-source handle equivalent), so it stays local.
+    saved: row.savedAt !== null,
   };
 }
 
@@ -221,6 +237,8 @@ export async function searchFeedItems(
       readAt: feedItems.readAt,
       starred: feedItems.starred,
       savedAt: feedItems.savedAt,
+      mediaUrl: feedItems.mediaUrl,
+      mediaDuration: feedItems.mediaDuration,
       createdAt: feedItems.createdAt,
       updatedAt: feedItems.updatedAt,
     })

@@ -111,9 +111,10 @@ export interface FeedItemRow {
 // unexpected extra column on the query never leaks into the API response
 // unreviewed. type/source/time/unread come from the shared
 // deriveFeedItemFields — see feedItemMapper.ts for the rationale. `handle`
-// and `saved` have no search.ts equivalent (search results have no
-// per-source handle, and search.ts doesn't yet expose `saved`), so they stay
-// local to this mapper.
+// has no search.ts equivalent (search results have no per-source handle), so
+// it stays local to this mapper; `saved` is computed the same way in both
+// mappers but isn't part of deriveFeedItemFields since it isn't derived from
+// the fields FeedItemDerivationInput covers.
 function mapRow(row: FeedItemRow): FeedItemResult {
   // Passing the row itself (not a hand-copied subset) means the four
   // derived fields can never be wired from the wrong column here.

@@ -4,6 +4,7 @@
 // forces this via Clerk reverification, then retries with a fresh token.
 import type { H3Event } from "h3";
 import { getFactorVerificationAgesMinutes } from "./clerk";
+import { captureMessage } from "../../app/lib/sentry";
 
 // Machine-readable code the client matches to trigger Clerk's reverification
 // flow. Kept in sync with REVERIFICATION_REQUIRED_CODE in
@@ -14,6 +15,11 @@ export const REVERIFICATION_REQUIRED_CODE = "reverification_required";
 // destructive action to proceed. Mirrors Clerk's default "strict" reverification
 // window so a token minted long before the request can't erase data.
 export const REVERIFICATION_MAX_AGE_MINUTES = 10;
+
+// Shared between the console log and the Sentry report below so the two can
+// never drift into two different wordings for the same event.
+const FVA_CLAIM_UNAVAILABLE_MESSAGE =
+  "Clerk `fva` claim unavailable; reverification gate cannot evaluate a factor age and is rejecting the request.";
 
 function reverificationRequiredError(actionDescription: string) {
   return createError({
@@ -36,9 +42,8 @@ export function assertRecentReverification(
     // missing Clerk middleware, or a JWT template without `fva`. Log it so a
     // misconfiguration is visible rather than silently blocking every user —
     // distinct from an ordinary stale session, which carries a real age below.
-    console.error(
-      "Clerk `fva` claim unavailable; reverification gate cannot evaluate a factor age and is rejecting the request.",
-    );
+    console.error(FVA_CLAIM_UNAVAILABLE_MESSAGE);
+    captureMessage(FVA_CLAIM_UNAVAILABLE_MESSAGE, { actionDescription });
     throw reverificationRequiredError(actionDescription);
   }
   // Recently verified if ANY factor was reverified within the window — Clerk's

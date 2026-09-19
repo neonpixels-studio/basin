@@ -21,6 +21,8 @@ import {
   SEARCH_RESULT_MAX_LIMIT,
   MAX_SEARCH_TERMS,
   MAX_TERM_LENGTH,
+  type SearchRow,
+  type SearchResult,
 } from "../../../server/utils/search";
 
 // search.ts composes one sql`` fragment inside another (the shared
@@ -39,7 +41,7 @@ function flattenSqlChunks(sqlFragment: { queryChunks: unknown[] }): unknown[] {
   });
 }
 
-const mockRow = {
+const mockRow: SearchRow = {
   id: 1,
   feedId: 10,
   feedSource: "rss",
@@ -55,12 +57,14 @@ const mockRow = {
   readAt: null,
   starred: false,
   savedAt: null,
+  mediaUrl: null,
+  mediaDuration: null,
   createdAt: null,
   updatedAt: null,
 };
 
 // Expected result after the mapping step strips feedSource/feedTitle and adds type/source/time.
-const expectedResult = {
+const expectedResult: SearchResult = {
   id: 1,
   feedId: 10,
   guid: "guid-1",
@@ -74,12 +78,15 @@ const expectedResult = {
   readAt: null,
   starred: false,
   savedAt: null,
+  mediaUrl: null,
+  mediaDuration: null,
   createdAt: null,
   updatedAt: null,
   type: "article",
   source: "Test Feed",
   time: "",
   unread: true,
+  saved: false,
 };
 
 describe("searchFeedItems", () => {
@@ -109,6 +116,20 @@ describe("searchFeedItems", () => {
 
     expect(result.items[0].author).toBe("Jane Doe");
     expect(result.items[0].imageUrl).toBe("https://example.com/image.jpg");
+  });
+
+  // Regression: #276. mapSearchRow reads row.mediaUrl/row.mediaDuration
+  // unconditionally, so it would pass them through as undefined if the
+  // select below it never fetched them — that's the actual bug this closes.
+  // Pin the drizzle select() argument itself (same pattern as the orderBy
+  // pin further down in this file) so deleting the columns from the query
+  // fails this test, not just the mapping.
+  it("selects the media columns so a podcast/video opened from search can play", async () => {
+    await searchFeedItems(1, "testing");
+
+    const selection = mockSelect.mock.calls[0][0];
+    expect(selection.mediaUrl).toBe(feedItems.mediaUrl);
+    expect(selection.mediaDuration).toBe(feedItems.mediaDuration);
   });
 
   it("returns null author and imageUrl when not set", async () => {
@@ -193,6 +214,22 @@ describe("searchFeedItems", () => {
     const result = await searchFeedItems(1, "testing");
 
     expect(result.items[0].unread).toBe(false);
+  });
+
+  // Regression: #275. The null-savedAt -> saved=false case is already pinned
+  // by "returns matching feed items…" above (mirrors the unread convention
+  // just above); only the non-null case adds signal here. A search result
+  // for an item already saved must carry saved=true, matching
+  // feedItems.ts's FeedItemResult — otherwise ReaderDetail's bookmark button
+  // and toggleSave's optimistic count adjustment treat it as unsaved when
+  // opened from search.
+  it("derives saved=true from a non-null savedAt, matching feedItems.ts", async () => {
+    const savedRow = { ...mockRow, savedAt: new Date("2026-01-01T00:00:00Z") };
+    mockOffset.mockResolvedValue([savedRow]);
+
+    const result = await searchFeedItems(1, "testing");
+
+    expect(result.items[0].saved).toBe(true);
   });
 
   it("fetches one row beyond the default page size to detect a next page", async () => {
@@ -304,6 +341,25 @@ describe("searchFeedItems", () => {
     expect(mockOrderBy).toHaveBeenCalledTimes(1);
     expect(mockLimit).toHaveBeenCalledTimes(1);
     expect(mockOffset).toHaveBeenCalledTimes(1);
+  });
+
+  // Regression guard for #275: every test above feeds a hand-built row
+  // straight into the mocked .offset(), so nothing else pins that the query
+  // actually selects savedAt — dropping it from the projection would leave
+  // item.savedAt undefined at runtime, and mapSearchRow's `!== null` check
+  // would then derive saved=true for every result (worse than the original
+  // bug: every result shows a filled bookmark, and one click un-saves an
+  // item that was never saved). Same guard for readAt/unread, which had no
+  // equivalent pin either.
+  it("selects readAt and savedAt so unread/saved are derived from real columns, not undefined", async () => {
+    await searchFeedItems(1, "testing");
+
+    // Pinned to the exact column objects, not just the key names — a key
+    // present but mis-wired to the wrong column (e.g. `savedAt:
+    // feedItems.readAt`) would still pass an Object.keys-only check.
+    const selection = mockSelect.mock.calls[0][0];
+    expect(selection.readAt).toBe(feedItems.readAt);
+    expect(selection.savedAt).toBe(feedItems.savedAt);
   });
 
   it("builds a prefix tsquery bound as a parameter, not spliced into the SQL text", async () => {

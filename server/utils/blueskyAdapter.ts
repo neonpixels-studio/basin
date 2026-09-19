@@ -9,6 +9,7 @@ import type {
 } from "@atproto/api";
 import type { NewFeedItem } from "./rssAdapter";
 import { normalizeTags } from "./tagNormalizer";
+import { captureException } from "../../app/lib/sentry";
 
 export const BLUESKY_SOURCE = "bluesky" as const;
 
@@ -375,6 +376,7 @@ async function mirrorSessionTokens(
     await persistSession(tokens);
   } catch (error) {
     console.error("Failed to persist refreshed Bluesky session:", error);
+    captureException(error, { stage: "bluesky-session-persist" });
   }
 }
 

@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { AtpPersistSessionHandler } from "@atproto/api";
 
+// @sentry/nuxt is mocked once, globally, in tests/setup.ts — see that file's
+// comment for why a module-scoped mock here instead would silently miss the
+// calls app/lib/sentry.ts makes.
+import * as SentrySDK from "@sentry/nuxt";
+
 // Mock @atproto/api before importing the module under test.
 const mockLogin = vi.fn();
 const mockResumeSession = vi.fn();
@@ -563,9 +568,8 @@ describe("createAgentSession", () => {
     // Mirroring is best-effort; a failed write must not surface into atproto's
     // request path and break pagination.
     mockResumeSession.mockResolvedValue(undefined);
-    const persistSession = vi
-      .fn()
-      .mockRejectedValue(new Error("integrations write failed"));
+    const mirrorError = new Error("integrations write failed");
+    const persistSession = vi.fn().mockRejectedValue(mirrorError);
 
     await createAgentSession(makeCredentials(), persistSession);
 
@@ -582,6 +586,7 @@ describe("createAgentSession", () => {
     ).resolves.toBeUndefined();
 
     expect(persistSession).toHaveBeenCalled();
+    expect(SentrySDK.captureException).toHaveBeenCalledWith(mirrorError);
   });
 });
 

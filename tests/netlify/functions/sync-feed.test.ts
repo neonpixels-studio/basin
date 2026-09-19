@@ -46,6 +46,14 @@ vi.mock("../../../netlify/functions/db", () => ({
   })),
 }));
 
+// initSentry() would otherwise call the real dotenvx-backed loadEnv() on
+// every handler invocation — mock it out the same way createDb() is mocked
+// above, so this suite never touches the filesystem for real env files.
+vi.mock("../../../netlify/functions/sentry", () => ({
+  initSentry: vi.fn(),
+  flushSentry: vi.fn(),
+}));
+
 // 32 bytes of hex — a valid AES-256-GCM key. sync-feed.ts imports crypto.ts
 // explicitly (it's a standalone Netlify Function, not a Nitro server route,
 // so it has no auto-import), and here we let the real encrypt/decrypt run
@@ -100,6 +108,10 @@ vi.mock("@netlify/async-workloads", () => ({
 
 import { eq } from "drizzle-orm";
 import handler from "../../../netlify/functions/sync-feed";
+import {
+  initSentry as mockInitSentry,
+  flushSentry as mockFlushSentry,
+} from "../../../netlify/functions/sentry";
 import { integrations } from "../../../server/db/schema";
 import { TokenRefreshAuthError } from "../../../server/utils/youtubeAdapter";
 import type { BlueskySessionTokens } from "../../../server/utils/blueskyAdapter";
@@ -284,6 +296,8 @@ describe("sync-feed workload", () => {
       1,
     );
     expect(mockUpdateWhere).toHaveBeenCalledTimes(1);
+    expect(mockInitSentry).toHaveBeenCalled();
+    expect(mockFlushSentry).toHaveBeenCalled();
   });
 
   it("no-ops when within debounce window in scheduled mode", async () => {
@@ -365,6 +379,12 @@ describe("sync-feed workload", () => {
         }),
       ),
     ).rejects.toMatchObject({ name: "ErrorDoNotRetry" });
+
+    // flushSentry() must still run on a re-thrown failure — a Netlify
+    // Function's execution environment freezes the instant the handler's
+    // promise settles, so any event queued moments earlier would otherwise
+    // never actually leave the process.
+    expect(mockFlushSentry).toHaveBeenCalled();
   });
 
   it("throws ErrorDoNotRetry when the feed is not found", async () => {

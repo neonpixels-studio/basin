@@ -5,6 +5,7 @@ import {
   type SyncQueueAction,
   type SyncQueueRow,
 } from "./syncQueueStore";
+import { captureException } from "~/lib/sentry";
 
 // A queued mutation gets this many attempts against a transient failure
 // (network error, 5xx) before it's quarantined too — a persistently-erroring
@@ -129,6 +130,10 @@ async function syncItem(db: ClientDb, item: SyncQueueRow): Promise<boolean> {
     await syncQueueStore.markSynced(db, item.id);
   } catch (error) {
     console.error("Failed to record a synced sync_queue item locally", error);
+    captureException(error, {
+      stage: "sync-queue-mark-synced",
+      itemId: item.id,
+    });
   }
   return false;
 }
@@ -149,36 +154,77 @@ async function processItem(db: ClientDb, item: SyncQueueRow): Promise<boolean> {
       "Failed to record a sync_queue item's outcome locally",
       error,
     );
+    captureException(error, {
+      stage: "sync-queue-record-outcome",
+      itemId: item.id,
+    });
     return true;
   }
 }
 
 async function runFlushPass(): Promise<void> {
+  // Tracked so the catch below can tell "useClientDb() itself failed" apart
+  // from "opened fine, something later failed" — see its comment.
+  let openedDb: ClientDb | undefined;
   try {
     if (!navigator.onLine) {
+      await refreshFailedCount();
       return;
     }
 
-    const db = await useClientDb();
-    const pending = await syncQueueStore.getPendingItems(db);
+    openedDb = await useClientDb();
+    const pending = await syncQueueStore.getPendingItems(openedDb);
 
     for (const item of pending) {
-      const stillRetryable = await processItem(db, item);
+      const stillRetryable = await processItem(openedDb, item);
       if (stillRetryable) {
         break;
       }
     }
+
+    await safeRefreshFailedCountWith(openedDb);
   } catch (error) {
     // useClientDb()/getPendingItems() itself failing (IndexedDB unavailable,
     // quota exceeded) must not become an unhandled rejection — the plugin
     // calls flushSyncQueue() without awaiting or catching it.
     console.error("Sync queue flush pass failed", error);
-  } finally {
-    // Always runs — including the offline early-return, the outer catch
-    // above, and a user-initiated retryFailedItems() that requeued items
-    // but found nothing (yet) to send — so the banner never reports a
-    // stale count.
-    await refreshFailedCount();
+    captureException(error, { stage: "sync-queue-flush-pass" });
+    // Only refresh here if useClientDb() itself succeeded: a broken client DB
+    // would fail identically again and double-report this one failure to
+    // Sentry (see safeRefreshFailedCountWith's own try/catch below). Any
+    // other failure (a corrupt object store, a failed version upgrade)
+    // leaves a healthy connection worth reading from — without this, the
+    // banner would go stale on exactly those failures instead of just the
+    // client-DB ones. Uses the guarded wrapper (not the bare read): a
+    // countFailedItems() failure here must not itself become the unhandled
+    // rejection this whole catch exists to prevent.
+    if (openedDb) {
+      await safeRefreshFailedCountWith(openedDb);
+    }
+  }
+}
+
+// Reads the count using an already-open connection. Kept internal (not part
+// of useSyncQueue()'s returned surface) so the exported refreshFailedCount()
+// below can stay zero-arg — a caller that ever passed it by reference to an
+// event handler (e.g. `@click="refreshFailedCount"`) would otherwise hand it
+// a DOM event as `db`. Left unguarded itself so runFlushPass's happy path can
+// let a failure here join the same outer catch instead of being reported
+// with a misleading "flush pass failed" label — see safeRefreshFailedCountWith
+// for the guarded version every other caller uses.
+async function refreshFailedCountWith(db: ClientDb): Promise<void> {
+  failedCount.value = await syncQueueStore.countFailedItems(db);
+}
+
+// Same as refreshFailedCountWith, but never throws — the previous count is
+// kept on failure, and the failure is reported once under its own stage
+// rather than becoming (or masquerading as) some other caller's rejection.
+async function safeRefreshFailedCountWith(db: ClientDb): Promise<void> {
+  try {
+    await refreshFailedCountWith(db);
+  } catch (error) {
+    console.error("Failed to refresh the quarantined sync queue count", error);
+    captureException(error, { stage: "sync-queue-refresh-failed-count" });
   }
 }
 
@@ -189,10 +235,10 @@ async function runFlushPass(): Promise<void> {
 // that would hide real quarantined items — so the previous count is kept.
 async function refreshFailedCount(): Promise<void> {
   try {
-    const db = await useClientDb();
-    failedCount.value = await syncQueueStore.countFailedItems(db);
+    await refreshFailedCountWith(await useClientDb());
   } catch (error) {
     console.error("Failed to refresh the quarantined sync queue count", error);
+    captureException(error, { stage: "sync-queue-refresh-failed-count" });
   }
 }
 

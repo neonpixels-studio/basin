@@ -6,6 +6,7 @@ import type Stripe from "stripe";
 import { processedStripeEvents, subscriptions, users } from "../db/schema";
 import { pauseFeedsOverFreeLimit, reactivateAllFeeds } from "./feedPause";
 import { createStripeCustomer, deleteStripeCustomer } from "./stripe";
+import { captureException } from "../../app/lib/sentry";
 
 export type PlanName = "free" | "pro";
 
@@ -178,6 +179,10 @@ export async function getOrCreateStripeCustomerId(
         `Failed to delete orphaned Stripe customer ${customer.id}:`,
         cleanupError,
       );
+      captureException(cleanupError, {
+        stage: "delete-orphaned-stripe-customer",
+        stripeCustomerId: customer.id,
+      });
     });
   }
   return winningCustomerId;
