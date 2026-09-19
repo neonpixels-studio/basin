@@ -86,6 +86,7 @@ const expectedResult: SearchResult = {
   source: "Test Feed",
   time: "",
   unread: true,
+  saved: false,
 };
 
 describe("searchFeedItems", () => {
@@ -216,6 +217,22 @@ describe("searchFeedItems", () => {
     expect(result.items[0].unread).toBe(false);
   });
 
+  // Regression: #275. The null-savedAt -> saved=false case is already pinned
+  // by "returns matching feed items…" above (mirrors the unread convention
+  // just above); only the non-null case adds signal here. A search result
+  // for an item already saved must carry saved=true, matching
+  // feedItems.ts's FeedItemResult — otherwise ReaderDetail's bookmark button
+  // and toggleSave's optimistic count adjustment treat it as unsaved when
+  // opened from search.
+  it("derives saved=true from a non-null savedAt, matching feedItems.ts", async () => {
+    const savedRow = { ...mockRow, savedAt: new Date("2026-01-01T00:00:00Z") };
+    mockOffset.mockResolvedValue([savedRow]);
+
+    const result = await searchFeedItems(1, "testing");
+
+    expect(result.items[0].saved).toBe(true);
+  });
+
   it("fetches one row beyond the default page size to detect a next page", async () => {
     mockOffset.mockResolvedValue([]);
 
@@ -325,6 +342,25 @@ describe("searchFeedItems", () => {
     expect(mockOrderBy).toHaveBeenCalledTimes(1);
     expect(mockLimit).toHaveBeenCalledTimes(1);
     expect(mockOffset).toHaveBeenCalledTimes(1);
+  });
+
+  // Regression guard for #275: every test above feeds a hand-built row
+  // straight into the mocked .offset(), so nothing else pins that the query
+  // actually selects savedAt — dropping it from the projection would leave
+  // item.savedAt undefined at runtime, and mapSearchRow's `!== null` check
+  // would then derive saved=true for every result (worse than the original
+  // bug: every result shows a filled bookmark, and one click un-saves an
+  // item that was never saved). Same guard for readAt/unread, which had no
+  // equivalent pin either.
+  it("selects readAt and savedAt so unread/saved are derived from real columns, not undefined", async () => {
+    await searchFeedItems(1, "testing");
+
+    // Pinned to the exact column objects, not just the key names — a key
+    // present but mis-wired to the wrong column (e.g. `savedAt:
+    // feedItems.readAt`) would still pass an Object.keys-only check.
+    const selection = mockSelect.mock.calls[0][0];
+    expect(selection.readAt).toBe(feedItems.readAt);
+    expect(selection.savedAt).toBe(feedItems.savedAt);
   });
 
   it("builds a prefix tsquery bound as a parameter, not spliced into the SQL text", async () => {

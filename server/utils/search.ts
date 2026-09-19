@@ -134,6 +134,13 @@ export interface SearchResult {
   // consumer that keys off `unread` — e.g. the feed store's openItem — behaves
   // identically whether the item came from the dashboard feed or search.
   unread: boolean;
+  // Derived the same way as FeedItemResult.saved (feedItems.ts) so consumers
+  // that key off `saved` — ReaderDetail's bookmark button and toggleSave's
+  // optimistic count adjustment — behave identically whether the item came
+  // from the dashboard feed or search. Scoped to this one field: SearchResult
+  // still omits handle/mediaUrl/mediaDuration, which FeedItemResult carries —
+  // out of scope here (see #275's follow-up suggestions).
+  saved: boolean;
 }
 
 // Exported so tests can build a typo-safe fixture (Partial<SearchRow>)
@@ -175,6 +182,7 @@ export function mapSearchRow({
     source: feedTitle?.trim() || feedSource,
     time: formatRelativeTime(item.publishedAt),
     unread: item.readAt === null,
+    saved: item.savedAt !== null,
   };
 }
 

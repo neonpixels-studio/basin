@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { nextTick } from "vue";
+import { nextTick, toRaw } from "vue";
 import { setActivePinia, createPinia } from "pinia";
 import {
   useFeedStore,
@@ -1203,6 +1203,60 @@ describe("useFeedStore", () => {
           await feed.openItem(searchResult);
 
           expect(queueAction).not.toHaveBeenCalled();
+        });
+
+        // Regression: #275 (reconciliation half). A fresh /api/search row
+        // for an item already loaded in state.items is a distinct object —
+        // resolving it to the loaded row (rather than assigning the fresh
+        // object straight to state.activeItem) keeps every view mutating the
+        // same reference, so toggleSave from the search-opened detail can't
+        // desync from the dashboard's copy of the same item and double-count
+        // a later toggle there.
+        it("resolves to the already-loaded item so toggleSave mutates the same object the dashboard renders", async () => {
+          state.counts = { saved: 1 };
+          const loadedItem = state.items[1]; // seeded with id: 2, saved: true
+          // savedAt is deliberately left null (unlike loadedItem's saved:true)
+          // to prove the resolution is identity-based, not field-copying: the
+          // loaded row's own saved value must win, not whatever this fresh
+          // search row happens to carry.
+          const searchCopy = mapSearchRow(
+            mockDbRow({
+              id: loadedItem.id as number,
+              feedId: loadedItem.feedId as number,
+              guid: loadedItem.guid as string,
+            }),
+          );
+
+          await feed.openItem(searchCopy);
+          expect(state.activeItem).toBe(loadedItem);
+          expect(state.activeItem?.saved).toBe(true);
+
+          await feed.toggleSave(state.activeItem as Record<string, unknown>);
+
+          expect(loadedItem.saved).toBe(false);
+          expect(state.counts.saved).toBe(0);
+        });
+
+        it("falls back to the raw row when no loaded item shares its id", async () => {
+          const searchCopy = mapSearchRow(
+            mockDbRow({
+              id: 999999,
+              savedAt: new Date("2026-01-01T00:00:00Z"),
+            }),
+          );
+          expect(state.items.some((row) => row.id === searchCopy.id)).toBe(
+            false,
+          );
+
+          await feed.openItem(searchCopy);
+
+          // state is a Vue reactive() object, so a plain object assigned
+          // into it (searchCopy was never part of state.items) comes back
+          // wrapped in a fresh Proxy — toBe(searchCopy) would fail on
+          // reference identity even though it's the same underlying data.
+          // toRaw unwraps that Proxy back to the original target.
+          expect(toRaw(state.activeItem as object)).toBe(searchCopy);
+          expect(state.activeItem?.saved).toBe(true);
         });
       });
     });
