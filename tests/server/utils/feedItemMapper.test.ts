@@ -9,6 +9,7 @@ const baseRow: FeedItemDerivationInput = {
   feedTitle: "Test Feed",
   publishedAt: null,
   readAt: null,
+  savedAt: null,
 };
 
 describe("deriveFeedItemFields", () => {
@@ -83,5 +84,23 @@ describe("deriveFeedItemFields", () => {
         readAt: new Date("2026-01-01T00:00:00Z"),
       }).unread,
     ).toBe(false);
+  });
+
+  // Regression: #281. `saved` drifted the same way `unread` did in #247
+  // (SearchResult shipped without it), so it's derived here too rather than
+  // hand-computed separately in each mapper.
+  it("derives saved=false from a null savedAt", () => {
+    expect(deriveFeedItemFields({ ...baseRow, savedAt: null }).saved).toBe(
+      false,
+    );
+  });
+
+  it("derives saved=true from a non-null savedAt", () => {
+    expect(
+      deriveFeedItemFields({
+        ...baseRow,
+        savedAt: new Date("2026-01-01T00:00:00Z"),
+      }).saved,
+    ).toBe(true);
   });
 });

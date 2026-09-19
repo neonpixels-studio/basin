@@ -107,18 +107,15 @@ export interface FeedItemRow {
   updatedAt: Date | null;
 }
 
-// Enumerates the raw fields explicitly (rather than spreading the row) so an
-// unexpected extra column on the query never leaks into the API response
-// unreviewed. type/source/time/unread come from the shared
-// deriveFeedItemFields — see feedItemMapper.ts for the rationale. `handle`
-// has no search.ts equivalent (search results have no per-source handle), so
-// it stays local to this mapper; `saved` is computed the same way in both
-// mappers but isn't part of deriveFeedItemFields since it isn't derived from
-// the fields FeedItemDerivationInput covers.
+// Enumerates every field explicitly (rather than spreading the row or the
+// derived fields) so an unexpected extra column, or a field later added to
+// FeedItemDerivedFields, never leaks into the API response unreviewed — see
+// feedItemMapper.ts for the shared-derivation rationale. `handle` has no
+// search.ts equivalent (search results have no per-source handle), so it
+// stays local to this mapper, reusing `source`'s value rather than
+// re-deriving it so the two can't diverge if the fallback rule changes.
 function mapRow(row: FeedItemRow): FeedItemResult {
-  // Passing the row itself (not a hand-copied subset) means the four
-  // derived fields can never be wired from the wrong column here.
-  const derived = deriveFeedItemFields(row);
+  const { type, source, time, unread, saved } = deriveFeedItemFields(row);
   return {
     id: row.id,
     feedId: row.feedId,
@@ -137,12 +134,12 @@ function mapRow(row: FeedItemRow): FeedItemResult {
     mediaDuration: row.mediaDuration,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
-    ...derived,
-    // Same fallback as `source` — reuse the value derive already computed
-    // instead of re-deriving it, so the two can't diverge if the fallback
-    // rule ever changes.
-    handle: derived.source,
-    saved: row.savedAt !== null,
+    type,
+    source,
+    time,
+    unread,
+    handle: source,
+    saved,
   };
 }
 

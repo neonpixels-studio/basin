@@ -169,11 +169,13 @@ export interface SearchRow {
 
 // Extracted so tests (and any future caller) can exercise the exact
 // row-to-SearchResult derivation — including `unread` — without standing up
-// the drizzle query chain. Enumerates the raw fields explicitly (rather than
-// spreading the row) so an unexpected extra column on the query never leaks
-// into the API response unreviewed. type/source/time/unread come from the
-// shared deriveFeedItemFields — see feedItemMapper.ts for the rationale.
+// the drizzle query chain. Enumerates every field explicitly (rather than
+// spreading the row or the derived fields) so an unexpected extra column, or
+// a field later added to FeedItemDerivedFields, never leaks into the API
+// response unreviewed — see feedItemMapper.ts for the shared-derivation
+// rationale.
 export function mapSearchRow(row: SearchRow): SearchResult {
+  const { type, source, time, unread, saved } = deriveFeedItemFields(row);
   return {
     id: row.id,
     feedId: row.feedId,
@@ -192,12 +194,11 @@ export function mapSearchRow(row: SearchRow): SearchResult {
     mediaDuration: row.mediaDuration,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
-    // Passing the row itself (not a hand-copied subset) means the four
-    // derived fields can never be wired from the wrong column here.
-    ...deriveFeedItemFields(row),
-    // Same fallback as feedItems.ts's mapRow: not part of deriveFeedItemFields
-    // (search results have no per-source handle equivalent), so it stays local.
-    saved: row.savedAt !== null,
+    type,
+    source,
+    time,
+    unread,
+    saved,
   };
 }
 

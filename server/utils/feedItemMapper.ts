@@ -10,13 +10,15 @@ export interface FeedItemDerivationInput {
   feedTitle: string | null;
   publishedAt: Date | null;
   readAt: Date | null;
+  savedAt: Date | null;
 }
 
 // Shared by feedItems.ts's mapRow and search.ts's mapSearchRow so the two
-// can't derive these fields differently again (basin#247, where `unread`
-// drifted between them). Both spread this function's return value; a field
-// declared on SearchResult/FeedItemResult that this function doesn't produce
-// is a missing-property compile error at the call site.
+// can't derive these fields differently again — basin#247 (`unread`) and
+// basin#281 (`saved`) both drifted between the two mappers before landing
+// here. Both destructure this function's return value field-by-field (never
+// spread) so a field this function later grows is a missing-property
+// compile error at each call site until wired deliberately.
 export interface FeedItemDerivedFields {
   // Derived from the parent feed's source column — matches SOURCES keys in icons.js
   type: string;
@@ -25,6 +27,7 @@ export interface FeedItemDerivedFields {
   // Short relative time string (e.g. "2h", "3d")
   time: string;
   unread: boolean;
+  saved: boolean;
 }
 
 export function deriveFeedItemFields(
@@ -35,5 +38,6 @@ export function deriveFeedItemFields(
     source: row.feedTitle?.trim() || row.feedSource,
     time: formatRelativeTime(row.publishedAt),
     unread: row.readAt === null,
+    saved: row.savedAt !== null,
   };
 }
