@@ -1517,6 +1517,38 @@ describe("useFeedStore", () => {
       expect(save).not.toHaveBeenCalled();
     });
 
+    // Regression: setupWatchers() runs on app mount and load() is a network
+    // round trip, so a user can toggle unread-only (or switch layout) before
+    // it resolves. The resolved DB value must not stomp that click back to
+    // whatever was persisted/default — only a field the user hasn't touched
+    // since the load started should be overwritten.
+    it("does not clobber a user's mid-flight unread-only toggle when the db load resolves", async () => {
+      let resolveLoad: (
+        _settings: {
+          layout?: string;
+          showUnreadOnly?: boolean;
+        } | null,
+      ) => void;
+      const load = vi.fn(
+        () =>
+          new Promise((resolve) => {
+            resolveLoad = resolve;
+          }),
+      );
+      stubUserSettings(load);
+      state.unreadOnly = false;
+
+      const setupPromise = feed.setupWatchers();
+      // User clicks the unread-only chip while the settings fetch is still
+      // in flight.
+      state.unreadOnly = true;
+
+      resolveLoad({ layout: "timeline", showUnreadOnly: false });
+      await setupPromise;
+
+      expect(state.unreadOnly).toBe(true);
+    });
+
     // A genuine empty/204 response resolves null and means "no saved
     // settings yet" — this must fall back to the same defaults as a missing
     // field, and the watchers below must still register.

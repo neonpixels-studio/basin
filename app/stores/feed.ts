@@ -141,6 +141,14 @@ export const useFeedStore = defineStore("feed", () => {
 
   async function loadSettingsFromDb() {
     const { load } = useUserSettings();
+    // Snapshot what's in state before the (async) load starts. If the user
+    // toggles unread-only or switches layout while this fetch is still in
+    // flight — very possible, since setupWatchers() runs on app mount and
+    // this can take a network round trip — the load resolving must not
+    // stomp that click back to the persisted/default value. Only apply the
+    // loaded value to a field the user hasn't touched in the meantime.
+    const layoutBeforeLoad = state.layout;
+    const unreadOnlyBeforeLoad = state.unreadOnly;
     // A genuine empty/204 response resolves null and means "no saved
     // settings yet" — falling back to defaults is correct. A rejection
     // (network failure, expired auth) tells us nothing about the user's
@@ -158,8 +166,12 @@ export const useFeedStore = defineStore("feed", () => {
       );
       return;
     }
-    state.layout = settings?.layout ?? "timeline";
-    state.unreadOnly = settings?.showUnreadOnly ?? false;
+    if (state.layout === layoutBeforeLoad) {
+      state.layout = settings?.layout ?? "timeline";
+    }
+    if (state.unreadOnly === unreadOnlyBeforeLoad) {
+      state.unreadOnly = settings?.showUnreadOnly ?? false;
+    }
   }
 
   async function buildAuthHeaders(): Promise<Record<string, string>> {

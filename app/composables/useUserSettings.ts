@@ -61,6 +61,15 @@ export function useUserSettings() {
         method: "PATCH",
         body: patch,
         headers,
+        // A settings save is typically the last thing to happen before a
+        // route change (toggle unread-only, then click into an article or
+        // navigate elsewhere). Without `keepalive`, the browser aborts any
+        // request still in flight when the page it was issued from is
+        // unloaded/navigated away from, silently dropping that write — the
+        // DB is left holding a stale value from an earlier save. The patch
+        // body here is a handful of bytes, well under the 64KiB `keepalive`
+        // request cap.
+        keepalive: true,
       });
     } catch (caughtError) {
       // Same reasoning as load()'s catch above: this is the only place a
