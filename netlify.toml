@@ -4,6 +4,7 @@
 [build]
   command = "npm run test:ci && npm run build"
   publish = "dist"
+  ignore = "if [ \"$CONTEXT\" = \"production\" ]; then exit 0; else exit 1; fi"
 
 # Deploy previews and branch deploys decrypt .env.dev instead, via
 # DOTENV_PRIVATE_KEY_DEV, so they never build against the production database.
