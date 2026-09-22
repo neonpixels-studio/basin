@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   isSecureSiteOrigin,
   requireValidSiteUrlForBuild,
+  resolvePublicSiteUrl,
   validateSiteUrl,
 } from "../../../server/utils/siteUrlValidation";
 
@@ -159,5 +160,92 @@ describe("requireValidSiteUrlForBuild", () => {
     expect(() =>
       requireValidSiteUrlForBuild("http://basin.example", true),
     ).toThrowError(/must use https for a production build/);
+  });
+});
+
+// This is the function nuxt.config.ts calls to bake runtimeConfig.public.siteUrl
+// — see its own comment for why NUXT_PUBLIC_SITE_URL takes precedence (it's
+// the value Nitro can also override from the live environment at Netlify
+// Function runtime, unlike NUXT_SITE_URL and every other dotenvx-only value).
+describe("resolvePublicSiteUrl", () => {
+  it("prefers the public override when both are set", () => {
+    expect(
+      resolvePublicSiteUrl(
+        "https://preview-123.example",
+        "https://basin.example",
+        true,
+      ),
+    ).toBe("https://preview-123.example");
+  });
+
+  it("falls back to the private site URL when no public override is set", () => {
+    expect(resolvePublicSiteUrl(undefined, "https://basin.example", true)).toBe(
+      "https://basin.example",
+    );
+    expect(resolvePublicSiteUrl("", "https://basin.example", true)).toBe(
+      "https://basin.example",
+    );
+  });
+
+  it("returns an empty string when neither is set", () => {
+    expect(resolvePublicSiteUrl(undefined, undefined, true)).toBe("");
+    expect(resolvePublicSiteUrl("", "", true)).toBe("");
+  });
+
+  it("falls back the same way outside a production build (nuxt dev)", () => {
+    expect(
+      resolvePublicSiteUrl(undefined, "http://localhost:3000", false),
+    ).toBe("http://localhost:3000");
+    expect(resolvePublicSiteUrl("", "http://localhost:3000", false)).toBe(
+      "http://localhost:3000",
+    );
+    expect(resolvePublicSiteUrl(undefined, undefined, false)).toBe("");
+  });
+
+  it("returns the raw public override unvalidated outside a production build", () => {
+    expect(resolvePublicSiteUrl("not-a-url", undefined, false)).toBe(
+      "not-a-url",
+    );
+    expect(resolvePublicSiteUrl("http://basin.example", undefined, false)).toBe(
+      "http://basin.example",
+    );
+  });
+
+  it("returns the normalized origin, not the raw value, for a production build", () => {
+    expect(
+      resolvePublicSiteUrl("https://basin.example/", undefined, true),
+    ).toBe("https://basin.example");
+  });
+
+  it("throws for a production build when the public override is malformed", () => {
+    expect(() =>
+      resolvePublicSiteUrl("not-a-url", undefined, true),
+    ).toThrowError(/valid absolute URL/);
+  });
+
+  it("throws for a production build when the public override has a path", () => {
+    expect(() =>
+      resolvePublicSiteUrl("https://basin.example/app", undefined, true),
+    ).toThrowError(/bare origin/);
+  });
+
+  it("throws for a production build when the public override is http instead of https", () => {
+    expect(() =>
+      resolvePublicSiteUrl("http://basin.example", undefined, true),
+    ).toThrowError(/must use https for a production build/);
+  });
+
+  it("does not itself validate the fallback value passed in for rawSiteUrl", () => {
+    // resolvePublicSiteUrl only validates rawPublicSiteUrl; it trusts
+    // whatever rawSiteUrl it's given. In nuxt.config.ts this is always the
+    // already-validated, normalized value requireSiteUrlForBuild returned
+    // for the private `siteUrl` key (see resolvedSiteUrl there) — never the
+    // raw, un-normalized process.env.NUXT_SITE_URL — so both keys stay in
+    // sync. This test exercises resolvePublicSiteUrl in isolation with a
+    // deliberately-unvalidated value to pin down that it's a pure passthrough
+    // here, not a second validation pass.
+    expect(resolvePublicSiteUrl(undefined, "not-a-url", true)).toBe(
+      "not-a-url",
+    );
   });
 });

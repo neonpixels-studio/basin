@@ -1,6 +1,9 @@
 import tailwindcss from "@tailwindcss/vite";
 import { fileURLToPath } from "node:url";
-import { requireValidSiteUrlForBuild } from "./server/utils/siteUrlValidation";
+import {
+  requireValidSiteUrlForBuild,
+  resolvePublicSiteUrl,
+} from "./server/utils/siteUrlValidation";
 
 const mainCss = fileURLToPath(
   new URL("./app/assets/css/main.css", import.meta.url),
@@ -120,6 +123,13 @@ function requireTombstonePepperForBuild(): string {
   return pepper;
 }
 
+// Computed once, outside the config object, so both the private `siteUrl`
+// key and the public copy's fallback (below) share the exact same validated,
+// normalized origin — e.g. a trailing-slash NUXT_SITE_URL normalizes to a
+// bare origin for both, rather than the public copy keeping the raw,
+// un-normalized value only when no NUXT_PUBLIC_SITE_URL override is set.
+const resolvedSiteUrl = requireSiteUrlForBuild();
+
 export default defineNuxtConfig({
   compatibilityDate: "2024-11-01",
   modules: ["@pinia/nuxt", "@clerk/nuxt", "@sentry/nuxt/module"],
@@ -135,9 +145,14 @@ export default defineNuxtConfig({
     skipServerMiddleware: true,
   },
   // These read process.env INLINE (not "") so dotenvx-decrypted values bake into
-  // the server bundle at build time. Nitro only serializes these defaults; it does
-  // NOT re-inject NUXT_* at function runtime on Netlify, so leaving them "" would
-  // resolve to empty in the deployed function unless the vars are set in Netlify.
+  // the server bundle at build time. These values are secrets that only ever
+  // exist decrypted transiently during `nuxt build` (see .env.example) — they
+  // are never set as real Netlify environment variables, so Nitro's normal
+  // NUXT_* runtime env-override has nothing to match against for them and
+  // leaving them "" would resolve to empty in the deployed function. The one
+  // exception is the public `siteUrl` below: it is not secret, so it CAN be
+  // set as a genuine Netlify runtime env var and genuinely overridden at
+  // Function cold start — see its own comment for why that matters.
   runtimeConfig: {
     databaseUrl: process.env.NUXT_DATABASE_URL || "",
     // basin's own public base URL, the trusted origin OAuth redirect URIs and
@@ -150,7 +165,7 @@ export default defineNuxtConfig({
     // requireSiteUrlForBuild() rather than raw process.env so a missing or
     // malformed value fails the build instead of only the first request that
     // needs it (see requireSiteUrlForBuild above).
-    siteUrl: requireSiteUrlForBuild(),
+    siteUrl: resolvedSiteUrl,
     googleClientId: process.env.NUXT_GOOGLE_CLIENT_ID || "",
     googleClientSecret: process.env.NUXT_GOOGLE_CLIENT_SECRET || "",
     disableSignups: process.env.NUXT_DISABLE_SIGNUPS || "",
@@ -175,15 +190,24 @@ export default defineNuxtConfig({
       sentry: {
         dsn: process.env.SENTRY_DSN || "",
       },
-      // Same NUXT_SITE_URL as the private `siteUrl` key above, also exposed
-      // publicly here: unlike that key (kept private for the OAuth/billing
-      // redirect trust boundary — see server/utils/siteUrl.ts), this value
-      // isn't secret. It's the origin every public marketing page's
-      // og:url/canonical link ships to the browser as page metadata (see
-      // app/utils/siteMeta.ts). It needs its own `public` copy because the
-      // private key resolves to empty once the client takes over after
-      // hydration.
-      siteUrl: process.env.NUXT_SITE_URL || "",
+      // The origin every public marketing page's og:url/canonical link ships
+      // to the browser as page metadata (see app/utils/siteMeta.ts). Needs
+      // its own `public` copy because the private `siteUrl` key above
+      // resolves to empty once the client takes over after hydration.
+      //
+      // This BUILD-time default prefers NUXT_PUBLIC_SITE_URL over
+      // resolvedSiteUrl — see resolvePublicSiteUrl's own comment for the
+      // full precedence/validation rules. Separately, at each Netlify
+      // Function cold start, Nitro does its own plain env-var substitution
+      // (no fallback, no validation) of a live NUXT_PUBLIC_SITE_URL over
+      // this default — that override, not this function, is what actually
+      // keeps og:url/canonical correct on a runtime-configured deploy (e.g.
+      // a Deploy Preview) without a rebuild.
+      siteUrl: resolvePublicSiteUrl(
+        process.env.NUXT_PUBLIC_SITE_URL,
+        resolvedSiteUrl,
+        isProductionBuild,
+      ),
     },
   },
   devtools: { enabled: true },

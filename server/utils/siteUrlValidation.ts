@@ -127,3 +127,72 @@ export function requireValidSiteUrlForBuild(
   // itself derive from the same raw value at request time.
   return validationResult.origin;
 }
+
+// Decides the BUILD-time default nuxt.config.ts bakes into
+// runtimeConfig.public.siteUrl, before any runtime override applies.
+//
+// Unlike the private `siteUrl` key and the other dotenvx-managed secrets
+// (TOKEN_ENCRYPTION_KEY, stripeSecretKey, ...) — which are only ever
+// decrypted transiently during `nuxt build` and never exist as real Netlify
+// env vars — the public copy is not secret, so NUXT_PUBLIC_SITE_URL can be
+// set directly as a plain Netlify environment variable, scoped per deploy
+// context. Nitro auto-applies that env var onto runtimeConfig.public.siteUrl
+// at each Function cold start (standard Nuxt NUXT_PUBLIC_* → public.*
+// mapping), which is what actually fixes og:url/canonical going stale on a
+// runtime-configured deploy — e.g. a Netlify Deploy Preview, whose per-PR
+// origin isn't knowable at build time the way the stable, dotenvx-baked
+// NUXT_SITE_URL is (see nuxt.config.ts).
+//
+// This function only picks what gets baked in as the fallback default so a
+// build run with NUXT_PUBLIC_SITE_URL already set locally is self-consistent
+// with what the runtime override would later produce, and so behavior is
+// unchanged (falls back to the existing NUXT_SITE_URL-derived value) when no
+// dedicated public override is configured anywhere.
+//
+// When a public override IS provided (and visible at build time — see
+// below), validate it the same way requireValidSiteUrlForBuild validates the
+// private key for a production build — an unvalidated bad value here would
+// otherwise bake silently into og:url/canonical instead of failing the
+// build. Outside a production build (`nuxt dev`), any raw value passes
+// through unvalidated, same as the private key, so local dev isn't blocked
+// by an incomplete value.
+//
+// This only covers the BUILD-time path. A value scoped to Netlify's
+// Functions/Runtime env (the whole point of using NUXT_PUBLIC_SITE_URL —
+// see nuxt.config.ts) is invisible here; the build never sees it, so this
+// function can't validate it. That value instead flows straight into
+// runtimeConfig.public.siteUrl via Nitro's own env override and is validated
+// per-request by canonicalUrl (app/utils/siteMeta.ts), which degrades
+// quietly — omitting og:url/canonical — rather than failing the request.
+export function resolvePublicSiteUrl(
+  rawPublicSiteUrl: string | undefined,
+  rawSiteUrl: string | undefined,
+  isProductionBuild: boolean,
+): string {
+  if (!rawPublicSiteUrl) {
+    return rawSiteUrl || "";
+  }
+
+  if (!isProductionBuild) {
+    return rawPublicSiteUrl;
+  }
+
+  const validationResult = validateSiteUrl(rawPublicSiteUrl);
+  if (!validationResult.valid) {
+    throw new Error(
+      `${validationResult.message} — NUXT_PUBLIC_SITE_URL, when set, becomes ` +
+        "the public og:url/canonical base and must be a bare origin. Fix its " +
+        "value or unset it to fall back to NUXT_SITE_URL.",
+    );
+  }
+
+  if (!isSecureSiteOrigin(validationResult.origin)) {
+    throw new Error(
+      "NUXT_PUBLIC_SITE_URL must use https for a production build, matching " +
+        "NUXT_SITE_URL's own production requirement. Fix its value or unset " +
+        "it to fall back to NUXT_SITE_URL.",
+    );
+  }
+
+  return validationResult.origin;
+}
