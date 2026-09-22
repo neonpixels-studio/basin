@@ -545,6 +545,7 @@ describe("sync-feed workload — YouTube source", () => {
       2,
       "Test Channel",
       expect.any(Date),
+      "valid-access-token",
     );
     // Feed sync-status update + integration sync-status update.
     expect(mockUpdateWhere).toHaveBeenCalledTimes(2);
@@ -581,16 +582,20 @@ describe("sync-feed workload — YouTube source", () => {
     expect(persistedAccessToken).not.toBe("fresh-token");
     expect(isEncryptedToken(persistedAccessToken)).toBe(true);
     expect(decryptToken(persistedAccessToken)).toBe("fresh-token");
-    expect(mockFetchNewUploadsForChannel).toHaveBeenCalled();
+    expect(mockFetchNewUploadsForChannel).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(Number),
+      expect.any(String),
+      null,
+      "fresh-token",
+    );
   });
 
   it("decrypts an already-encrypted stored refresh token before sending it to Google's token endpoint", async () => {
     // isTokenExpired(true) forces resolveValidAccessToken down the refresh
-    // path, which is the only place integration.refreshToken is actually
-    // consumed downstream (the resolved accessToken itself is otherwise
-    // discarded by syncYouTubeFeed — see the comment there) — so this is the
-    // one observable way to prove the read path decrypts rather than leaking
-    // ciphertext into an outbound API call.
+    // path, which is also the one observable way to prove the read path
+    // decrypts integration.refreshToken rather than leaking ciphertext into
+    // an outbound API call.
     const encryptedRefreshToken = encryptToken("real-plaintext-refresh-token");
     const expiredIntegration = makeIntegration({
       expiresAt: new Date(Date.now() - 1000),

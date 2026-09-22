@@ -1,4 +1,3 @@
-import { parseRssFeedFromXml } from "./rssAdapter";
 import type { NewFeedItem } from "./rssAdapter";
 
 // Configurable so tests can point these at a local mock server.
@@ -9,9 +8,14 @@ const YOUTUBE_SUBSCRIPTIONS_URL =
   process.env.YOUTUBE_SUBSCRIPTIONS_URL ??
   "https://www.googleapis.com/youtube/v3/subscriptions";
 
-const YOUTUBE_CHANNEL_RSS_BASE =
-  process.env.YOUTUBE_CHANNEL_RSS_BASE ??
-  "https://www.youtube.com/feeds/videos.xml";
+const YOUTUBE_PLAYLIST_ITEMS_URL =
+  process.env.YOUTUBE_PLAYLIST_ITEMS_URL ??
+  "https://www.googleapis.com/youtube/v3/playlistItems";
+
+// Shared timeout for every outbound call in this file (token refresh,
+// subscriptions, uploads) so one slow/hung Google endpoint can't stall a
+// sync indefinitely.
+const YOUTUBE_FETCH_TIMEOUT_MS = 10_000;
 
 export interface YouTubeCredentials {
   accessToken: string;
@@ -80,7 +84,7 @@ export async function refreshAccessToken(
   const response = await fetch(GOOGLE_TOKEN_URL, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    signal: AbortSignal.timeout(10_000),
+    signal: AbortSignal.timeout(YOUTUBE_FETCH_TIMEOUT_MS),
     body: new URLSearchParams({
       grant_type: "refresh_token",
       refresh_token: refreshToken,
@@ -153,7 +157,7 @@ export async function fetchYouTubeSubscriptions(
 
     const response = await fetch(`${YOUTUBE_SUBSCRIPTIONS_URL}?${params}`, {
       headers: { Authorization: `Bearer ${accessToken}` },
-      signal: AbortSignal.timeout(10_000),
+      signal: AbortSignal.timeout(YOUTUBE_FETCH_TIMEOUT_MS),
     });
 
     if (!response.ok) {
@@ -192,39 +196,358 @@ export async function fetchSubscriptionChannelIds(
   return subscriptions.map((subscription) => subscription.channelId);
 }
 
-export async function fetchChannelRssXml(channelId: string): Promise<string> {
-  const url = `${YOUTUBE_CHANNEL_RSS_BASE}?channel_id=${channelId}`;
-  const response = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+export interface PlaylistItemSnippet {
+  title?: string;
+  description?: string;
+  publishedAt?: string;
+  channelTitle?: string;
+  resourceId: {
+    videoId: string;
+  };
+  thumbnails?: {
+    high?: { url: string };
+    medium?: { url: string };
+    default?: { url: string };
+  };
+}
 
-  if (!response.ok) {
+export interface PlaylistItemContentDetails {
+  // The actual video publish time, as opposed to snippet.publishedAt (when
+  // the video was added to the uploads playlist). These usually match, but
+  // diverge for premieres/scheduled uploads, where the playlist add time can
+  // land before the video is actually public — see mapPlaylistItemToFeedItem.
+  videoPublishedAt?: string;
+}
+
+export interface PlaylistItem {
+  snippet: PlaylistItemSnippet;
+  contentDetails?: PlaylistItemContentDetails;
+}
+
+export interface PlaylistItemsPage {
+  items?: PlaylistItem[];
+  nextPageToken?: string;
+}
+
+// YouTube caps playlistItems.list pages at 50 results; requesting the max
+// minimizes how many pages (and quota units — 1 each) are needed to reach
+// the watermark.
+const PAGE_LIMIT = 50;
+
+// Safety cap mirroring blueskyAdapter's MAX_PAGES: bounds how many pages a
+// single sync will walk before giving up, so a channel that backed off for a
+// long time via feedSyncBackoff.ts (which can push retries out to 24h) can't
+// turn this into an unbounded loop inside the sync function. 20 pages * 50
+// items = up to 1000 uploads per sync, comfortably above any realistic gap
+// between two periodic syncs. The caller (netlify/functions/sync-feed.ts) is
+// a Netlify Async Workload (see its asyncWorkloadFn/ErrorRetryAfterDelay
+// imports), not a classic short-timeout serverless function, so a worst-case
+// walk of 20 sequential requests is within its execution budget rather than
+// risking a mid-sync timeout.
+const MAX_PAGES = 20;
+
+// First sync (lastSyncedAt is null — no watermark to page toward) is capped
+// to a single page rather than MAX_PAGES: the old RSS feed only ever
+// returned the 15 most recent uploads on a brand-new subscription, and
+// walking the full MAX_PAGES cap here would import years of backlog and
+// spend up to MAX_PAGES quota units per channel before the user has even
+// decided to keep the feed. A returning sync (lastSyncedAt set) is exactly
+// the case this file's pagination exists to fix, so it keeps the full cap.
+const FIRST_SYNC_PAGE_LIMIT = 1;
+
+const CHANNEL_ID_PREFIX = "UC";
+const UPLOADS_PLAYLIST_PREFIX = "UU";
+
+// Every YouTube channel's "uploads" playlist id is derivable from the channel
+// id by swapping its UC prefix for UU — YouTube's own documented convention
+// — which avoids a separate channels.list round trip (and its own quota
+// unit) just to look the playlist id up.
+export function uploadsPlaylistIdForChannel(channelId: string): string {
+  if (!channelId.startsWith(CHANNEL_ID_PREFIX)) {
     throw new Error(
-      `Channel RSS fetch failed for ${channelId}: ${response.status} ${response.statusText}`,
+      `Cannot derive uploads playlist id: channel id "${channelId}" does not start with "${CHANNEL_ID_PREFIX}"`,
     );
   }
 
-  return response.text();
+  return UPLOADS_PLAYLIST_PREFIX + channelId.slice(CHANNEL_ID_PREFIX.length);
 }
 
-export function filterItemsByWatermark(
-  items: NewFeedItem[],
-  lastSyncedAt: Date | null,
-): NewFeedItem[] {
-  if (!lastSyncedAt) {
-    return items;
+// Isolated network call so fetchNewUploadsForChannel's pagination/watermark
+// logic can be unit-tested against canned pages instead of a live API.
+export async function fetchChannelUploadsPage(
+  playlistId: string,
+  accessToken: string,
+  pageToken?: string,
+): Promise<PlaylistItemsPage> {
+  const params = new URLSearchParams({
+    part: "snippet,contentDetails",
+    playlistId,
+    maxResults: String(PAGE_LIMIT),
+  });
+
+  if (pageToken) {
+    params.set("pageToken", pageToken);
   }
 
-  return items.filter(
-    (item) => item.publishedAt !== null && item.publishedAt > lastSyncedAt,
+  const response = await fetch(`${YOUTUBE_PLAYLIST_ITEMS_URL}?${params}`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+    signal: AbortSignal.timeout(YOUTUBE_FETCH_TIMEOUT_MS),
+  });
+
+  if (!response.ok) {
+    // A channel with no public uploads has no uploads playlist to fetch, so
+    // this specific, deterministically-derived playlist id 404s
+    // (playlistNotFound) rather than returning an empty page. Treat that the
+    // same as an empty page instead of throwing, so a channel that simply
+    // hasn't posted anything doesn't get stuck failing every sync forever.
+    if (response.status === 404) {
+      return { items: [] };
+    }
+
+    throw new Error(
+      `Channel uploads fetch failed for playlist ${playlistId}: ${response.status} ${response.statusText}`,
+    );
+  }
+
+  return (await response.json()) as PlaylistItemsPage;
+}
+
+function resolveThumbnailUrl(
+  thumbnails: PlaylistItemSnippet["thumbnails"],
+): string | null {
+  return (
+    thumbnails?.high?.url ??
+    thumbnails?.medium?.url ??
+    thumbnails?.default?.url ??
+    null
   );
 }
 
+function resolveUploadPublishedAt(
+  publishedAt: string | undefined,
+): Date | null {
+  if (!publishedAt) {
+    return null;
+  }
+
+  const date = new Date(publishedAt);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+// Exported for unit testing. Uses the "yt:video:<id>" guid format the old
+// Atom-feed <id> element produced, so switching from the RSS feed to this API
+// call doesn't re-insert every video a prior RSS-backed sync already stored
+// (feedItems dedupes on (feedId, guid)).
+export function mapPlaylistItemToFeedItem(
+  item: PlaylistItem,
+  feedId: number,
+  channelTitle: string,
+): NewFeedItem {
+  const { snippet } = item;
+  const videoId = snippet.resourceId.videoId;
+  // Prefer the actual video publish time over the playlist-add time (see
+  // PlaylistItemContentDetails) so a premiere/scheduled upload added to the
+  // playlist before it went public isn't dated too early.
+  const publishedAt =
+    item.contentDetails?.videoPublishedAt ?? snippet.publishedAt;
+
+  return {
+    feedId,
+    guid: `yt:video:${videoId}`,
+    title: snippet.title ?? "(untitled)",
+    url: `https://www.youtube.com/watch?v=${videoId}`,
+    author: snippet.channelTitle ?? channelTitle,
+    content: snippet.description || null,
+    imageUrl: resolveThumbnailUrl(snippet.thumbnails),
+    publishedAt: resolveUploadPublishedAt(publishedAt),
+    savedAt: null,
+    readAt: null,
+    starred: false,
+    tags: null,
+    searchVector: null,
+  };
+}
+
+// True once the playlist's own ordering date has caught up to (or passed)
+// the watermark — pagination stops here. This deliberately uses
+// snippet.publishedAt (when the video was added to the uploads playlist),
+// not the more accurate contentDetails.videoPublishedAt stored on the feed
+// item: the playlist is sorted by the former, not the latter. A video made
+// public well after being privately uploaded (or a premiere) can have a
+// videoPublishedAt far in the past while still sitting at the top of the
+// playlist; stopping on that item's *display* date would silently drop every
+// genuinely new upload below it — the exact bug class this function exists
+// to fix.
+function isPastPaginationWatermark(
+  snippet: PlaylistItemSnippet,
+  watermark: Date,
+): boolean {
+  const orderDate = resolveUploadPublishedAt(snippet.publishedAt);
+  return orderDate != null && orderDate <= watermark;
+}
+
+// Stopping pagination exactly at lastSyncedAt still has two narrow gaps: a
+// video that was added to the playlist (snippet.publishedAt) shortly before
+// the previous sync but only became public afterward (premieres/scheduled
+// uploads — see PlaylistItemContentDetails), and API indexing lag placing an
+// item's add time just ahead of when the previous sync actually observed it.
+// Both would otherwise be walked past and never re-checked. Widening the
+// pagination stop point by this overlap re-walks a little already-synced
+// ground on every sync, which is safe and cheap: feedItems dedupes on
+// (feedId, guid) — see upsertFeedItems in sync-feed.ts — so re-collecting an
+// already-stored video is a harmless no-op, not a duplicate.
+const PAGINATION_WATERMARK_OVERLAP_MS = 24 * 60 * 60 * 1000;
+
+function resolvePaginationStopWatermark(
+  lastSyncedAt: Date | null,
+): Date | null {
+  if (!lastSyncedAt) {
+    return null;
+  }
+
+  return new Date(lastSyncedAt.getTime() - PAGINATION_WATERMARK_OVERLAP_MS);
+}
+
+// An item with no resolvable publish date can't be placed relative to the
+// watermark, so — matching the previous filterItemsByWatermark semantics —
+// it's excluded from the results once a watermark exists. Unlike
+// isPastPaginationWatermark, this must never stop pagination: an undated item earlier
+// in a page (e.g. a livestream still missing contentDetails) says nothing
+// about whether older, dated items remain further down the playlist.
+function isExcludedByMissingDate(
+  feedItem: NewFeedItem,
+  watermark: Date | null,
+): boolean {
+  return watermark != null && feedItem.publishedAt == null;
+}
+
+interface PageCollectionResult {
+  items: NewFeedItem[];
+  reachedWatermark: boolean;
+}
+
+// Maps and filters one page's worth of playlist items: drops malformed
+// entries (deleted/unavailable videos can come back without a resourceId),
+// stops once an item's playlist order has caught up to
+// paginationStopWatermark (lastSyncedAt minus PAGINATION_WATERMARK_OVERLAP_MS
+// — see resolvePaginationStopWatermark), and excludes (without stopping) any
+// item whose publish date can't be resolved. lastSyncedAt itself — not the
+// widened stop watermark — governs the missing-date exclusion, since that
+// check answers "is a watermark active at all," not "where does pagination
+// stop."
+function collectPageItems(
+  pageItems: PlaylistItem[],
+  feedId: number,
+  channelTitle: string,
+  lastSyncedAt: Date | null,
+  paginationStopWatermark: Date | null,
+): PageCollectionResult {
+  const items: NewFeedItem[] = [];
+
+  for (const item of pageItems) {
+    if (!item.snippet?.resourceId?.videoId) {
+      continue;
+    }
+
+    if (
+      paginationStopWatermark &&
+      isPastPaginationWatermark(item.snippet, paginationStopWatermark)
+    ) {
+      return { items, reachedWatermark: true };
+    }
+
+    const feedItem = mapPlaylistItemToFeedItem(item, feedId, channelTitle);
+
+    if (isExcludedByMissingDate(feedItem, lastSyncedAt)) {
+      continue;
+    }
+
+    items.push(feedItem);
+  }
+
+  return { items, reachedWatermark: false };
+}
+
+// Logs (rather than throwing) when the MAX_PAGES cap is hit before the
+// watermark or the end of the playlist, mirroring fetchYouTubeSubscriptions's
+// own stopped-early warning — the sync still returns what it collected, but
+// an operator needs a signal that this channel's history outran the cap.
+function warnIfTruncated(
+  channelId: string,
+  pagesFetched: number,
+  reachedWatermark: boolean,
+  hasNextPage: boolean,
+): void {
+  if (reachedWatermark || !hasNextPage || pagesFetched < MAX_PAGES) {
+    return;
+  }
+
+  console.error(
+    `fetchNewUploadsForChannel: stopped after ${MAX_PAGES} pages for channel ${channelId}; more uploads may remain unfetched.`,
+  );
+}
+
+// Paginates the channel's uploads playlist (newest first) via the YouTube
+// Data API, stopping once a page's items reach lastSyncedAt or the API runs
+// out of pages — mirroring fetchNewBlueskyPosts's cursor walk in
+// blueskyAdapter.ts. The previous implementation read the channel's public
+// RSS feed (videos.xml), which only ever returns the 15 most recent uploads
+// with no way to page past that fixed window; a channel that posted more
+// than 15 videos between two syncs (or one that backed off via
+// feedSyncBackoff.ts, which can push retries out to 24h) silently lost the
+// overflow forever. This calls an authenticated endpoint, so it needs a
+// valid OAuth access token — the youtube.readonly scope already granted at
+// connect time (see buildYouTubeAuthUrl in google.ts) covers it, so no new
+// credential or external service is required.
 export async function fetchNewUploadsForChannel(
   channelId: string,
   feedId: number,
   channelTitle: string,
   lastSyncedAt: Date | null,
+  accessToken: string,
 ): Promise<NewFeedItem[]> {
-  const xml = await fetchChannelRssXml(channelId);
-  const allItems = await parseRssFeedFromXml(xml, feedId, channelTitle);
-  return filterItemsByWatermark(allItems, lastSyncedAt);
+  const playlistId = uploadsPlaylistIdForChannel(channelId);
+  const items: NewFeedItem[] = [];
+  let pageToken: string | undefined;
+  let pagesFetched = 0;
+  const pageLimit = lastSyncedAt ? MAX_PAGES : FIRST_SYNC_PAGE_LIMIT;
+  const paginationStopWatermark = resolvePaginationStopWatermark(lastSyncedAt);
+
+  while (pagesFetched < pageLimit) {
+    const page = await fetchChannelUploadsPage(
+      playlistId,
+      accessToken,
+      pageToken,
+    );
+    pagesFetched += 1;
+
+    const pageItems = page.items ?? [];
+    if (pageItems.length === 0) {
+      break;
+    }
+
+    const { items: pageResults, reachedWatermark } = collectPageItems(
+      pageItems,
+      feedId,
+      channelTitle,
+      lastSyncedAt,
+      paginationStopWatermark,
+    );
+    items.push(...pageResults);
+
+    warnIfTruncated(
+      channelId,
+      pagesFetched,
+      reachedWatermark,
+      Boolean(page.nextPageToken),
+    );
+
+    if (reachedWatermark || !page.nextPageToken) {
+      break;
+    }
+
+    pageToken = page.nextPageToken;
+  }
+
+  return items;
 }
