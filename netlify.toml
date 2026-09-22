@@ -1,6 +1,12 @@
 # Production deploys: `npm run build` is `dotenvx run -f .env.production --
-# nuxt build`, so it decrypts .env.production with DOTENV_PRIVATE_KEY_PRODUCTION
-# (set in Netlify env, Builds scope) and bakes NUXT_* values into the bundle.
+# nuxt build --dotenv .env.production`, so it decrypts .env.production with
+# DOTENV_PRIVATE_KEY_PRODUCTION (set in Netlify env, Builds scope) and bakes
+# NUXT_* values into the bundle. The `--dotenv` flag points Nuxt's own env
+# loader at that same file rather than its default (the repo-root .env): every
+# key is already in process.env from dotenvx by then, so Nuxt has nothing to
+# backfill. Without it, any key missing from .env.production gets .env's
+# committed *ciphertext* as its literal value, since no DOTENV_PRIVATE_KEY for
+# .env exists here — see tests/env/envFileKeyParity.test.ts.
 [build]
   command = "npm run test:ci && npm run build"
   publish = "dist"

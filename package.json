@@ -8,8 +8,8 @@
   "scripts": {
     "dev": "TMPDIR=/tmp dotenvx run -f .env -- nuxt dev",
     "dev:test": "TMPDIR=/tmp nuxt dev",
-    "build": "dotenvx run -f .env.production -- nuxt build",
-    "build:dev": "dotenvx run -f .env.dev -- nuxt build",
+    "build": "dotenvx run -f .env.production -- nuxt build --dotenv .env.production",
+    "build:dev": "dotenvx run -f .env.dev -- nuxt build --dotenv .env.dev",
     "preview": "dotenvx run -f .env.production -- nuxt preview",
     "test": "vitest",
     "test:ui": "vitest --ui",
