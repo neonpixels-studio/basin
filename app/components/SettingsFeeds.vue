@@ -83,6 +83,10 @@ function needsAttention(feed) {
 function canRetry(feed) {
   return needsAttention(feed) && !feed.paused;
 }
+
+function retryLabel(feedId) {
+  return isRetrying(feedId) ? "Retrying…" : "Retry now";
+}
 </script>
 
 <template>
@@ -168,7 +172,8 @@ function canRetry(feed) {
         <button
           v-if="canRetry(fd)"
           class="icon-btn"
-          :title="isRetrying(fd.id) ? 'Retrying…' : 'Retry now'"
+          :title="retryLabel(fd.id)"
+          :aria-label="retryLabel(fd.id)"
           :disabled="isRetrying(fd.id)"
           @click="retryFeed(fd.id)"
         >

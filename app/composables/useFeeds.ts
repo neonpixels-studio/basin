@@ -444,12 +444,26 @@ export function useFeeds() {
       return;
     }
 
+    // Bail before the refetch too, not just before the toast — a 409 here
+    // means the feed already moved on, so once the owning component is gone
+    // there's nothing left to do with the fresh row anyway.
+    if (disposed) {
+      return;
+    }
+
     const refreshed = await refreshFeedRow(id);
-    const paused =
-      refreshed !== "deleted" &&
-      refreshed !== "unavailable" &&
-      refreshed.paused;
-    notifyIfActive(paused ? RETRY_PAUSED_MESSAGE : RETRY_RECOVERED_MESSAGE);
+    if (refreshed === "deleted") {
+      return;
+    }
+    if (refreshed === "unavailable") {
+      // The refetch itself failed — we don't actually know whether the feed
+      // recovered or is paused, so don't guess either way.
+      notifyIfActive(RETRY_QUEUE_ERROR_MESSAGE);
+      return;
+    }
+    notifyIfActive(
+      refreshed.paused ? RETRY_PAUSED_MESSAGE : RETRY_RECOVERED_MESSAGE,
+    );
   }
 
   async function retryFeed(id: number): Promise<void> {

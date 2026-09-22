@@ -648,6 +648,38 @@ describe("useFeeds", () => {
       expect(mockFetch).toHaveBeenCalledTimes(2);
     });
 
+    it("does not guess recovered or paused when the post-409 refetch itself fails", async () => {
+      mockFetch.mockResolvedValueOnce([failingFeed]); // load
+      const conflict = Object.assign(
+        new Error("Feed is not in a failing state"),
+        { statusCode: 409 },
+      );
+      mockFetch.mockRejectedValueOnce(conflict); // retry POST 409s
+      mockFetch.mockRejectedValueOnce(new Error("network down")); // row refresh fails too
+      const { load, retryFeed } = useFeeds();
+      await load();
+
+      await retryFeed(failingFeed.id);
+
+      expect(toast.msg).toBe("Failed to queue retry — try again");
+    });
+
+    it("shows no toast when a 409 reveals the feed was deleted out from under the retry", async () => {
+      mockFetch.mockResolvedValueOnce([failingFeed]); // load
+      const conflict = Object.assign(
+        new Error("Feed is not in a failing state"),
+        { statusCode: 409 },
+      );
+      mockFetch.mockRejectedValueOnce(conflict); // retry POST 409s
+      mockFetch.mockResolvedValueOnce([]); // row refresh — feed no longer exists
+      const { load, retryFeed } = useFeeds();
+      await load();
+
+      await retryFeed(failingFeed.id);
+
+      expect(toast.msg).toBe("");
+    });
+
     it("stops polling without a toast when the feed is deleted mid-poll", async () => {
       mockFetch.mockResolvedValueOnce([failingFeed]); // load
       mockFetch.mockResolvedValueOnce({ queued: true }); // retry POST

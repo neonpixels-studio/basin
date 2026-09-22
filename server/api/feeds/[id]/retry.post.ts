@@ -16,17 +16,29 @@ import type { SyncFeedEventData } from "../../../../netlify/functions/types";
 // But nothing else stands between a click and a fresh priority-25 workload
 // event, so a script or a user re-clicking after the client's poll window
 // gives up (app/composables/useFeeds.ts's RETRY_POLL_*) could otherwise queue
-// an unbounded number of events for the same feed. This reuses the
-// fixed-window primitive server/utils/rateLimit.ts already isolates and
-// tests, with its own store — a per-feed retry cooldown is a different
-// concern from that module's per-route/IP abuse limiting, so it gets its own
-// Map rather than sharing rateLimitStore. One retry per feed per
-// DEBOUNCE_WINDOW_MS, the same window the scheduled sweep debounces on.
+// a stream of events for the same feed. This reuses the fixed-window
+// primitive server/utils/rateLimit.ts already isolates and tests, with its
+// own store — a per-feed retry cooldown is a different concern from that
+// module's per-route/IP abuse limiting, so it gets its own Map rather than
+// sharing rateLimitStore. One retry per feed per DEBOUNCE_WINDOW_MS, the same
+// window the scheduled sweep debounces on.
+//
+// SAME SERVERLESS TRADEOFF AS rateLimit.ts: this Map is per function
+// instance, so it blunts a single warm instance being hammered rather than
+// giving a hard global guarantee — a caller spread across several cold-started
+// instances could still exceed one retry per window for a feed. Acceptable
+// for the same reason rateLimit.ts accepts it (no shared store in basin's
+// infra today); a hard guarantee would need a DB column or shared cache.
+//
 // Exported (mirroring rateLimitStore) so tests can clear it between cases —
 // this module-level store otherwise persists state across every test in a
 // file that reuses the same feed id.
 export const retryCooldownStore: RateLimitStore = new Map();
 const RETRY_COOLDOWN_LIMIT = 1;
+
+function retryCooldownKey(feedId: number): string {
+  return `feed-retry:${feedId}`;
+}
 
 type RetryableFeed = {
   id: number;
@@ -48,7 +60,7 @@ async function fetchOwnedFeed(
 function assertNotOnCooldown(feedId: number): void {
   const result = checkRateLimit(
     retryCooldownStore,
-    `feed-retry:${feedId}`,
+    retryCooldownKey(feedId),
     RETRY_COOLDOWN_LIMIT,
     Date.now(),
     DEBOUNCE_WINDOW_MS,
@@ -132,6 +144,11 @@ export default defineEventHandler(async (event) => {
     const eventId = await emitOnDemandSyncEvent(client, eventData);
     return { queued: true, eventId };
   } catch (error) {
+    // Nothing was actually queued, so the cooldown slot assertNotOnCooldown
+    // just claimed must not stand — otherwise a transient emit failure would
+    // both fail this request AND 429 the user's very next (otherwise valid)
+    // attempt with a message claiming a retry is already in flight.
+    retryCooldownStore.delete(retryCooldownKey(feedId));
     console.error(
       JSON.stringify({
         event: "feed-retry.emit-failed",

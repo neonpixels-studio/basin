@@ -217,6 +217,22 @@ describe("POST /api/feeds/:id/retry", () => {
       expect(mockSend).toHaveBeenCalledTimes(1);
     });
 
+    it("releases the cooldown slot when the emit itself fails, so the next attempt is not falsely 429'd", async () => {
+      mockFindFirst.mockResolvedValue(FAILING_RSS_FEED);
+      mockSend.mockResolvedValueOnce({ sendStatus: "failed", eventId: "" });
+
+      await expect(handler(makeEvent({ id: 7 }, "3"))).rejects.toMatchObject({
+        statusCode: 502,
+      });
+
+      mockSend.mockResolvedValueOnce({
+        sendStatus: "succeeded",
+        eventId: "evt-2",
+      });
+      const result = await handler(makeEvent({ id: 7 }, "3"));
+      expect(result).toMatchObject({ queued: true });
+    });
+
     it("does not consume the cooldown when an earlier attempt was rejected before the emit step", async () => {
       // The first call is rejected for being unpaused-but-not-failing (409),
       // never reaching assertNotOnCooldown — so it must not burn the window
