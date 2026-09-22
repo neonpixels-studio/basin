@@ -13,10 +13,14 @@ import {
   fetchNewUploadsForChannel,
   TokenRefreshAuthError,
 } from "../../../server/utils/youtubeAdapter";
-import type { PlaylistItem } from "../../../server/utils/youtubeAdapter";
+import type {
+  PlaylistItem,
+  PlaylistItemContentDetails,
+} from "../../../server/utils/youtubeAdapter";
 
 function makePlaylistItem(
   overrides: Partial<PlaylistItem["snippet"]> = {},
+  contentDetails?: PlaylistItemContentDetails,
 ): PlaylistItem {
   return {
     snippet: {
@@ -30,6 +34,7 @@ function makePlaylistItem(
       },
       ...overrides,
     },
+    ...(contentDetails ? { contentDetails } : {}),
   };
 }
 
@@ -548,6 +553,23 @@ describe("mapPlaylistItemToFeedItem", () => {
     );
     expect(result.content).toBeNull();
   });
+
+  it("prefers contentDetails.videoPublishedAt over snippet.publishedAt (playlist-add time can predate the actual publish time for premieres)", () => {
+    const item = makePlaylistItem(
+      { publishedAt: "2024-05-01T00:00:00Z" },
+      { videoPublishedAt: "2024-06-01T00:00:00Z" },
+    );
+
+    const result = mapPlaylistItemToFeedItem(item, 1, "Channel");
+    expect(result.publishedAt).toEqual(new Date("2024-06-01T00:00:00Z"));
+  });
+
+  it("falls back to snippet.publishedAt when contentDetails.videoPublishedAt is absent", () => {
+    const item = makePlaylistItem({ publishedAt: "2024-05-01T00:00:00Z" });
+
+    const result = mapPlaylistItemToFeedItem(item, 1, "Channel");
+    expect(result.publishedAt).toEqual(new Date("2024-05-01T00:00:00Z"));
+  });
 });
 
 // --- fetchNewUploadsForChannel ---
@@ -682,6 +704,89 @@ describe("fetchNewUploadsForChannel", () => {
     expect(result).toHaveLength(40);
     expect(mockFetch).toHaveBeenCalledTimes(2);
     expect(mockFetch.mock.calls[1][0]).toContain("pageToken=page2");
+  });
+
+  it("excludes an undated item but keeps paginating past it instead of treating it as the watermark", async () => {
+    const watermark = new Date("2024-01-01T00:00:00Z");
+
+    mockPlaylistPages(
+      {
+        items: [
+          makePlaylistItem({
+            resourceId: { videoId: "undated" },
+            publishedAt: undefined,
+          }),
+          makePlaylistItem({
+            resourceId: { videoId: "newer" },
+            publishedAt: "2024-06-01T00:00:00Z",
+          }),
+        ],
+        nextPageToken: "page2",
+      },
+      {
+        items: [
+          makePlaylistItem({
+            resourceId: { videoId: "page2-item" },
+            publishedAt: "2024-05-01T00:00:00Z",
+          }),
+        ],
+      },
+    );
+
+    const result = await fetchNewUploadsForChannel(
+      "UCtest",
+      1,
+      "Channel",
+      watermark,
+      "token",
+    );
+
+    const guids = result.map((item) => item.guid);
+    expect(guids).not.toContain("yt:video:undated");
+    expect(guids).toContain("yt:video:newer");
+    expect(guids).toContain("yt:video:page2-item");
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("skips a malformed item with no resourceId.videoId instead of failing the whole sync", async () => {
+    mockPlaylistPages({
+      items: [
+        { snippet: {} } as unknown as PlaylistItem,
+        makePlaylistItem({ resourceId: { videoId: "ok" } }),
+      ],
+    });
+
+    const result = await fetchNewUploadsForChannel(
+      "UCtest",
+      1,
+      "Channel",
+      null,
+      "token",
+    );
+
+    expect(result).toHaveLength(1);
+    expect(result[0].guid).toBe("yt:video:ok");
+  });
+
+  it("logs a warning when it stops at MAX_PAGES without reaching the watermark", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    mockFetch.mockImplementation(() =>
+      Promise.resolve({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            items: [makePlaylistItem({ resourceId: { videoId: "v" } })],
+            nextPageToken: "always-more",
+          }),
+      }),
+    );
+
+    await fetchNewUploadsForChannel("UCtest", 1, "Channel", null, "token");
+
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("stopped after 20 pages for channel UCtest"),
+    );
   });
 
   it("stops after MAX_PAGES instead of paginating forever", async () => {

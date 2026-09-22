@@ -206,8 +206,17 @@ export interface PlaylistItemSnippet {
   };
 }
 
+export interface PlaylistItemContentDetails {
+  // The actual video publish time, as opposed to snippet.publishedAt (when
+  // the video was added to the uploads playlist). These usually match, but
+  // diverge for premieres/scheduled uploads, where the playlist add time can
+  // land before the video is actually public — see mapPlaylistItemToFeedItem.
+  videoPublishedAt?: string;
+}
+
 export interface PlaylistItem {
   snippet: PlaylistItemSnippet;
+  contentDetails?: PlaylistItemContentDetails;
 }
 
 export interface PlaylistItemsPage {
@@ -254,7 +263,7 @@ export async function fetchChannelUploadsPage(
   pageToken?: string,
 ): Promise<PlaylistItemsPage> {
   const params = new URLSearchParams({
-    part: "snippet",
+    part: "snippet,contentDetails",
     playlistId,
     maxResults: String(PAGE_LIMIT),
   });
@@ -310,6 +319,11 @@ export function mapPlaylistItemToFeedItem(
 ): NewFeedItem {
   const { snippet } = item;
   const videoId = snippet.resourceId.videoId;
+  // Prefer the actual video publish time over the playlist-add time (see
+  // PlaylistItemContentDetails) so a premiere/scheduled upload added to the
+  // playlist before it went public isn't dated too early.
+  const publishedAt =
+    item.contentDetails?.videoPublishedAt ?? snippet.publishedAt;
 
   return {
     feedId,
@@ -319,7 +333,7 @@ export function mapPlaylistItemToFeedItem(
     author: snippet.channelTitle ?? channelTitle,
     content: snippet.description || null,
     imageUrl: resolveThumbnailUrl(snippet.thumbnails),
-    publishedAt: resolveUploadPublishedAt(snippet.publishedAt),
+    publishedAt: resolveUploadPublishedAt(publishedAt),
     savedAt: null,
     readAt: null,
     starred: false,
@@ -328,19 +342,82 @@ export function mapPlaylistItemToFeedItem(
   };
 }
 
-// Matches the previous filterItemsByWatermark semantics (strictly-after,
-// null publishedAt treated as unpublishable/excluded once a watermark
-// exists) so replacing the RSS-backed fetch changes only how far back a sync
-// reaches, not which side of an exact-watermark boundary an item falls on.
-function isAtOrBeforeWatermark(
+// True once a dated item's publish time has caught up to (or passed) the
+// watermark — pagination stops here, since the uploads playlist is newest
+// first.
+function isPastWatermark(feedItem: NewFeedItem, watermark: Date): boolean {
+  return feedItem.publishedAt != null && feedItem.publishedAt <= watermark;
+}
+
+// An item with no resolvable publish date can't be placed relative to the
+// watermark, so — matching the previous filterItemsByWatermark semantics —
+// it's excluded from the results once a watermark exists. Unlike
+// isPastWatermark, this must never stop pagination: an undated item earlier
+// in a page (e.g. a livestream still missing contentDetails) says nothing
+// about whether older, dated items remain further down the playlist.
+function isExcludedByMissingDate(
   feedItem: NewFeedItem,
   watermark: Date | null,
 ): boolean {
-  if (!watermark) {
-    return false;
+  return watermark != null && feedItem.publishedAt == null;
+}
+
+interface PageCollectionResult {
+  items: NewFeedItem[];
+  reachedWatermark: boolean;
+}
+
+// Maps and filters one page's worth of playlist items: drops malformed
+// entries (deleted/unavailable videos can come back without a resourceId),
+// stops at the first item that has caught up to the watermark, and excludes
+// (without stopping) any item whose publish date can't be resolved — see
+// isPastWatermark/isExcludedByMissingDate for why those are different.
+function collectPageItems(
+  pageItems: PlaylistItem[],
+  feedId: number,
+  channelTitle: string,
+  lastSyncedAt: Date | null,
+): PageCollectionResult {
+  const items: NewFeedItem[] = [];
+
+  for (const item of pageItems) {
+    if (!item.snippet?.resourceId?.videoId) {
+      continue;
+    }
+
+    const feedItem = mapPlaylistItemToFeedItem(item, feedId, channelTitle);
+
+    if (lastSyncedAt && isPastWatermark(feedItem, lastSyncedAt)) {
+      return { items, reachedWatermark: true };
+    }
+
+    if (isExcludedByMissingDate(feedItem, lastSyncedAt)) {
+      continue;
+    }
+
+    items.push(feedItem);
   }
 
-  return feedItem.publishedAt == null || feedItem.publishedAt <= watermark;
+  return { items, reachedWatermark: false };
+}
+
+// Logs (rather than throwing) when the MAX_PAGES cap is hit before the
+// watermark or the end of the playlist, mirroring fetchYouTubeSubscriptions's
+// own stopped-early warning — the sync still returns what it collected, but
+// an operator needs a signal that this channel's history outran the cap.
+function warnIfTruncated(
+  channelId: string,
+  pagesFetched: number,
+  reachedWatermark: boolean,
+  hasNextPage: boolean,
+): void {
+  if (reachedWatermark || !hasNextPage || pagesFetched < MAX_PAGES) {
+    return;
+  }
+
+  console.error(
+    `fetchNewUploadsForChannel: stopped after ${MAX_PAGES} pages for channel ${channelId}; more uploads may remain unfetched.`,
+  );
 }
 
 // Paginates the channel's uploads playlist (newest first) via the YouTube
@@ -380,18 +457,20 @@ export async function fetchNewUploadsForChannel(
       break;
     }
 
-    let reachedWatermark = false;
+    const { items: pageResults, reachedWatermark } = collectPageItems(
+      pageItems,
+      feedId,
+      channelTitle,
+      lastSyncedAt,
+    );
+    items.push(...pageResults);
 
-    for (const item of pageItems) {
-      const feedItem = mapPlaylistItemToFeedItem(item, feedId, channelTitle);
-
-      if (isAtOrBeforeWatermark(feedItem, lastSyncedAt)) {
-        reachedWatermark = true;
-        break;
-      }
-
-      items.push(feedItem);
-    }
+    warnIfTruncated(
+      channelId,
+      pagesFetched,
+      reachedWatermark,
+      Boolean(page.nextPageToken),
+    );
 
     if (reachedWatermark || !page.nextPageToken) {
       break;
