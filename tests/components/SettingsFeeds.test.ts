@@ -45,6 +45,7 @@ function makeStub(
       importedCount: number;
       skipped: { url: string; title: string | null; reason: string }[];
     } | null;
+    isRetrying?: (_id: number) => boolean;
   } = {},
 ) {
   return {
@@ -67,6 +68,8 @@ function makeStub(
     remove: vi.fn(),
     importOpml: vi.fn(),
     exportOpml: vi.fn(),
+    retryFeed: vi.fn(),
+    isRetrying: overrides.isRetrying ?? vi.fn(() => false),
   };
 }
 
@@ -148,6 +151,59 @@ describe("SettingsFeeds", () => {
       stubFeeds({ items: [rssItem, failingItem] });
       const wrapper = shallowMount(SettingsFeeds);
       expect(wrapper.html()).toMatchSnapshot();
+    });
+
+    it("shows a Retry now control only for the failing feed's row", () => {
+      stubFeeds({ items: [rssItem, failingItem] });
+      const wrapper = shallowMount(SettingsFeeds);
+      const retryButtons = wrapper
+        .findAll(".icon-btn")
+        .filter((button) => button.attributes("title")?.includes("Retry"));
+      expect(retryButtons).toHaveLength(1);
+    });
+
+    it("does not show a Retry now control for a healthy feed", () => {
+      stubFeeds({ items: [rssItem] });
+      const wrapper = shallowMount(SettingsFeeds);
+      const retryButtons = wrapper
+        .findAll(".icon-btn")
+        .filter((button) => button.attributes("title")?.includes("Retry"));
+      expect(retryButtons).toHaveLength(0);
+    });
+
+    it("calls retryFeed with the feed id when Retry now is clicked", async () => {
+      const stub = stubFeeds({ items: [failingItem] });
+      const wrapper = shallowMount(SettingsFeeds);
+      const retryButton = wrapper
+        .findAll(".icon-btn")
+        .find((button) => button.attributes("title")?.includes("Retry"));
+      await retryButton!.trigger("click");
+      expect(stub.retryFeed).toHaveBeenCalledWith(failingItem.id);
+    });
+
+    it("disables the Retry now control while a retry is in flight for that feed", () => {
+      stubFeeds({
+        items: [failingItem],
+        isRetrying: (id: number) => id === failingItem.id,
+      });
+      const wrapper = shallowMount(SettingsFeeds);
+      const retryButton = wrapper
+        .findAll(".icon-btn")
+        .find((button) => button.attributes("title") === "Retrying…");
+      expect(retryButton).toBeDefined();
+      expect(retryButton!.attributes("disabled")).toBeDefined();
+    });
+
+    it("does not disable the Retry now control for a feed that is not retrying", () => {
+      stubFeeds({
+        items: [failingItem],
+        isRetrying: () => false,
+      });
+      const wrapper = shallowMount(SettingsFeeds);
+      const retryButton = wrapper
+        .findAll(".icon-btn")
+        .find((button) => button.attributes("title") === "Retry now");
+      expect(retryButton!.attributes("disabled")).toBeUndefined();
     });
   });
 

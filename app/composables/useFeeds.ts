@@ -10,6 +10,7 @@ export interface Feed {
   createdAt: string | null;
   syncStatus?: "ok" | "error";
   syncError?: string | null;
+  syncFailedAt?: string | null;
 }
 
 export class DiscoveryError extends Error {
@@ -22,6 +23,19 @@ export class DiscoveryError extends Error {
 const STATUS_NO_FEED_FOUND = 422;
 const OPML_EXPORT_FILENAME = "feeds.opml";
 const OPML_EXPORT_MIME_TYPE = "text/x-opml";
+
+// A "Retry now" click queues an async, out-of-process resync (see
+// server/api/feeds/[id]/retry.post.ts) — there is no synchronous result to
+// return. Polling the feed list a bounded number of times gives the row a
+// real chance to reflect the outcome without waiting indefinitely: most
+// permanent failures (the only kind that reach the "Needs attention" state)
+// resolve or re-fail within a few seconds of the adapter running.
+const RETRY_POLL_INTERVAL_MS = 1500;
+const RETRY_POLL_MAX_ATTEMPTS = 5;
+const RETRY_QUEUE_ERROR_MESSAGE = "Failed to queue retry — try again";
+const RETRY_STILL_PENDING_MESSAGE =
+  "Retry queued — still checking, refresh shortly to see the result";
+const RETRY_SUCCESS_MESSAGE = "Feed synced successfully";
 
 export interface OpmlSkippedFeed {
   url: string;
@@ -58,6 +72,10 @@ export function useFeeds() {
   const importing = ref(false);
   const exporting = ref(false);
   const importSummary = ref<OpmlImportSummary | null>(null);
+  // Feed ids with a "Retry now" click currently in flight — a row checks
+  // membership here to show its own spinner instead of a single global flag,
+  // since more than one failing feed can be retried at once.
+  const retryingFeedIds = ref<number[]>([]);
 
   async function load() {
     loading.value = true;
@@ -255,6 +273,86 @@ export function useFeeds() {
     }
   }
 
+  function isRetrying(id: number): boolean {
+    return retryingFeedIds.value.includes(id);
+  }
+
+  function sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  // Re-reads the feed list and reports how this one feed's row looks now,
+  // relative to the failure snapshot taken right before the retry was queued.
+  type RetryOutcome = "succeeded" | "failed-again" | "unresolved" | "deleted";
+
+  async function checkRetryOutcome(
+    feedId: number,
+    baselineSyncFailedAt: string | null | undefined,
+  ): Promise<RetryOutcome> {
+    await load();
+    const feed = items.value.find((item) => item.id === feedId);
+    if (!feed) {
+      return "deleted";
+    }
+    if (feed.syncStatus !== "error") {
+      return "succeeded";
+    }
+    if (feed.syncFailedAt && feed.syncFailedAt !== baselineSyncFailedAt) {
+      return "failed-again";
+    }
+    return "unresolved";
+  }
+
+  // Polls a bounded number of times for the retry to actually land — see the
+  // RETRY_POLL_* constants for why this is bounded rather than open-ended.
+  async function pollForRetryOutcome(
+    feedId: number,
+    baselineSyncFailedAt: string | null | undefined,
+  ): Promise<void> {
+    for (let attempt = 0; attempt < RETRY_POLL_MAX_ATTEMPTS; attempt++) {
+      await sleep(RETRY_POLL_INTERVAL_MS);
+      const outcome = await checkRetryOutcome(feedId, baselineSyncFailedAt);
+
+      if (outcome === "deleted") {
+        return;
+      }
+      if (outcome === "succeeded") {
+        showToast(RETRY_SUCCESS_MESSAGE);
+        return;
+      }
+      if (outcome === "failed-again") {
+        const feed = items.value.find((item) => item.id === feedId);
+        showToast(feed?.syncError ?? "Retry failed — feed is still erroring");
+        return;
+      }
+    }
+    showToast(RETRY_STILL_PENDING_MESSAGE);
+  }
+
+  async function retryFeed(id: number): Promise<void> {
+    const feed = items.value.find((item) => item.id === id);
+    if (!feed || isRetrying(id)) {
+      return;
+    }
+
+    const baselineSyncFailedAt = feed.syncFailedAt;
+    retryingFeedIds.value.push(id);
+    try {
+      await $fetch(`/api/feeds/${id}/retry`, {
+        method: "POST",
+        headers: await buildAuthHeaders(),
+      });
+      await pollForRetryOutcome(id, baselineSyncFailedAt);
+    } catch {
+      showToast(RETRY_QUEUE_ERROR_MESSAGE);
+    } finally {
+      const index = retryingFeedIds.value.indexOf(id);
+      if (index !== -1) {
+        retryingFeedIds.value.splice(index, 1);
+      }
+    }
+  }
+
   return {
     items,
     newUrl,
@@ -269,11 +367,14 @@ export function useFeeds() {
     importing,
     exporting,
     importSummary,
+    retryingFeedIds,
     load,
     add,
     confirmAdd,
     remove,
     importOpml,
     exportOpml,
+    retryFeed,
+    isRetrying,
   };
 }

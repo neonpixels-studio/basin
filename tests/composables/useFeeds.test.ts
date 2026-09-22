@@ -1,8 +1,11 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { useFeeds } from "~/composables/useFeeds";
+import { useToast } from "~/composables/useToast";
 
 const mockFetch = vi.fn();
 vi.stubGlobal("$fetch", mockFetch);
+
+const { toast } = useToast();
 
 const feedA = {
   id: 1,
@@ -23,7 +26,11 @@ const feedB = {
 };
 
 describe("useFeeds", () => {
-  beforeEach(() => vi.resetAllMocks());
+  beforeEach(() => {
+    vi.resetAllMocks();
+    toast.msg = "";
+    toast.show = false;
+  });
 
   describe("load()", () => {
     it("fetches from /api/feeds and populates items", async () => {
@@ -407,6 +414,137 @@ describe("useFeeds", () => {
       await remove(999);
       expect(items.value).toHaveLength(1);
       expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("retryFeed()", () => {
+    const failingFeed = {
+      ...feedA,
+      syncStatus: "error" as const,
+      syncError: "Feed unreachable",
+      syncFailedAt: "2026-01-01T00:00:00.000Z",
+    };
+
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => vi.useRealTimers());
+
+    it("does nothing when the feed id is not in items", async () => {
+      mockFetch.mockResolvedValueOnce([feedA]); // load
+      const { load, retryFeed } = useFeeds();
+      await load();
+      await retryFeed(999);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it("posts to /api/feeds/:id/retry for a failing feed", async () => {
+      mockFetch.mockResolvedValueOnce([failingFeed]); // load
+      mockFetch.mockResolvedValueOnce({ queued: true, eventId: "evt-1" }); // retry POST
+      mockFetch.mockResolvedValueOnce([{ ...failingFeed, syncStatus: "ok" }]); // poll load
+      const { load, retryFeed } = useFeeds();
+      await load();
+
+      const retrying = retryFeed(failingFeed.id);
+      await vi.advanceTimersByTimeAsync(1500);
+      await retrying;
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        `/api/feeds/${failingFeed.id}/retry`,
+        expect.objectContaining({ method: "POST" }),
+      );
+    });
+
+    it("marks the feed as retrying while in flight and clears it afterward", async () => {
+      mockFetch.mockResolvedValueOnce([failingFeed]); // load
+      mockFetch.mockResolvedValueOnce({ queued: true }); // retry POST
+      mockFetch.mockResolvedValueOnce([{ ...failingFeed, syncStatus: "ok" }]); // poll load
+      const { load, retryFeed, isRetrying } = useFeeds();
+      await load();
+
+      const retrying = retryFeed(failingFeed.id);
+      expect(isRetrying(failingFeed.id)).toBe(true);
+      await vi.advanceTimersByTimeAsync(1500);
+      await retrying;
+      expect(isRetrying(failingFeed.id)).toBe(false);
+    });
+
+    it("does not start a second retry while one is already in flight for the same feed", async () => {
+      mockFetch.mockResolvedValueOnce([failingFeed]); // load
+      mockFetch.mockResolvedValueOnce({ queued: true }); // retry POST
+      mockFetch.mockResolvedValueOnce([{ ...failingFeed, syncStatus: "ok" }]); // poll load
+      const { load, retryFeed } = useFeeds();
+      await load();
+
+      const first = retryFeed(failingFeed.id);
+      const second = retryFeed(failingFeed.id);
+      await vi.advanceTimersByTimeAsync(1500);
+      await Promise.all([first, second]);
+
+      // load + retry POST + poll load = 3 calls; a second concurrent
+      // retryFeed() call for the same id must not add a duplicate POST.
+      expect(mockFetch).toHaveBeenCalledTimes(3);
+    });
+
+    it("shows a success toast and reflects the healthy status in items once the feed syncs", async () => {
+      mockFetch.mockResolvedValueOnce([failingFeed]); // load
+      mockFetch.mockResolvedValueOnce({ queued: true }); // retry POST
+      mockFetch.mockResolvedValueOnce([{ ...failingFeed, syncStatus: "ok" }]); // poll load
+      const { load, retryFeed, items } = useFeeds();
+      await load();
+
+      const retrying = retryFeed(failingFeed.id);
+      await vi.advanceTimersByTimeAsync(1500);
+      await retrying;
+
+      expect(toast.msg).toBe("Feed synced successfully");
+      expect(items.value[0].syncStatus).toBe("ok");
+    });
+
+    it("surfaces the new sync error when the feed fails again", async () => {
+      const refailed = {
+        ...failingFeed,
+        syncError: "Still broken",
+        syncFailedAt: "2026-01-01T00:05:00.000Z",
+      };
+      mockFetch.mockResolvedValueOnce([failingFeed]); // load
+      mockFetch.mockResolvedValueOnce({ queued: true }); // retry POST
+      mockFetch.mockResolvedValueOnce([refailed]); // poll load
+      const { load, retryFeed } = useFeeds();
+      await load();
+
+      const retrying = retryFeed(failingFeed.id);
+      await vi.advanceTimersByTimeAsync(1500);
+      await retrying;
+
+      expect(toast.msg).toBe("Still broken");
+    });
+
+    it("stops polling after the max attempts and reports the retry is still pending", async () => {
+      mockFetch.mockResolvedValueOnce([failingFeed]); // load
+      mockFetch.mockResolvedValueOnce({ queued: true }); // retry POST
+      // Every poll keeps returning the same unresolved failure.
+      mockFetch.mockResolvedValue([failingFeed]);
+      const { load, retryFeed } = useFeeds();
+      await load();
+
+      const retrying = retryFeed(failingFeed.id);
+      await vi.advanceTimersByTimeAsync(1500 * 5);
+      await retrying;
+
+      expect(toast.msg).toBe(
+        "Retry queued — still checking, refresh shortly to see the result",
+      );
+    });
+
+    it("shows an error toast and clears retrying state when queuing the retry fails", async () => {
+      mockFetch.mockResolvedValueOnce([failingFeed]); // load
+      mockFetch.mockRejectedValueOnce(new Error("network down")); // retry POST fails
+      const { load, retryFeed, isRetrying } = useFeeds();
+      await load();
+
+      await retryFeed(failingFeed.id);
+
+      expect(toast.msg).toBe("Failed to queue retry — try again");
+      expect(isRetrying(failingFeed.id)).toBe(false);
     });
   });
 });

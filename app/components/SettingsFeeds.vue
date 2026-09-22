@@ -19,6 +19,8 @@ const {
   load,
   importOpml,
   exportOpml,
+  retryFeed,
+  isRetrying,
 } = useFeeds();
 onMounted(load);
 
@@ -156,6 +158,15 @@ function needsAttention(feed) {
           <RIcon name="alertTriangle" :size="12" />
           Needs attention
         </span>
+        <button
+          v-if="needsAttention(fd)"
+          class="icon-btn"
+          :title="isRetrying(fd.id) ? 'Retrying…' : 'Retry now'"
+          :disabled="isRetrying(fd.id)"
+          @click="retryFeed(fd.id)"
+        >
+          <RIcon name="refresh" :size="16" />
+        </button>
         <button class="icon-btn" title="Remove" @click="remove(fd.id)">
           <RIcon name="trash" :size="16" />
         </button>
