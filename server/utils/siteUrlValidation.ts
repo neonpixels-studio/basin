@@ -149,14 +149,21 @@ export function requireValidSiteUrlForBuild(
 // unchanged (falls back to the existing NUXT_SITE_URL-derived value) when no
 // dedicated public override is configured anywhere.
 //
-// When a public override IS provided, validate it the same way
-// requireValidSiteUrlForBuild validates the private key for a production
-// build — an unvalidated bad value here would otherwise bake silently into
-// og:url/canonical instead of failing the build (canonicalUrl only ever
-// drops the tag, it can't fail the deploy the way this can). Outside a
-// production build (`nuxt dev`), any raw value passes through unvalidated,
-// same as the private key, so local dev isn't blocked by an incomplete
-// value.
+// When a public override IS provided (and visible at build time — see
+// below), validate it the same way requireValidSiteUrlForBuild validates the
+// private key for a production build — an unvalidated bad value here would
+// otherwise bake silently into og:url/canonical instead of failing the
+// build. Outside a production build (`nuxt dev`), any raw value passes
+// through unvalidated, same as the private key, so local dev isn't blocked
+// by an incomplete value.
+//
+// This only covers the BUILD-time path. A value scoped to Netlify's
+// Functions/Runtime env (the whole point of using NUXT_PUBLIC_SITE_URL —
+// see nuxt.config.ts) is invisible here; the build never sees it, so this
+// function can't validate it. That value instead flows straight into
+// runtimeConfig.public.siteUrl via Nitro's own env override and is validated
+// per-request by canonicalUrl (app/utils/siteMeta.ts), which degrades
+// quietly — omitting og:url/canonical — rather than failing the request.
 export function resolvePublicSiteUrl(
   rawPublicSiteUrl: string | undefined,
   rawSiteUrl: string | undefined,

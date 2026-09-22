@@ -123,6 +123,13 @@ function requireTombstonePepperForBuild(): string {
   return pepper;
 }
 
+// Computed once, outside the config object, so both the private `siteUrl`
+// key and the public copy's fallback (below) share the exact same validated,
+// normalized origin — e.g. a trailing-slash NUXT_SITE_URL normalizes to a
+// bare origin for both, rather than the public copy keeping the raw,
+// un-normalized value only when no NUXT_PUBLIC_SITE_URL override is set.
+const resolvedSiteUrl = requireSiteUrlForBuild();
+
 export default defineNuxtConfig({
   compatibilityDate: "2024-11-01",
   modules: ["@pinia/nuxt", "@clerk/nuxt", "@sentry/nuxt/module"],
@@ -158,7 +165,7 @@ export default defineNuxtConfig({
     // requireSiteUrlForBuild() rather than raw process.env so a missing or
     // malformed value fails the build instead of only the first request that
     // needs it (see requireSiteUrlForBuild above).
-    siteUrl: requireSiteUrlForBuild(),
+    siteUrl: resolvedSiteUrl,
     googleClientId: process.env.NUXT_GOOGLE_CLIENT_ID || "",
     googleClientSecret: process.env.NUXT_GOOGLE_CLIENT_SECRET || "",
     disableSignups: process.env.NUXT_DISABLE_SIGNUPS || "",
@@ -196,7 +203,7 @@ export default defineNuxtConfig({
       // Deploy Preview) without a rebuild.
       siteUrl: resolvePublicSiteUrl(
         process.env.NUXT_PUBLIC_SITE_URL,
-        process.env.NUXT_SITE_URL,
+        resolvedSiteUrl,
         isProductionBuild,
       ),
     },

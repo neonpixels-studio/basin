@@ -225,10 +225,15 @@ describe("resolvePublicSiteUrl", () => {
     ).toThrowError(/must use https for a production build/);
   });
 
-  it("does not validate the private fallback — that's requireValidSiteUrlForBuild's job", () => {
-    // When no public override is set, resolvePublicSiteUrl just returns
-    // rawSiteUrl as-is; nuxt.config.ts's requireSiteUrlForBuild independently
-    // validates that same raw value for the private `siteUrl` key.
+  it("does not itself validate the fallback value passed in for rawSiteUrl", () => {
+    // resolvePublicSiteUrl only validates rawPublicSiteUrl; it trusts
+    // whatever rawSiteUrl it's given. In nuxt.config.ts this is always the
+    // already-validated, normalized value requireSiteUrlForBuild returned
+    // for the private `siteUrl` key (see resolvedSiteUrl there) — never the
+    // raw, un-normalized process.env.NUXT_SITE_URL — so both keys stay in
+    // sync. This test exercises resolvePublicSiteUrl in isolation with a
+    // deliberately-unvalidated value to pin down that it's a pure passthrough
+    // here, not a second validation pass.
     expect(resolvePublicSiteUrl(undefined, "not-a-url", true)).toBe(
       "not-a-url",
     );
