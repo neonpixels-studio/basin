@@ -1,4 +1,4 @@
-import { onScopeDispose } from "vue";
+import { getCurrentScope, onScopeDispose } from "vue";
 import { captureException } from "~/lib/sentry";
 import { downloadTextFile } from "~/utils/downloadTextFile";
 
@@ -59,6 +59,8 @@ const RETRY_RECOVERED_MESSAGE =
   "This feed already recovered — refreshing its status";
 const RETRY_PAUSED_MESSAGE =
   "This feed is paused and can't be retried right now";
+const RETRY_STATE_CHANGED_MESSAGE =
+  "This feed's status changed — refreshing its current state";
 const RETRY_RATE_LIMITED_MESSAGE =
   "A retry for this feed was already queued a moment ago — hang tight";
 const RETRY_STILL_PENDING_MESSAGE =
@@ -110,9 +112,15 @@ export function useFeeds() {
   // started it if the user navigates away mid-poll; this stops it from
   // surfacing a toast for a screen nobody is looking at anymore.
   let disposed = false;
-  onScopeDispose(() => {
-    disposed = true;
-  });
+  // Guarded: useFeeds() is also called directly in tests and other
+  // non-component contexts with no active effect scope, where
+  // onScopeDispose() would otherwise log a dev-only warning for nothing to
+  // dispose.
+  if (getCurrentScope()) {
+    onScopeDispose(() => {
+      disposed = true;
+    });
+  }
 
   async function load() {
     loading.value = true;
@@ -344,6 +352,10 @@ export function useFeeds() {
       });
       const fresh = freshFeeds.find((item) => item.id === feedId);
       if (!fresh) {
+        // Gone server-side (deleted elsewhere) — drop the stale row instead
+        // of leaving a "Needs attention" row with a Retry button that would
+        // just 404 on the next click.
+        items.value = items.value.filter((item) => item.id !== feedId);
         return "deleted";
       }
       items.value = items.value.map((item) =>
@@ -440,6 +452,11 @@ export function useFeeds() {
     }
 
     if (statusCode !== STATUS_RETRY_NOT_APPLICABLE) {
+      // Unlike the poll path's background refetch failures, a failure to
+      // queue in the first place has no other reporting path — capture it
+      // here so a systemic emit outage (see the 502 case in
+      // server/api/feeds/[id]/retry.post.ts) is visible, not just a toast.
+      captureException(err, { stage: "feed-retry-queue" });
       notifyIfActive(RETRY_QUEUE_ERROR_MESSAGE);
       return;
     }
@@ -459,6 +476,14 @@ export function useFeeds() {
       // The refetch itself failed — we don't actually know whether the feed
       // recovered or is paused, so don't guess either way.
       notifyIfActive(RETRY_QUEUE_ERROR_MESSAGE);
+      return;
+    }
+    if (refreshed.syncStatus === "error" && !refreshed.paused) {
+      // The 409 said the feed wasn't failing anymore, but the row we just
+      // fetched says it still is (and isn't paused) — a stale read on the
+      // server's side of that race, or a fresh failure landed in between.
+      // Don't tell the user it recovered when the row says otherwise.
+      notifyIfActive(RETRY_STATE_CHANGED_MESSAGE);
       return;
     }
     notifyIfActive(
