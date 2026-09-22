@@ -519,6 +519,25 @@ describe("useFeeds", () => {
       expect(toast.msg).toBe("Still broken");
     });
 
+    it("falls back to a generic message when the feed re-fails without a syncError", async () => {
+      const refailedNoMessage = {
+        ...failingFeed,
+        syncError: null,
+        syncFailedAt: "2026-01-01T00:05:00.000Z",
+      };
+      mockFetch.mockResolvedValueOnce([failingFeed]); // load
+      mockFetch.mockResolvedValueOnce({ queued: true }); // retry POST
+      mockFetch.mockResolvedValueOnce([refailedNoMessage]); // poll load
+      const { load, retryFeed } = useFeeds();
+      await load();
+
+      const retrying = retryFeed(failingFeed.id);
+      await vi.advanceTimersByTimeAsync(1500);
+      await retrying;
+
+      expect(toast.msg).toBe("Retry failed — feed is still erroring");
+    });
+
     it("stops polling after the max attempts and reports the retry is still pending", async () => {
       mockFetch.mockResolvedValueOnce([failingFeed]); // load
       mockFetch.mockResolvedValueOnce({ queued: true }); // retry POST
@@ -578,16 +597,55 @@ describe("useFeeds", () => {
         },
       );
       mockFetch.mockRejectedValueOnce(conflict); // retry POST 409s
-      mockFetch.mockResolvedValueOnce([recovered]); // refreshItems after the 409
+      mockFetch.mockResolvedValueOnce([recovered]); // row refresh after the 409
       const { load, retryFeed, items } = useFeeds();
       await load();
 
       await retryFeed(failingFeed.id);
 
       expect(toast.msg).toBe(
-        "This feed no longer needs a retry — refreshing its status",
+        "This feed already recovered — refreshing its status",
       );
       expect(items.value[0].syncStatus).toBe("ok");
+    });
+
+    it("shows a paused-specific message when the feed was paused mid-click (409)", async () => {
+      const paused = { ...failingFeed, paused: true };
+      mockFetch.mockResolvedValueOnce([failingFeed]); // load
+      const conflict = Object.assign(
+        new Error("Feed is paused and cannot be retried"),
+        { statusCode: 409 },
+      );
+      mockFetch.mockRejectedValueOnce(conflict); // retry POST 409s
+      mockFetch.mockResolvedValueOnce([paused]); // row refresh after the 409
+      const { load, retryFeed, items } = useFeeds();
+      await load();
+
+      await retryFeed(failingFeed.id);
+
+      expect(toast.msg).toBe(
+        "This feed is paused and can't be retried right now",
+      );
+      expect(items.value[0].paused).toBe(true);
+    });
+
+    it("shows a rate-limit message without refreshing when the server cooldown rejects (429)", async () => {
+      mockFetch.mockResolvedValueOnce([failingFeed]); // load
+      const tooMany = Object.assign(
+        new Error("A retry for this feed was already queued recently"),
+        { statusCode: 429 },
+      );
+      mockFetch.mockRejectedValueOnce(tooMany); // retry POST 429s
+      const { load, retryFeed } = useFeeds();
+      await load();
+
+      await retryFeed(failingFeed.id);
+
+      expect(toast.msg).toBe(
+        "A retry for this feed was already queued a moment ago — hang tight",
+      );
+      // No refresh follows a 429 — there's nothing new to learn from the row.
+      expect(mockFetch).toHaveBeenCalledTimes(2);
     });
 
     it("stops polling without a toast when the feed is deleted mid-poll", async () => {

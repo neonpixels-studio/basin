@@ -25,6 +25,7 @@ export class DiscoveryError extends Error {
 
 const STATUS_NO_FEED_FOUND = 422;
 const STATUS_RETRY_NOT_APPLICABLE = 409;
+const STATUS_RETRY_RATE_LIMITED = 429;
 const OPML_EXPORT_FILENAME = "feeds.opml";
 const OPML_EXPORT_MIME_TYPE = "text/x-opml";
 
@@ -54,8 +55,12 @@ function extractStatusCode(error: unknown): number | null {
 const RETRY_POLL_INTERVAL_MS = 1500;
 const RETRY_POLL_MAX_ATTEMPTS = 5;
 const RETRY_QUEUE_ERROR_MESSAGE = "Failed to queue retry — try again";
-const RETRY_NOT_APPLICABLE_MESSAGE =
-  "This feed no longer needs a retry — refreshing its status";
+const RETRY_RECOVERED_MESSAGE =
+  "This feed already recovered — refreshing its status";
+const RETRY_PAUSED_MESSAGE =
+  "This feed is paused and can't be retried right now";
+const RETRY_RATE_LIMITED_MESSAGE =
+  "A retry for this feed was already queued a moment ago — hang tight";
 const RETRY_STILL_PENDING_MESSAGE =
   "Retry queued — still checking, refresh shortly to see the result";
 const RETRY_SUCCESS_MESSAGE = "Feed synced successfully";
@@ -319,46 +324,67 @@ export function useFeeds() {
     }
   }
 
-  // Refetches the feed list without touching `loading`/`error` — unlike
-  // load(), this runs silently in the background while a retry poll is in
-  // flight, so it must never clobber the state the add-feed form's error
-  // message or the initial-load spinner depend on (both share `error` with
-  // load()). A failed refetch is reported to Sentry and otherwise ignored:
-  // the poll loop treats it as inconclusive and just tries again next attempt.
-  async function refreshItems(): Promise<void> {
+  // Refetches the feed list and patches only `feedId`'s row into `items`,
+  // rather than replacing the array wholesale — a background poll must not
+  // clobber a concurrent optimistic edit to some *other* row (e.g. remove()
+  // splicing a different feed out right as this resolves with a response
+  // snapshotted before that DELETE committed, which would resurrect it).
+  // Also never touches `loading`/`error`: unlike load(), this runs silently
+  // while a retry poll is in flight and must not clobber the state the
+  // add-feed form's error message or the initial-load spinner depend on
+  // (both share `error` with load()). A failed refetch is reported to Sentry
+  // and reported as "unavailable": the poll loop treats that as inconclusive
+  // and just tries again next attempt.
+  type FeedRowRefresh = Feed | "deleted" | "unavailable";
+
+  async function refreshFeedRow(feedId: number): Promise<FeedRowRefresh> {
     try {
-      items.value = await $fetch<Feed[]>("/api/feeds", {
+      const freshFeeds = await $fetch<Feed[]>("/api/feeds", {
         headers: await buildAuthHeaders(),
       });
+      const fresh = freshFeeds.find((item) => item.id === feedId);
+      if (!fresh) {
+        return "deleted";
+      }
+      items.value = items.value.map((item) =>
+        item.id === feedId ? fresh : item,
+      );
+      return fresh;
     } catch (err) {
       captureException(err, { stage: "feed-retry-poll-refresh" });
+      return "unavailable";
     }
   }
 
-  // Re-reads the feed list and reports how this one feed's row looks now,
-  // relative to the failure snapshot taken right before the retry was queued.
+  // Reports how this one feed's row looks now, relative to the failure
+  // snapshot taken right before the retry was queued.
   type RetryOutcome = "succeeded" | "failed-again" | "unresolved" | "deleted";
 
   async function checkRetryOutcome(
     feedId: number,
     baselineSyncFailedAt: string | null | undefined,
   ): Promise<RetryOutcome> {
-    await refreshItems();
-    const feed = findFeed(feedId);
-    if (!feed) {
+    const refreshed = await refreshFeedRow(feedId);
+    if (refreshed === "deleted") {
       return "deleted";
     }
-    if (feed.syncStatus !== "error") {
+    if (refreshed === "unavailable") {
+      return "unresolved";
+    }
+    if (refreshed.syncStatus !== "error") {
       return "succeeded";
     }
-    if (feed.syncFailedAt && feed.syncFailedAt !== baselineSyncFailedAt) {
+    if (
+      refreshed.syncFailedAt &&
+      refreshed.syncFailedAt !== baselineSyncFailedAt
+    ) {
       return "failed-again";
     }
     return "unresolved";
   }
 
   // Reports one poll outcome (toast + row state already reflect it via
-  // refreshItems()) and says whether polling is done — "unresolved" is the
+  // refreshFeedRow()) and says whether polling is done — "unresolved" is the
   // only outcome that lets the loop keep going.
   function reportRetryOutcome(outcome: RetryOutcome, feedId: number): boolean {
     if (outcome === "deleted") {
@@ -396,6 +422,36 @@ export function useFeeds() {
     notifyIfActive(RETRY_STILL_PENDING_MESSAGE);
   }
 
+  // 409 means the row moved on without us (already recovered, or paused
+  // mid-click) — refreshing the row and checking which one it actually is
+  // now beats guessing from the status code alone. 429 means the server's
+  // own cooldown (server/api/feeds/[id]/retry.post.ts) already has a retry
+  // queued for this feed from moments ago; nothing to refresh, just wait.
+  // Anything else is a genuine failure to queue.
+  async function handleRetryQueueFailure(
+    id: number,
+    err: unknown,
+  ): Promise<void> {
+    const statusCode = extractStatusCode(err);
+
+    if (statusCode === STATUS_RETRY_RATE_LIMITED) {
+      notifyIfActive(RETRY_RATE_LIMITED_MESSAGE);
+      return;
+    }
+
+    if (statusCode !== STATUS_RETRY_NOT_APPLICABLE) {
+      notifyIfActive(RETRY_QUEUE_ERROR_MESSAGE);
+      return;
+    }
+
+    const refreshed = await refreshFeedRow(id);
+    const paused =
+      refreshed !== "deleted" &&
+      refreshed !== "unavailable" &&
+      refreshed.paused;
+    notifyIfActive(paused ? RETRY_PAUSED_MESSAGE : RETRY_RECOVERED_MESSAGE);
+  }
+
   async function retryFeed(id: number): Promise<void> {
     const feed = findFeed(id);
     if (!feed || isRetrying(id)) {
@@ -411,15 +467,7 @@ export function useFeeds() {
       });
       await pollForRetryOutcome(id, baselineSyncFailedAt);
     } catch (err) {
-      // 409 means the row moved on without us (already recovered, or paused
-      // mid-click) — refreshing picks up whatever it actually is now instead
-      // of telling the user to retry a request that will just 409 again.
-      if (extractStatusCode(err) === STATUS_RETRY_NOT_APPLICABLE) {
-        notifyIfActive(RETRY_NOT_APPLICABLE_MESSAGE);
-        await refreshItems();
-      } else {
-        notifyIfActive(RETRY_QUEUE_ERROR_MESSAGE);
-      }
+      await handleRetryQueueFailure(id, err);
     } finally {
       retryingFeedIds.value = retryingFeedIds.value.filter(
         (retryingId) => retryingId !== id,

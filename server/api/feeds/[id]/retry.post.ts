@@ -5,8 +5,28 @@ import {
   emitOnDemandSyncEvent,
   SYNCABLE_SOURCE_TYPES,
 } from "../../../utils/feedSyncEmit";
+import { checkRateLimit } from "../../../utils/rateLimit";
+import type { RateLimitStore } from "../../../utils/rateLimit";
 import { SYNC_STATUS } from "../../../utils/syncStatus";
+import { DEBOUNCE_WINDOW_MS } from "../../../../netlify/functions/types";
 import type { SyncFeedEventData } from "../../../../netlify/functions/types";
+
+// This route deliberately skips the scheduler's nextRetryAt/backoff gate (see
+// the comment on eventData below) — that's the whole point of "Retry now".
+// But nothing else stands between a click and a fresh priority-25 workload
+// event, so a script or a user re-clicking after the client's poll window
+// gives up (app/composables/useFeeds.ts's RETRY_POLL_*) could otherwise queue
+// an unbounded number of events for the same feed. This reuses the
+// fixed-window primitive server/utils/rateLimit.ts already isolates and
+// tests, with its own store — a per-feed retry cooldown is a different
+// concern from that module's per-route/IP abuse limiting, so it gets its own
+// Map rather than sharing rateLimitStore. One retry per feed per
+// DEBOUNCE_WINDOW_MS, the same window the scheduled sweep debounces on.
+// Exported (mirroring rateLimitStore) so tests can clear it between cases —
+// this module-level store otherwise persists state across every test in a
+// file that reuses the same feed id.
+export const retryCooldownStore: RateLimitStore = new Map();
+const RETRY_COOLDOWN_LIMIT = 1;
 
 type RetryableFeed = {
   id: number;
@@ -23,6 +43,23 @@ async function fetchOwnedFeed(
     where: and(eq(feeds.id, feedId), eq(feeds.userId, userId)),
     columns: { id: true, source: true, syncStatus: true, paused: true },
   });
+}
+
+function assertNotOnCooldown(feedId: number): void {
+  const result = checkRateLimit(
+    retryCooldownStore,
+    `feed-retry:${feedId}`,
+    RETRY_COOLDOWN_LIMIT,
+    Date.now(),
+    DEBOUNCE_WINDOW_MS,
+  );
+
+  if (!result.allowed) {
+    throw createError({
+      statusCode: 429,
+      statusMessage: "A retry for this feed was already queued recently",
+    });
+  }
 }
 
 // Bounds this action to the state it exists for: a failing, unpaused,
@@ -59,7 +96,7 @@ export default defineEventHandler(async (event) => {
   }
 
   const feedId = Number(getRouterParam(event, "id"));
-  if (!feedId) {
+  if (!Number.isInteger(feedId) || feedId <= 0) {
     throw createError({ statusCode: 400, statusMessage: "Invalid feed ID" });
   }
 
@@ -69,6 +106,10 @@ export default defineEventHandler(async (event) => {
   }
 
   assertRetryable(feed);
+  // Checked after ownership/state validation so a rejected attempt (wrong
+  // state, not owned) never consumes the cooldown slot — only a request that
+  // actually reaches the emit step counts against it.
+  assertNotOnCooldown(feedId);
 
   // Emitted directly against this one feed rather than routed through the
   // scheduler's fetchDueFeeds query (netlify/functions/scheduled-feed-sync.ts),

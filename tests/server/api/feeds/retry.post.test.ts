@@ -19,7 +19,9 @@ vi.stubGlobal("useDb", () => ({
   },
 }));
 
-import handler from "../../../../server/api/feeds/[id]/retry.post";
+import handler, {
+  retryCooldownStore,
+} from "../../../../server/api/feeds/[id]/retry.post";
 
 function makeEvent(
   user: Record<string, unknown> | null,
@@ -40,6 +42,11 @@ describe("POST /api/feeds/:id/retry", () => {
 
   beforeEach(() => {
     vi.resetAllMocks();
+    // The cooldown store is module-level state (see the export's comment in
+    // retry.post.ts) — without clearing it, whichever test in this file first
+    // reaches the emit step for feed 3 would consume its window and 429 every
+    // test after it.
+    retryCooldownStore.clear();
     errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     mockSend.mockResolvedValue({ sendStatus: "succeeded", eventId: "evt-1" });
   });
@@ -56,6 +63,27 @@ describe("POST /api/feeds/:id/retry", () => {
 
   it("throws 400 for a non-numeric id", async () => {
     await expect(handler(makeEvent({ id: 1 }, "abc"))).rejects.toMatchObject({
+      statusCode: 400,
+    });
+    expect(mockFindFirst).not.toHaveBeenCalled();
+  });
+
+  it("throws 400 for a non-integer id", async () => {
+    await expect(handler(makeEvent({ id: 1 }, "3.5"))).rejects.toMatchObject({
+      statusCode: 400,
+    });
+    expect(mockFindFirst).not.toHaveBeenCalled();
+  });
+
+  it("throws 400 for a negative id", async () => {
+    await expect(handler(makeEvent({ id: 1 }, "-1"))).rejects.toMatchObject({
+      statusCode: 400,
+    });
+    expect(mockFindFirst).not.toHaveBeenCalled();
+  });
+
+  it("throws 400 for a zero id", async () => {
+    await expect(handler(makeEvent({ id: 1 }, "0"))).rejects.toMatchObject({
       statusCode: 400,
     });
     expect(mockFindFirst).not.toHaveBeenCalled();
@@ -173,5 +201,53 @@ describe("POST /api/feeds/:id/retry", () => {
         data: expect.objectContaining({ sourceType: "youtube" }),
       }),
     );
+  });
+
+  describe("retry cooldown", () => {
+    it("throws 429 on a second retry request for the same feed within the window", async () => {
+      mockFindFirst.mockResolvedValue(FAILING_RSS_FEED);
+
+      await handler(makeEvent({ id: 7 }, "3"));
+      await expect(handler(makeEvent({ id: 7 }, "3"))).rejects.toMatchObject({
+        statusCode: 429,
+      });
+
+      // The cooldown only guards the emit step — the first request already
+      // queued its event before the second was rejected.
+      expect(mockSend).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not consume the cooldown when an earlier attempt was rejected before the emit step", async () => {
+      // The first call is rejected for being unpaused-but-not-failing (409),
+      // never reaching assertNotOnCooldown — so it must not burn the window
+      // for the second, valid attempt.
+      mockFindFirst.mockResolvedValueOnce({
+        ...FAILING_RSS_FEED,
+        syncStatus: "ok",
+      });
+      await expect(handler(makeEvent({ id: 7 }, "3"))).rejects.toMatchObject({
+        statusCode: 409,
+      });
+
+      mockFindFirst.mockResolvedValueOnce(FAILING_RSS_FEED);
+      const result = await handler(makeEvent({ id: 7 }, "3"));
+      expect(result).toMatchObject({ queued: true });
+    });
+
+    it("allows concurrent retries for two different feeds", async () => {
+      mockFindFirst.mockResolvedValueOnce(FAILING_RSS_FEED);
+      await handler(makeEvent({ id: 7 }, "3"));
+
+      mockFindFirst.mockResolvedValueOnce({
+        id: 4,
+        source: "youtube",
+        syncStatus: "error",
+        paused: false,
+      });
+      const result = await handler(makeEvent({ id: 7 }, "4"));
+
+      expect(result).toMatchObject({ queued: true });
+      expect(mockSend).toHaveBeenCalledTimes(2);
+    });
   });
 });
