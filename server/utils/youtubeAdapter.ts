@@ -230,13 +230,21 @@ export interface PlaylistItemsPage {
 const PAGE_LIMIT = 50;
 
 // Safety cap mirroring blueskyAdapter's MAX_PAGES: bounds how many pages a
-// single sync will walk before giving up, so a channel with a very old or
-// missing watermark (first sync, or one that backed off for a long time via
-// feedSyncBackoff.ts, which can push retries out to 24h) can't turn this into
-// an unbounded loop inside the serverless sync function. 20 pages * 50 items
-// = up to 1000 uploads per sync, comfortably above any realistic gap between
-// syncs.
+// single sync will walk before giving up, so a channel that backed off for a
+// long time via feedSyncBackoff.ts (which can push retries out to 24h) can't
+// turn this into an unbounded loop inside the sync function. 20 pages * 50
+// items = up to 1000 uploads per sync, comfortably above any realistic gap
+// between two periodic syncs.
 const MAX_PAGES = 20;
+
+// First sync (lastSyncedAt is null — no watermark to page toward) is capped
+// to a single page rather than MAX_PAGES: the old RSS feed only ever
+// returned the 15 most recent uploads on a brand-new subscription, and
+// walking the full MAX_PAGES cap here would import years of backlog and
+// spend up to MAX_PAGES quota units per channel before the user has even
+// decided to keep the feed. A returning sync (lastSyncedAt set) is exactly
+// the case this file's pagination exists to fix, so it keeps the full cap.
+const FIRST_SYNC_PAGE_LIMIT = 1;
 
 const CHANNEL_ID_PREFIX = "UC";
 const UPLOADS_PLAYLIST_PREFIX = "UU";
@@ -342,17 +350,28 @@ export function mapPlaylistItemToFeedItem(
   };
 }
 
-// True once a dated item's publish time has caught up to (or passed) the
-// watermark — pagination stops here, since the uploads playlist is newest
-// first.
-function isPastWatermark(feedItem: NewFeedItem, watermark: Date): boolean {
-  return feedItem.publishedAt != null && feedItem.publishedAt <= watermark;
+// True once the playlist's own ordering date has caught up to (or passed)
+// the watermark — pagination stops here. This deliberately uses
+// snippet.publishedAt (when the video was added to the uploads playlist),
+// not the more accurate contentDetails.videoPublishedAt stored on the feed
+// item: the playlist is sorted by the former, not the latter. A video made
+// public well after being privately uploaded (or a premiere) can have a
+// videoPublishedAt far in the past while still sitting at the top of the
+// playlist; stopping on that item's *display* date would silently drop every
+// genuinely new upload below it — the exact bug class this function exists
+// to fix.
+function isPastPaginationWatermark(
+  snippet: PlaylistItemSnippet,
+  watermark: Date,
+): boolean {
+  const orderDate = resolveUploadPublishedAt(snippet.publishedAt);
+  return orderDate != null && orderDate <= watermark;
 }
 
 // An item with no resolvable publish date can't be placed relative to the
 // watermark, so — matching the previous filterItemsByWatermark semantics —
 // it's excluded from the results once a watermark exists. Unlike
-// isPastWatermark, this must never stop pagination: an undated item earlier
+// isPastPaginationWatermark, this must never stop pagination: an undated item earlier
 // in a page (e.g. a livestream still missing contentDetails) says nothing
 // about whether older, dated items remain further down the playlist.
 function isExcludedByMissingDate(
@@ -371,7 +390,7 @@ interface PageCollectionResult {
 // entries (deleted/unavailable videos can come back without a resourceId),
 // stops at the first item that has caught up to the watermark, and excludes
 // (without stopping) any item whose publish date can't be resolved — see
-// isPastWatermark/isExcludedByMissingDate for why those are different.
+// isPastPaginationWatermark/isExcludedByMissingDate for why those are different.
 function collectPageItems(
   pageItems: PlaylistItem[],
   feedId: number,
@@ -385,11 +404,11 @@ function collectPageItems(
       continue;
     }
 
-    const feedItem = mapPlaylistItemToFeedItem(item, feedId, channelTitle);
-
-    if (lastSyncedAt && isPastWatermark(feedItem, lastSyncedAt)) {
+    if (lastSyncedAt && isPastPaginationWatermark(item.snippet, lastSyncedAt)) {
       return { items, reachedWatermark: true };
     }
+
+    const feedItem = mapPlaylistItemToFeedItem(item, feedId, channelTitle);
 
     if (isExcludedByMissingDate(feedItem, lastSyncedAt)) {
       continue;
@@ -443,8 +462,9 @@ export async function fetchNewUploadsForChannel(
   const items: NewFeedItem[] = [];
   let pageToken: string | undefined;
   let pagesFetched = 0;
+  const pageLimit = lastSyncedAt ? MAX_PAGES : FIRST_SYNC_PAGE_LIMIT;
 
-  while (pagesFetched < MAX_PAGES) {
+  while (pagesFetched < pageLimit) {
     const page = await fetchChannelUploadsPage(
       playlistId,
       accessToken,

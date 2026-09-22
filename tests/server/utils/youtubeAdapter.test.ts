@@ -771,34 +771,56 @@ describe("fetchNewUploadsForChannel", () => {
   it("logs a warning when it stops at MAX_PAGES without reaching the watermark", async () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
+    // A watermark far enough in the past that MAX_PAGES worth of items,
+    // published newest-first down to 2024-06-01, never reaches it — keeps
+    // the loop under the returning-sync page cap (MAX_PAGES) rather than the
+    // first-sync one (a null watermark would only ever fetch one page).
     mockFetch.mockImplementation(() =>
       Promise.resolve({
         ok: true,
         json: () =>
           Promise.resolve({
-            items: [makePlaylistItem({ resourceId: { videoId: "v" } })],
+            items: [
+              makePlaylistItem({
+                resourceId: { videoId: "v" },
+                publishedAt: "2024-06-01T00:00:00Z",
+              }),
+            ],
             nextPageToken: "always-more",
           }),
       }),
     );
 
-    await fetchNewUploadsForChannel("UCtest", 1, "Channel", null, "token");
+    await fetchNewUploadsForChannel(
+      "UCtest",
+      1,
+      "Channel",
+      new Date("2020-01-01T00:00:00Z"),
+      "token",
+    );
 
     expect(errorSpy).toHaveBeenCalledWith(
       expect.stringContaining("stopped after 20 pages for channel UCtest"),
     );
+
+    errorSpy.mockRestore();
   });
 
   it("stops after MAX_PAGES instead of paginating forever", async () => {
-    // A never-ending nextPageToken (an old/missing watermark with an
-    // unbounded upload history) must not turn this into an unbounded loop
-    // inside the serverless sync function.
+    // A never-ending nextPageToken with a watermark that's never reached
+    // (an old watermark and an unbounded upload history) must not turn this
+    // into an unbounded loop inside the sync function.
     mockFetch.mockImplementation(() =>
       Promise.resolve({
         ok: true,
         json: () =>
           Promise.resolve({
-            items: [makePlaylistItem({ resourceId: { videoId: "v" } })],
+            items: [
+              makePlaylistItem({
+                resourceId: { videoId: "v" },
+                publishedAt: "2024-06-01T00:00:00Z",
+              }),
+            ],
             nextPageToken: "always-more",
           }),
       }),
@@ -808,12 +830,139 @@ describe("fetchNewUploadsForChannel", () => {
       "UCtest",
       1,
       "Channel",
-      null,
+      new Date("2020-01-01T00:00:00Z"),
       "token",
     );
 
     expect(result).toHaveLength(20);
     expect(mockFetch).toHaveBeenCalledTimes(20);
+  });
+
+  it("fetches only one page on first sync (no watermark), even when more pages are available", async () => {
+    // First sync previously got only the RSS feed's 15 most recent uploads;
+    // capping it at one page here keeps that same "recent activity, not
+    // full history" behavior instead of walking the full MAX_PAGES cap (and
+    // its quota cost) for a brand-new subscription.
+    mockPlaylistPages({
+      items: [makePlaylistItem({ resourceId: { videoId: "v1" } })],
+      nextPageToken: "page2",
+    });
+
+    const result = await fetchNewUploadsForChannel(
+      "UCtest",
+      1,
+      "Channel",
+      null,
+      "token",
+    );
+
+    expect(result).toHaveLength(1);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops mid-page-2 once the watermark is reached, without fetching a third page", async () => {
+    const watermark = new Date("2024-05-15T00:00:00Z");
+
+    mockPlaylistPages(
+      {
+        items: [
+          makePlaylistItem({
+            resourceId: { videoId: "p1-a" },
+            publishedAt: "2024-06-01T00:00:00Z",
+          }),
+        ],
+        nextPageToken: "page2",
+      },
+      {
+        items: [
+          makePlaylistItem({
+            resourceId: { videoId: "p2-a" },
+            publishedAt: "2024-05-20T00:00:00Z",
+          }),
+          makePlaylistItem({
+            resourceId: { videoId: "p2-old" },
+            publishedAt: "2024-05-01T00:00:00Z",
+          }),
+        ],
+        nextPageToken: "page3",
+      },
+    );
+
+    const result = await fetchNewUploadsForChannel(
+      "UCtest",
+      1,
+      "Channel",
+      watermark,
+      "token",
+    );
+
+    const guids = result.map((item) => item.guid);
+    expect(guids).toEqual(["yt:video:p1-a", "yt:video:p2-a"]);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("stops the pagination watermark check on the playlist's add-time ordering, not the more accurate displayed publish date", async () => {
+    // A video that was privately uploaded long ago and made public just now
+    // sits at the top of the playlist (snippet.publishedAt is recent — that
+    // is the order the API actually returns items in) even though its
+    // contentDetails.videoPublishedAt is old. Stopping pagination on the
+    // *displayed* date here would silently drop every real new upload below
+    // it, which is the exact bug class this function fixes.
+    const watermark = new Date("2024-01-01T00:00:00Z");
+
+    mockPlaylistPages(
+      {
+        items: [
+          makePlaylistItem(
+            {
+              resourceId: { videoId: "recently-made-public" },
+              publishedAt: "2024-06-01T00:00:00Z",
+            },
+            { videoPublishedAt: "2020-01-01T00:00:00Z" },
+          ),
+        ],
+        nextPageToken: "page2",
+      },
+      {
+        items: [
+          makePlaylistItem({
+            resourceId: { videoId: "page2-item" },
+            publishedAt: "2024-05-01T00:00:00Z",
+          }),
+        ],
+      },
+    );
+
+    const result = await fetchNewUploadsForChannel(
+      "UCtest",
+      1,
+      "Channel",
+      watermark,
+      "token",
+    );
+
+    const guids = result.map((item) => item.guid);
+    expect(guids).toContain("yt:video:recently-made-public");
+    expect(guids).toContain("yt:video:page2-item");
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("returns an empty result and makes no further calls when a page response has no items key", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve({}),
+    });
+
+    const result = await fetchNewUploadsForChannel(
+      "UCtest",
+      1,
+      "Channel",
+      null,
+      "token",
+    );
+
+    expect(result).toEqual([]);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
   });
 
   it("propagates fetch errors", async () => {
