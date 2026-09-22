@@ -2,14 +2,12 @@ import type { Config } from "@netlify/functions";
 import { AsyncWorkloadsClient } from "@netlify/async-workloads";
 import { and, eq, lt, or, isNull, inArray } from "drizzle-orm";
 import { feeds } from "../../server/db/schema";
+import { SYNCABLE_SOURCE_TYPES } from "../../server/utils/feedSyncEmit";
 import { createDb } from "./db";
 import { SYNC_FEED_EVENT_NAME, DEBOUNCE_WINDOW_MS } from "./types";
 import type { SyncFeedEventData } from "./types";
 
 type DueFeed = { id: number; userId: number; source: string };
-
-// Source types that this scheduler knows how to sync via async workloads.
-const SYNCABLE_SOURCE_TYPES = ["rss", "podcast", "youtube", "bluesky"] as const;
 
 async function fetchDueFeeds(): Promise<DueFeed[]> {
   const db = createDb();

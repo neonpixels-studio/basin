@@ -19,6 +19,8 @@ const {
   load,
   importOpml,
   exportOpml,
+  retryFeed,
+  isRetrying,
 } = useFeeds();
 onMounted(load);
 
@@ -73,6 +75,17 @@ function cancelDetection() {
 
 function needsAttention(feed) {
   return feed.syncStatus === "error";
+}
+
+// A paused feed (over the Free plan's source cap) always 409s the retry
+// endpoint — see server/api/feeds/[id]/retry.post.ts — so the control is
+// hidden rather than offering an action that can never succeed.
+function canRetry(feed) {
+  return needsAttention(feed) && !feed.paused;
+}
+
+function retryLabel(feedId) {
+  return isRetrying(feedId) ? "Retrying…" : "Retry now";
 }
 </script>
 
@@ -156,6 +169,16 @@ function needsAttention(feed) {
           <RIcon name="alertTriangle" :size="12" />
           Needs attention
         </span>
+        <button
+          v-if="canRetry(fd)"
+          class="icon-btn"
+          :title="retryLabel(fd.id)"
+          :aria-label="retryLabel(fd.id)"
+          :disabled="isRetrying(fd.id)"
+          @click="retryFeed(fd.id)"
+        >
+          <RIcon name="refresh" :size="16" />
+        </button>
         <button class="icon-btn" title="Remove" @click="remove(fd.id)">
           <RIcon name="trash" :size="16" />
         </button>

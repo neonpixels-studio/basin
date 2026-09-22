@@ -46,4 +46,28 @@ describe("GET /api/feeds", () => {
     await handler(event);
     expect(mockFindMany).toHaveBeenCalledTimes(1);
   });
+
+  it("does not restrict the columns returned, so syncFailedAt and paused pass through", async () => {
+    // Pins the "full row, no `columns` selector" shape the client's retry
+    // flow (app/composables/useFeeds.ts) relies on to read a feed's
+    // syncFailedAt and paused state without a dedicated endpoint — a future
+    // change adding a `columns` filter here would silently break that without
+    // this test.
+    const feedWithRetryFields = {
+      ...mockFeed,
+      syncFailedAt: "2026-01-01T00:00:00.000Z",
+      paused: true,
+    };
+    mockFindMany.mockResolvedValue([feedWithRetryFields]);
+    const event = { context: { user: { id: 1 } } };
+
+    const result = await handler(event);
+
+    expect(result[0]).toMatchObject({
+      syncFailedAt: "2026-01-01T00:00:00.000Z",
+      paused: true,
+    });
+    const [queryArgs] = mockFindMany.mock.calls[0];
+    expect(queryArgs).not.toHaveProperty("columns");
+  });
 });

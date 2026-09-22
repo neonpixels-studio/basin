@@ -27,6 +27,7 @@ exports[`SettingsFeeds > detection confirmation UI > matches snapshot with detec
         <div class="feed-name">Test Feed</div>
         <div class="feed-url">https://example.com/feed.xml</div>
       </div>
+      <!--v-if-->
       <!--v-if--><button class="icon-btn" title="Remove">
         <r-icon-stub name="trash" size="16"></r-icon-stub>
       </button>
@@ -36,6 +37,7 @@ exports[`SettingsFeeds > detection confirmation UI > matches snapshot with detec
         <div class="feed-name">https://podcast.example.com/feed</div>
         <div class="feed-url">https://podcast.example.com/feed</div>
       </div>
+      <!--v-if-->
       <!--v-if--><button class="icon-btn" title="Remove">
         <r-icon-stub name="trash" size="16"></r-icon-stub>
       </button>
@@ -62,6 +64,7 @@ exports[`SettingsFeeds > matches snapshot with feeds 1`] = `
         <div class="feed-name">Test Feed</div>
         <div class="feed-url">https://example.com/feed.xml</div>
       </div>
+      <!--v-if-->
       <!--v-if--><button class="icon-btn" title="Remove">
         <r-icon-stub name="trash" size="16"></r-icon-stub>
       </button>
@@ -71,6 +74,7 @@ exports[`SettingsFeeds > matches snapshot with feeds 1`] = `
         <div class="feed-name">https://podcast.example.com/feed</div>
         <div class="feed-url">https://podcast.example.com/feed</div>
       </div>
+      <!--v-if-->
       <!--v-if--><button class="icon-btn" title="Remove">
         <r-icon-stub name="trash" size="16"></r-icon-stub>
       </button>
@@ -97,6 +101,7 @@ exports[`SettingsFeeds > needs-attention indicator > matches snapshot with a fai
         <div class="feed-name">Test Feed</div>
         <div class="feed-url">https://example.com/feed.xml</div>
       </div>
+      <!--v-if-->
       <!--v-if--><button class="icon-btn" title="Remove">
         <r-icon-stub name="trash" size="16"></r-icon-stub>
       </button>
@@ -105,7 +110,9 @@ exports[`SettingsFeeds > needs-attention indicator > matches snapshot with a fai
       <div class="feed-info">
         <div class="feed-name">Failing Feed</div>
         <div class="feed-url">https://failing.example.com/feed.xml</div>
-      </div><span class="feed-stat error" title="Feed unreachable — check the URL"><r-icon-stub name="alertTriangle" size="12"></r-icon-stub> Needs attention </span><button class="icon-btn" title="Remove">
+      </div><span class="feed-stat error" title="Feed unreachable — check the URL"><r-icon-stub name="alertTriangle" size="12"></r-icon-stub> Needs attention </span><button class="icon-btn" title="Retry now" aria-label="Retry now">
+        <r-icon-stub name="refresh" size="16"></r-icon-stub>
+      </button><button class="icon-btn" title="Remove">
         <r-icon-stub name="trash" size="16"></r-icon-stub>
       </button>
     </div>
