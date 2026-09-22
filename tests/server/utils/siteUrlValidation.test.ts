@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   isSecureSiteOrigin,
   requireValidSiteUrlForBuild,
+  resolvePublicSiteUrl,
   validateSiteUrl,
 } from "../../../server/utils/siteUrlValidation";
 
@@ -159,5 +160,41 @@ describe("requireValidSiteUrlForBuild", () => {
     expect(() =>
       requireValidSiteUrlForBuild("http://basin.example", true),
     ).toThrowError(/must use https for a production build/);
+  });
+});
+
+// This is the function nuxt.config.ts calls to bake runtimeConfig.public.siteUrl
+// — see its own comment for why NUXT_PUBLIC_SITE_URL takes precedence (it's
+// the value Nitro can also override from the live environment at Netlify
+// Function runtime, unlike NUXT_SITE_URL and every other dotenvx-only value).
+describe("resolvePublicSiteUrl", () => {
+  it("prefers the public override when both are set", () => {
+    expect(
+      resolvePublicSiteUrl(
+        "https://preview-123.example",
+        "https://basin.example",
+      ),
+    ).toBe("https://preview-123.example");
+  });
+
+  it("falls back to the private site URL when no public override is set", () => {
+    expect(resolvePublicSiteUrl(undefined, "https://basin.example")).toBe(
+      "https://basin.example",
+    );
+    expect(resolvePublicSiteUrl("", "https://basin.example")).toBe(
+      "https://basin.example",
+    );
+  });
+
+  it("returns an empty string when neither is set", () => {
+    expect(resolvePublicSiteUrl(undefined, undefined)).toBe("");
+    expect(resolvePublicSiteUrl("", "")).toBe("");
+  });
+
+  it("does not validate its inputs — that's validateSiteUrl's job downstream", () => {
+    // resolvePublicSiteUrl only decides precedence; canonicalUrl (siteMeta.ts)
+    // and getConfiguredSiteUrl both independently validate the resulting
+    // runtimeConfig.public.siteUrl / siteUrl before using it.
+    expect(resolvePublicSiteUrl("not-a-url", undefined)).toBe("not-a-url");
   });
 });

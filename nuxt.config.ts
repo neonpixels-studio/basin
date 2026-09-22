@@ -1,6 +1,9 @@
 import tailwindcss from "@tailwindcss/vite";
 import { fileURLToPath } from "node:url";
-import { requireValidSiteUrlForBuild } from "./server/utils/siteUrlValidation";
+import {
+  requireValidSiteUrlForBuild,
+  resolvePublicSiteUrl,
+} from "./server/utils/siteUrlValidation";
 
 const mainCss = fileURLToPath(
   new URL("./app/assets/css/main.css", import.meta.url),
@@ -135,9 +138,14 @@ export default defineNuxtConfig({
     skipServerMiddleware: true,
   },
   // These read process.env INLINE (not "") so dotenvx-decrypted values bake into
-  // the server bundle at build time. Nitro only serializes these defaults; it does
-  // NOT re-inject NUXT_* at function runtime on Netlify, so leaving them "" would
-  // resolve to empty in the deployed function unless the vars are set in Netlify.
+  // the server bundle at build time. These values are secrets that only ever
+  // exist decrypted transiently during `nuxt build` (see .env.example) — they
+  // are never set as real Netlify environment variables, so Nitro's normal
+  // NUXT_* runtime env-override has nothing to match against for them and
+  // leaving them "" would resolve to empty in the deployed function. The one
+  // exception is the public `siteUrl` below: it is not secret, so it CAN be
+  // set as a genuine Netlify runtime env var and genuinely overridden at
+  // Function cold start — see its own comment for why that matters.
   runtimeConfig: {
     databaseUrl: process.env.NUXT_DATABASE_URL || "",
     // basin's own public base URL, the trusted origin OAuth redirect URIs and
@@ -175,15 +183,25 @@ export default defineNuxtConfig({
       sentry: {
         dsn: process.env.SENTRY_DSN || "",
       },
-      // Same NUXT_SITE_URL as the private `siteUrl` key above, also exposed
-      // publicly here: unlike that key (kept private for the OAuth/billing
-      // redirect trust boundary — see server/utils/siteUrl.ts), this value
-      // isn't secret. It's the origin every public marketing page's
-      // og:url/canonical link ships to the browser as page metadata (see
-      // app/utils/siteMeta.ts). It needs its own `public` copy because the
-      // private key resolves to empty once the client takes over after
-      // hydration.
-      siteUrl: process.env.NUXT_SITE_URL || "",
+      // The origin every public marketing page's og:url/canonical link ships
+      // to the browser as page metadata (see app/utils/siteMeta.ts). Needs
+      // its own `public` copy because the private `siteUrl` key above
+      // resolves to empty once the client takes over after hydration.
+      //
+      // Defaults to the same NUXT_SITE_URL as the private key (unchanged
+      // behavior when nothing else is set), but prefers NUXT_PUBLIC_SITE_URL
+      // when present — see resolvePublicSiteUrl's own comment. That
+      // preference matters because, unlike the private key, this value isn't
+      // secret: NUXT_PUBLIC_SITE_URL can be set as a genuine Netlify runtime
+      // environment variable (not dotenvx-baked), which Nitro auto-applies on
+      // top of this build-time default at every Function cold start. That's
+      // what keeps og:url/canonical correct on a runtime-configured deploy
+      // (e.g. a Deploy Preview, whose per-PR origin a single dotenvx-baked
+      // NUXT_SITE_URL can't capture) without a rebuild.
+      siteUrl: resolvePublicSiteUrl(
+        process.env.NUXT_PUBLIC_SITE_URL,
+        process.env.NUXT_SITE_URL,
+      ),
     },
   },
   devtools: { enabled: true },

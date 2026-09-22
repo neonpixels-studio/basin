@@ -127,3 +127,30 @@ export function requireValidSiteUrlForBuild(
   // itself derive from the same raw value at request time.
   return validationResult.origin;
 }
+
+// Decides the BUILD-time default nuxt.config.ts bakes into
+// runtimeConfig.public.siteUrl, before any runtime override applies.
+//
+// Unlike the private `siteUrl` key and the other dotenvx-managed secrets
+// (TOKEN_ENCRYPTION_KEY, stripeSecretKey, ...) — which are only ever
+// decrypted transiently during `nuxt build` and never exist as real Netlify
+// env vars — the public copy is not secret, so NUXT_PUBLIC_SITE_URL can be
+// set directly as a plain Netlify environment variable, scoped per deploy
+// context. Nitro auto-applies that env var onto runtimeConfig.public.siteUrl
+// at each Function cold start (standard Nuxt NUXT_PUBLIC_* → public.*
+// mapping), which is what actually fixes og:url/canonical going stale on a
+// runtime-configured deploy — e.g. a Netlify Deploy Preview, whose per-PR
+// origin isn't knowable at build time the way the stable, dotenvx-baked
+// NUXT_SITE_URL is (see nuxt.config.ts).
+//
+// This function only picks what gets baked in as the fallback default so a
+// build run with NUXT_PUBLIC_SITE_URL already set locally is self-consistent
+// with what the runtime override would later produce, and so behavior is
+// unchanged (falls back to the existing NUXT_SITE_URL-derived value) when no
+// dedicated public override is configured anywhere.
+export function resolvePublicSiteUrl(
+  rawPublicSiteUrl: string | undefined,
+  rawSiteUrl: string | undefined,
+): string {
+  return rawPublicSiteUrl || rawSiteUrl || "";
+}
