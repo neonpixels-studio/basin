@@ -1,13 +1,12 @@
 import { AsyncWorkloadsClient } from "@netlify/async-workloads";
 import { and, eq } from "drizzle-orm";
 import { feeds } from "../../../db/schema";
-import { emitOnDemandSyncEvent } from "../../../utils/feedSyncEmit";
+import {
+  emitOnDemandSyncEvent,
+  SYNCABLE_SOURCE_TYPES,
+} from "../../../utils/feedSyncEmit";
 import { SYNC_STATUS } from "../../../utils/syncStatus";
 import type { SyncFeedEventData } from "../../../../netlify/functions/types";
-
-// Source types this route knows how to sync via async workloads — mirrors
-// server/api/feed-sync.post.ts and netlify/functions/scheduled-feed-sync.ts.
-const SYNCABLE_SOURCE_TYPES = new Set(["rss", "podcast", "youtube", "bluesky"]);
 
 type RetryableFeed = {
   id: number;
@@ -31,7 +30,7 @@ async function fetchOwnedFeed(
 // only renders on a "Needs attention" row — the client's view of the row can
 // be stale by the time the request lands.
 function assertRetryable(feed: RetryableFeed): void {
-  if (!SYNCABLE_SOURCE_TYPES.has(feed.source)) {
+  if (!(SYNCABLE_SOURCE_TYPES as readonly string[]).includes(feed.source)) {
     throw createError({
       statusCode: 400,
       statusMessage: `Feed source "${feed.source}" cannot be synced`,

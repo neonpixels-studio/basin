@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { PgDialect } from "drizzle-orm/pg-core";
 
 const { mockSend, mockFindFirst } = vi.hoisted(() => ({
   mockSend: vi.fn(),
@@ -106,15 +107,21 @@ describe("POST /api/feeds/:id/retry", () => {
     });
   });
 
-  it("looks up the feed scoped to the requesting user's id", async () => {
+  it("looks up the feed scoped to both the feed id and the requesting user's id", async () => {
     mockFindFirst.mockResolvedValue(FAILING_RSS_FEED);
     await handler(makeEvent({ id: 7 }, "3"));
 
     const [{ where }] = mockFindFirst.mock.calls[0];
-    // Ownership is enforced in the query predicate, not after the fact — the
-    // where clause combines the feed id with the requesting user's id (drizzle's
-    // `and(...)` builder), matching the pattern the delete route uses.
-    expect(where).toBeDefined();
+    // Parse the built predicate's SQL and bound params so this actually
+    // proves both the feed id and the user id are enforced in the query —
+    // not just that some `where` clause exists.
+    const { sql, params } = new PgDialect().sqlToQuery(where);
+    const idPlaceholder = sql.match(/"feeds"\."id" = \$(\d+)/);
+    const userIdPlaceholder = sql.match(/"feeds"\."user_id" = \$(\d+)/);
+    expect(idPlaceholder).not.toBeNull();
+    expect(userIdPlaceholder).not.toBeNull();
+    expect(params[Number(idPlaceholder![1]) - 1]).toBe(3);
+    expect(params[Number(userIdPlaceholder![1]) - 1]).toBe(7);
   });
 
   it("returns queued:true and the eventId on success", async () => {
@@ -152,7 +159,7 @@ describe("POST /api/feeds/:id/retry", () => {
     expect(loggedPayload.error).toBe("emit exploded");
   });
 
-  it("allows retrying a paused-eligible source type like youtube", async () => {
+  it("allows retrying a youtube feed", async () => {
     mockFindFirst.mockResolvedValue({
       id: 4,
       source: "youtube",

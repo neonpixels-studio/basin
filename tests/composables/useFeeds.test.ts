@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { effectScope } from "vue";
 import { useFeeds } from "~/composables/useFeeds";
 import { useToast } from "~/composables/useToast";
 
@@ -545,6 +546,95 @@ describe("useFeeds", () => {
 
       expect(toast.msg).toBe("Failed to queue retry — try again");
       expect(isRetrying(failingFeed.id)).toBe(false);
+    });
+
+    it("does not overwrite the add-feed form's error while polling in the background", async () => {
+      mockFetch.mockResolvedValueOnce([failingFeed]); // load
+      mockFetch.mockResolvedValueOnce({ queued: true }); // retry POST
+      mockFetch.mockResolvedValueOnce([{ ...failingFeed, syncStatus: "ok" }]); // poll load
+      const { load, retryFeed, error } = useFeeds();
+      await load();
+      error.value = "Failed to add feed — check the URL and try again";
+
+      const retrying = retryFeed(failingFeed.id);
+      await vi.advanceTimersByTimeAsync(1500);
+      await retrying;
+
+      // The poll uses a silent refetch, not load() — load() clears `error`
+      // as a side effect, which would wipe an unrelated add-feed error out
+      // from under the user mid-poll.
+      expect(error.value).toBe(
+        "Failed to add feed — check the URL and try again",
+      );
+    });
+
+    it("shows a specific message and refreshes when the feed already recovered (409)", async () => {
+      const recovered = { ...failingFeed, syncStatus: "ok" as const };
+      mockFetch.mockResolvedValueOnce([failingFeed]); // load
+      const conflict = Object.assign(
+        new Error("Feed is not in a failing state"),
+        {
+          statusCode: 409,
+        },
+      );
+      mockFetch.mockRejectedValueOnce(conflict); // retry POST 409s
+      mockFetch.mockResolvedValueOnce([recovered]); // refreshItems after the 409
+      const { load, retryFeed, items } = useFeeds();
+      await load();
+
+      await retryFeed(failingFeed.id);
+
+      expect(toast.msg).toBe(
+        "This feed no longer needs a retry — refreshing its status",
+      );
+      expect(items.value[0].syncStatus).toBe("ok");
+    });
+
+    it("stops polling without a toast when the feed is deleted mid-poll", async () => {
+      mockFetch.mockResolvedValueOnce([failingFeed]); // load
+      mockFetch.mockResolvedValueOnce({ queued: true }); // retry POST
+      mockFetch.mockResolvedValueOnce([]); // poll load — feed no longer exists
+      const { load, retryFeed, isRetrying } = useFeeds();
+      await load();
+
+      const retrying = retryFeed(failingFeed.id);
+      await vi.advanceTimersByTimeAsync(1500);
+      await retrying;
+
+      expect(toast.msg).toBe("");
+      expect(isRetrying(failingFeed.id)).toBe(false);
+    });
+
+    it("keeps polling instead of treating a failed background refresh as resolved", async () => {
+      mockFetch.mockResolvedValueOnce([failingFeed]); // load
+      mockFetch.mockResolvedValueOnce({ queued: true }); // retry POST
+      mockFetch.mockRejectedValueOnce(new Error("network blip")); // poll refresh #1 fails
+      mockFetch.mockResolvedValueOnce([{ ...failingFeed, syncStatus: "ok" }]); // poll refresh #2 succeeds
+      const { load, retryFeed } = useFeeds();
+      await load();
+
+      const retrying = retryFeed(failingFeed.id);
+      await vi.advanceTimersByTimeAsync(1500 * 2);
+      await retrying;
+
+      expect(toast.msg).toBe("Feed synced successfully");
+    });
+
+    it("stops polling and drops the outcome toast once the owning scope is disposed", async () => {
+      mockFetch.mockResolvedValueOnce([failingFeed]); // load
+      mockFetch.mockResolvedValueOnce({ queued: true }); // retry POST
+      // No further mock is required — the poll must not run once disposed.
+      const scope = effectScope();
+      const feeds = scope.run(() => useFeeds())!;
+      await feeds.load();
+
+      const retrying = feeds.retryFeed(failingFeed.id);
+      scope.stop();
+      await vi.advanceTimersByTimeAsync(1500 * 5);
+      await retrying;
+
+      expect(toast.msg).toBe("");
+      expect(mockFetch).toHaveBeenCalledTimes(2);
     });
   });
 });

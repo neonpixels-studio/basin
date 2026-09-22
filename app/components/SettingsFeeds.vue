@@ -76,6 +76,13 @@ function cancelDetection() {
 function needsAttention(feed) {
   return feed.syncStatus === "error";
 }
+
+// A paused feed (over the Free plan's source cap) always 409s the retry
+// endpoint — see server/api/feeds/[id]/retry.post.ts — so the control is
+// hidden rather than offering an action that can never succeed.
+function canRetry(feed) {
+  return needsAttention(feed) && !feed.paused;
+}
 </script>
 
 <template>
@@ -159,7 +166,7 @@ function needsAttention(feed) {
           Needs attention
         </span>
         <button
-          v-if="needsAttention(fd)"
+          v-if="canRetry(fd)"
           class="icon-btn"
           :title="isRetrying(fd.id) ? 'Retrying…' : 'Retry now'"
           :disabled="isRetrying(fd.id)"

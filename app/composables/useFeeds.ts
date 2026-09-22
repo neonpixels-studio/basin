@@ -1,3 +1,5 @@
+import { onScopeDispose } from "vue";
+import { captureException } from "~/lib/sentry";
 import { downloadTextFile } from "~/utils/downloadTextFile";
 
 export interface Feed {
@@ -11,6 +13,7 @@ export interface Feed {
   syncStatus?: "ok" | "error";
   syncError?: string | null;
   syncFailedAt?: string | null;
+  paused?: boolean;
 }
 
 export class DiscoveryError extends Error {
@@ -21,21 +24,42 @@ export class DiscoveryError extends Error {
 }
 
 const STATUS_NO_FEED_FOUND = 422;
+const STATUS_RETRY_NOT_APPLICABLE = 409;
 const OPML_EXPORT_FILENAME = "feeds.opml";
 const OPML_EXPORT_MIME_TYPE = "text/x-opml";
+
+// Shared by every $fetch call site here that needs to branch on the HTTP
+// status of a failure (discoverFeedUrl's 422 check, retryFeed's 409 check)
+// instead of treating every rejection as the same generic failure.
+function extractStatusCode(error: unknown): number | null {
+  const hasNumericStatusCode =
+    error instanceof Error &&
+    "statusCode" in error &&
+    typeof (error as { statusCode: unknown }).statusCode === "number";
+
+  return hasNumericStatusCode
+    ? (error as { statusCode: number }).statusCode
+    : null;
+}
 
 // A "Retry now" click queues an async, out-of-process resync (see
 // server/api/feeds/[id]/retry.post.ts) — there is no synchronous result to
 // return. Polling the feed list a bounded number of times gives the row a
 // real chance to reflect the outcome without waiting indefinitely: most
 // permanent failures (the only kind that reach the "Needs attention" state)
-// resolve or re-fail within a few seconds of the adapter running.
+// resolve or re-fail within a few seconds of the adapter running. A retry
+// that is still mid-flight when polling gives up is not re-queued
+// automatically — the row simply goes back to "Needs attention" and a later
+// click (or the next scheduled tick) picks it up again.
 const RETRY_POLL_INTERVAL_MS = 1500;
 const RETRY_POLL_MAX_ATTEMPTS = 5;
 const RETRY_QUEUE_ERROR_MESSAGE = "Failed to queue retry — try again";
+const RETRY_NOT_APPLICABLE_MESSAGE =
+  "This feed no longer needs a retry — refreshing its status";
 const RETRY_STILL_PENDING_MESSAGE =
   "Retry queued — still checking, refresh shortly to see the result";
 const RETRY_SUCCESS_MESSAGE = "Feed synced successfully";
+const RETRY_FAILED_FALLBACK_MESSAGE = "Retry failed — feed is still erroring";
 
 export interface OpmlSkippedFeed {
   url: string;
@@ -76,6 +100,14 @@ export function useFeeds() {
   // membership here to show its own spinner instead of a single global flag,
   // since more than one failing feed can be retried at once.
   const retryingFeedIds = ref<number[]>([]);
+  // Set once this composable instance's owning effect scope tears down (a
+  // component unmount in practice). A retry poll can outlive the row that
+  // started it if the user navigates away mid-poll; this stops it from
+  // surfacing a toast for a screen nobody is looking at anymore.
+  let disposed = false;
+  onScopeDispose(() => {
+    disposed = true;
+  });
 
   async function load() {
     loading.value = true;
@@ -101,14 +133,7 @@ export function useFeeds() {
       });
       return result.feedUrl;
     } catch (err: unknown) {
-      const statusCode =
-        err instanceof Error &&
-        "statusCode" in err &&
-        typeof (err as { statusCode: unknown }).statusCode === "number"
-          ? (err as { statusCode: number }).statusCode
-          : null;
-
-      if (statusCode === STATUS_NO_FEED_FOUND) {
+      if (extractStatusCode(err) === STATUS_NO_FEED_FOUND) {
         return null;
       }
 
@@ -277,8 +302,37 @@ export function useFeeds() {
     return retryingFeedIds.value.includes(id);
   }
 
+  function findFeed(id: number): Feed | undefined {
+    return items.value.find((item) => item.id === id);
+  }
+
   function sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  // Every retry-flow toast routes through here so a poll that outlives its
+  // component (see the `disposed` comment above) drops its message instead
+  // of surfacing it for an unmounted row.
+  function notifyIfActive(message: string): void {
+    if (!disposed) {
+      showToast(message);
+    }
+  }
+
+  // Refetches the feed list without touching `loading`/`error` — unlike
+  // load(), this runs silently in the background while a retry poll is in
+  // flight, so it must never clobber the state the add-feed form's error
+  // message or the initial-load spinner depend on (both share `error` with
+  // load()). A failed refetch is reported to Sentry and otherwise ignored:
+  // the poll loop treats it as inconclusive and just tries again next attempt.
+  async function refreshItems(): Promise<void> {
+    try {
+      items.value = await $fetch<Feed[]>("/api/feeds", {
+        headers: await buildAuthHeaders(),
+      });
+    } catch (err) {
+      captureException(err, { stage: "feed-retry-poll-refresh" });
+    }
   }
 
   // Re-reads the feed list and reports how this one feed's row looks now,
@@ -289,8 +343,8 @@ export function useFeeds() {
     feedId: number,
     baselineSyncFailedAt: string | null | undefined,
   ): Promise<RetryOutcome> {
-    await load();
-    const feed = items.value.find((item) => item.id === feedId);
+    await refreshItems();
+    const feed = findFeed(feedId);
     if (!feed) {
       return "deleted";
     }
@@ -303,6 +357,26 @@ export function useFeeds() {
     return "unresolved";
   }
 
+  // Reports one poll outcome (toast + row state already reflect it via
+  // refreshItems()) and says whether polling is done — "unresolved" is the
+  // only outcome that lets the loop keep going.
+  function reportRetryOutcome(outcome: RetryOutcome, feedId: number): boolean {
+    if (outcome === "deleted") {
+      return true;
+    }
+    if (outcome === "succeeded") {
+      notifyIfActive(RETRY_SUCCESS_MESSAGE);
+      return true;
+    }
+    if (outcome === "failed-again") {
+      notifyIfActive(
+        findFeed(feedId)?.syncError ?? RETRY_FAILED_FALLBACK_MESSAGE,
+      );
+      return true;
+    }
+    return false;
+  }
+
   // Polls a bounded number of times for the retry to actually land — see the
   // RETRY_POLL_* constants for why this is bounded rather than open-ended.
   async function pollForRetryOutcome(
@@ -311,26 +385,19 @@ export function useFeeds() {
   ): Promise<void> {
     for (let attempt = 0; attempt < RETRY_POLL_MAX_ATTEMPTS; attempt++) {
       await sleep(RETRY_POLL_INTERVAL_MS);
+      if (disposed) {
+        return;
+      }
       const outcome = await checkRetryOutcome(feedId, baselineSyncFailedAt);
-
-      if (outcome === "deleted") {
-        return;
-      }
-      if (outcome === "succeeded") {
-        showToast(RETRY_SUCCESS_MESSAGE);
-        return;
-      }
-      if (outcome === "failed-again") {
-        const feed = items.value.find((item) => item.id === feedId);
-        showToast(feed?.syncError ?? "Retry failed — feed is still erroring");
+      if (reportRetryOutcome(outcome, feedId)) {
         return;
       }
     }
-    showToast(RETRY_STILL_PENDING_MESSAGE);
+    notifyIfActive(RETRY_STILL_PENDING_MESSAGE);
   }
 
   async function retryFeed(id: number): Promise<void> {
-    const feed = items.value.find((item) => item.id === id);
+    const feed = findFeed(id);
     if (!feed || isRetrying(id)) {
       return;
     }
@@ -343,13 +410,20 @@ export function useFeeds() {
         headers: await buildAuthHeaders(),
       });
       await pollForRetryOutcome(id, baselineSyncFailedAt);
-    } catch {
-      showToast(RETRY_QUEUE_ERROR_MESSAGE);
-    } finally {
-      const index = retryingFeedIds.value.indexOf(id);
-      if (index !== -1) {
-        retryingFeedIds.value.splice(index, 1);
+    } catch (err) {
+      // 409 means the row moved on without us (already recovered, or paused
+      // mid-click) — refreshing picks up whatever it actually is now instead
+      // of telling the user to retry a request that will just 409 again.
+      if (extractStatusCode(err) === STATUS_RETRY_NOT_APPLICABLE) {
+        notifyIfActive(RETRY_NOT_APPLICABLE_MESSAGE);
+        await refreshItems();
+      } else {
+        notifyIfActive(RETRY_QUEUE_ERROR_MESSAGE);
       }
+    } finally {
+      retryingFeedIds.value = retryingFeedIds.value.filter(
+        (retryingId) => retryingId !== id,
+      );
     }
   }
 
@@ -367,7 +441,6 @@ export function useFeeds() {
     importing,
     exporting,
     importSummary,
-    retryingFeedIds,
     load,
     add,
     confirmAdd,

@@ -1,11 +1,11 @@
 import { AsyncWorkloadsClient } from "@netlify/async-workloads";
 import { and, inArray, eq } from "drizzle-orm";
 import { feeds } from "../db/schema";
-import { emitOnDemandSyncEvent } from "../utils/feedSyncEmit";
+import {
+  emitOnDemandSyncEvent,
+  SYNCABLE_SOURCE_TYPES,
+} from "../utils/feedSyncEmit";
 import type { SyncFeedEventData } from "../../netlify/functions/types";
-
-// Source types eligible for on-demand sync via async workloads.
-const SYNCABLE_SOURCE_TYPES = ["rss", "podcast", "youtube", "bluesky"] as const;
 
 async function fetchUserSyncableFeeds(userId: number) {
   return useDb().query.feeds.findMany({

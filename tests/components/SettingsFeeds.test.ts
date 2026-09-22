@@ -171,6 +171,17 @@ describe("SettingsFeeds", () => {
       expect(retryButtons).toHaveLength(0);
     });
 
+    it("does not show a Retry now control for a paused failing feed", () => {
+      // A paused feed always 409s /api/feeds/:id/retry (over the Free plan's
+      // source cap), so the control is hidden rather than offered and failing.
+      stubFeeds({ items: [{ ...failingItem, paused: true }] });
+      const wrapper = shallowMount(SettingsFeeds);
+      const retryButtons = wrapper
+        .findAll(".icon-btn")
+        .filter((button) => button.attributes("title")?.includes("Retry"));
+      expect(retryButtons).toHaveLength(0);
+    });
+
     it("calls retryFeed with the feed id when Retry now is clicked", async () => {
       const stub = stubFeeds({ items: [failingItem] });
       const wrapper = shallowMount(SettingsFeeds);
