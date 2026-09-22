@@ -1178,6 +1178,23 @@ describe("useFeedStore", () => {
           ...overrides,
         });
 
+        // Shared by every test below that needs a detached /api/search row
+        // standing in for an already-loaded state.items entry: same id,
+        // feedId, and guid as the loaded item (what makes resolveOpenedItem
+        // treat them as the same underlying item), everything else default.
+        const searchCopyOf = (
+          item: Record<string, unknown>,
+          overrides: Partial<SearchRow> = {},
+        ) =>
+          mapSearchRow(
+            mockDbRow({
+              id: item.id as number,
+              feedId: item.feedId as number,
+              guid: item.guid as string,
+              ...overrides,
+            }),
+          );
+
         it("enqueues a markRead action when opening an unread search result", async () => {
           const searchResult = mapSearchRow(mockDbRow({ readAt: null }));
           expect(searchResult.unread).toBe(true);
@@ -1219,13 +1236,7 @@ describe("useFeedStore", () => {
           // to prove the resolution is identity-based, not field-copying: the
           // loaded row's own saved value must win, not whatever this fresh
           // search row happens to carry.
-          const searchCopy = mapSearchRow(
-            mockDbRow({
-              id: loadedItem.id as number,
-              feedId: loadedItem.feedId as number,
-              guid: loadedItem.guid as string,
-            }),
-          );
+          const searchCopy = searchCopyOf(loadedItem);
 
           await feed.openItem(searchCopy);
           expect(state.activeItem).toBe(loadedItem);
@@ -1257,6 +1268,84 @@ describe("useFeedStore", () => {
           // toRaw unwraps that Proxy back to the original target.
           expect(toRaw(state.activeItem as object)).toBe(searchCopy);
           expect(state.activeItem?.saved).toBe(true);
+        });
+
+        // Regression: #289 (unread half). Mirrors the toggleSave reconciliation
+        // test above, but for the read/unread flag itself: opening a search
+        // row for an already-loaded item must clear `unread` on the canonical
+        // state.items entry (not just the detached search row), so the
+        // dashboard's own copy — and unreadCount, which is derived straight
+        // from state.items — reflect the read without a reload.
+        it("clears unread on the canonical state.items entry so unreadCount reflects it", async () => {
+          const loadedItem = state.items[0]; // seeded with id: 1, unread: true
+          expect(feed.unreadCount).toBe(2); // ids 1 and 3 start unread
+          const searchCopy = searchCopyOf(loadedItem, { readAt: null });
+          expect(searchCopy).not.toBe(loadedItem);
+          expect(searchCopy.unread).toBe(true);
+
+          await feed.openItem(searchCopy);
+
+          expect(state.activeItem).toBe(loadedItem);
+          expect(loadedItem.unread).toBe(false);
+          expect(feed.unreadCount).toBe(1);
+          // The markRead sync fired too, not just the local state flip.
+          expect(queueAction).toHaveBeenCalledOnce();
+          const [action, payload] = queueAction.mock.calls[0];
+          expect(action).toBe("markRead");
+          expect(payload.feedId).toBe(loadedItem.feedId);
+          expect(payload.guid).toBe(loadedItem.guid);
+        });
+
+        // Regression: #289 (detailNav half). detailNav walks visibleItems and
+        // re-opens whatever it finds there, so once openItem resolves a
+        // search-opened row to its canonical state.items entry, navigating
+        // away from and back to that item must land on the same canonical
+        // object each time — never re-surface the detached search row.
+        it("lets detailNav navigate to and from an item opened via search", async () => {
+          const loadedItem = state.items[0]; // id: 1
+          // readAt here doesn't gate the markRead sync: openItem's
+          // wasUnread check runs against the resolved canonical item (still
+          // seeded unread: true), not this detached row's own derived
+          // unread — asserted below, not just claimed in this comment.
+          const searchCopy = searchCopyOf(loadedItem, {
+            readAt: new Date("2026-01-01T00:00:00Z"),
+          });
+
+          await feed.openItem(searchCopy);
+          expect(state.activeItem).toBe(loadedItem);
+          expect(loadedItem.unread).toBe(false);
+          expect(queueAction).toHaveBeenCalledOnce();
+
+          // Precondition: visibleItems must hold state.items' own order (no
+          // active filter/unread-only narrowing it) with id 2 right after id
+          // 1, or a failure below would be about seed/filter drift rather
+          // than the reconciliation this test targets.
+          expect(feed.visibleItems.slice(0, 2)).toEqual([
+            loadedItem,
+            state.items[1],
+          ]);
+
+          // detailNav is synchronous (it fires openItem without awaiting or
+          // returning it), so the reads below are safe without a flush: they
+          // land after openItem's synchronous prelude — which is exactly
+          // where it assigns state.activeItem — and before its first
+          // `await` (the markRead sync, gated on the target item already
+          // being read here and thus a no-op).
+          feed.detailNav(1);
+          expect(state.activeItem).toBe(state.items[1]); // id: 2
+
+          feed.detailNav(-1);
+          expect(state.activeItem).toBe(loadedItem);
+
+          // Flush the fire-and-forget openItem promises detailNav started
+          // (id 2 was already read, and loadedItem was already marked read
+          // above, so neither leg should have queued a sync) and confirm
+          // navigating back didn't regress loadedItem or double-fire
+          // markRead against the canonical item.
+          await Promise.resolve();
+          await Promise.resolve();
+          expect(queueAction).toHaveBeenCalledOnce();
+          expect(loadedItem.unread).toBe(false);
         });
       });
     });
