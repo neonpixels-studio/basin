@@ -40,14 +40,17 @@ export function useUserSettings() {
       const headers = await buildAuthHeaders();
       return await $fetch<UserSettings>("/api/settings/reading", { headers });
     } catch (caughtError) {
-      // This is the layer that actually holds the real fetch failure —
-      // callers (e.g. useAppearanceStore.loadFromDb) only ever see the
-      // static "Failed to load settings" string via `error`, and load()
-      // itself never rejects, so this is the only place a real settings-load
-      // failure can reach Sentry at all.
+      // Rethrow (rather than fall back to defaults) so a caller can tell a
+      // failed fetch apart from a genuine "no settings row yet" response —
+      // the API itself already resolves that case successfully with
+      // USER_SETTINGS_DEFAULTS baked in (server/api/settings/reading.get.ts).
+      // Confusing the two let a failed fetch overwrite a perfectly good
+      // settings snapshot (#285). Reported here with the real caught error —
+      // a caller's own catch (e.g. useAppearanceStore.loadFromDb) may report
+      // again from its own defensive backstop, under a different `stage`.
       captureException(caughtError, { stage: "user-settings-load" });
       error.value = "Failed to load settings";
-      return { ...USER_SETTINGS_DEFAULTS };
+      throw caughtError;
     } finally {
       loading.value = false;
     }

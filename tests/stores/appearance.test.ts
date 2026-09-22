@@ -3,6 +3,10 @@ import { flushPromises } from "@vue/test-utils";
 import { setActivePinia, createPinia } from "pinia";
 import { ref, nextTick } from "vue";
 import { useAppearanceStore } from "~/stores/appearance";
+// Real composable (not a stub) — the #285 regression test below needs the
+// actual load()-rejects-on-fetch-failure contract, not a mock that already
+// assumes it.
+import { useUserSettings } from "~/composables/useUserSettings";
 // @sentry/nuxt is mocked once, globally, in tests/setup.ts — see that file's
 // comment for why a module-scoped mock here instead would silently miss the
 // calls app/lib/sentry.ts makes.
@@ -400,5 +404,124 @@ describe("useAppearanceStore loadFromDb ownership guard", () => {
 
     expect(brokenUseUserSettings).toHaveBeenCalledTimes(2);
     expect(store.state.theme).toBe(userASettings.theme);
+  });
+});
+
+// Regression (#285): useUserSettings().load() used to swallow a transient
+// fetch failure into a synthetic USER_SETTINGS_DEFAULTS return. loadFromDb()
+// then applied that fallback via applyLoadedSettings — overwriting a good
+// cached snapshot in both `state` and localStorage — and, on the next local
+// edit, PATCHing those defaults to the server, resetting a real account's
+// appearance settings. This suite exercises the *real* useUserSettings
+// composable (only $fetch is stubbed) end-to-end through the store, so it
+// actually proves load() rejecting — not a mock that already assumes it — is
+// what keeps loadFromDb() from ever reaching applyLoadedSettings on failure.
+describe("useAppearanceStore loadFromDb transient fetch failure (#285)", () => {
+  const cachedSettings = {
+    theme: "dark",
+    accentColor: "rose",
+    readingFont: "mono",
+    spacing: "compact",
+    radius: "round",
+    autoplayMediaPreviews: true,
+    compactNotifications: true,
+  };
+
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    localStorage.clear();
+    // Sentry is a module-level mock shared across this whole file — clear
+    // its call history so an earlier test's captureException call can't
+    // make this test's Sentry assertion pass regardless of what it did.
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("preserves a good cached snapshot and does not PATCH defaults when the settings fetch fails", async () => {
+    const userId = "user-transient-failure";
+    const cacheKey = `basin-appearance-cache:${userId}`;
+    localStorage.setItem(cacheKey, JSON.stringify(cachedSettings));
+
+    const isLoaded = ref(false);
+    const isSignedIn = ref(false);
+    const userIdRef = ref<string | null>(null);
+    vi.stubGlobal("useAuth", () => ({
+      isLoaded,
+      isSignedIn,
+      userId: userIdRef,
+      getToken: { value: vi.fn().mockResolvedValue(null) },
+    }));
+    // The real composable — proves the fix at the source: $fetch rejecting
+    // must surface as load() rejecting, not resolving with defaults.
+    vi.stubGlobal("useUserSettings", useUserSettings);
+    const fetchError = new Error("network down");
+    const fetchMock = vi.fn().mockRejectedValue(fetchError);
+    vi.stubGlobal("$fetch", fetchMock);
+
+    const store = useAppearanceStore();
+    store.init();
+
+    isLoaded.value = true;
+    isSignedIn.value = true;
+    userIdRef.value = userId;
+    await nextTick();
+    await flushPromises();
+
+    // The cache hit applies synchronously before the (failing) DB fetch —
+    // it must still be what's in state once the failure is handled, not
+    // reset to DEFAULTS.
+    expect(store.state.theme).toBe(cachedSettings.theme);
+    expect(store.state.accent).toBe(cachedSettings.accentColor);
+    expect(store.state.reading).toBe(cachedSettings.readingFont);
+    expect(store.state.density).toBe(cachedSettings.spacing);
+    expect(store.state.radius).toBe(cachedSettings.radius);
+    expect(store.state.autoplay).toBe(cachedSettings.autoplayMediaPreviews);
+    expect(store.state.compactNotif).toBe(cachedSettings.compactNotifications);
+
+    // The failed fetch must not clobber the good cache entry with defaults.
+    expect(JSON.parse(localStorage.getItem(cacheKey)!)).toMatchObject(
+      cachedSettings,
+    );
+
+    // The failure still uncloaks the UI (per loadFromDb()'s existing
+    // every-failure-path-uncloaks contract) and reports the real fetch
+    // error to Sentry — from useUserSettings().load() itself, and/or from
+    // loadFromDb()'s own defensive-backstop catch (see that catch block's
+    // comment); either way this asserts the real error reached Sentry, not
+    // the generic "Failed to load settings" string.
+    expect(store.ready).toBe(true);
+    expect(SentrySDK.captureException).toHaveBeenCalledWith(fetchError);
+
+    // The vacuous version of this check — asserting no PATCH happened
+    // with no local edit ever made — would pass even on the old,
+    // defaults-swallowing code, since nothing edits `state` on its own.
+    // Driving an edit through the *same* (still-good) cached state this
+    // failure preserved is what actually proves the bug's second half —
+    // "resetting a real account's settings to defaults" — is fixed: the
+    // resulting PATCH must carry the cached values, never
+    // USER_SETTINGS_DEFAULTS.
+    fetchMock.mockClear();
+    fetchMock.mockResolvedValue({ ...cachedSettings, accentColor: "teal" });
+    store.state.accent = "teal";
+    // schedulePersist() defers via setTimeout(0) (a macrotask) — see that
+    // function's comment in app/stores/appearance.ts for why a plain
+    // flushPromises() (a microtask) isn't sufficient here.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await flushPromises();
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/settings/reading",
+      expect.objectContaining({
+        method: "PATCH",
+        body: expect.objectContaining({
+          theme: cachedSettings.theme,
+          accentColor: "teal",
+          autoplayMediaPreviews: cachedSettings.autoplayMediaPreviews,
+        }),
+      }),
+    );
   });
 });
