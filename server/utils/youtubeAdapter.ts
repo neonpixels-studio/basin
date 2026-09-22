@@ -12,6 +12,11 @@ const YOUTUBE_PLAYLIST_ITEMS_URL =
   process.env.YOUTUBE_PLAYLIST_ITEMS_URL ??
   "https://www.googleapis.com/youtube/v3/playlistItems";
 
+// Shared timeout for every outbound call in this file (token refresh,
+// subscriptions, uploads) so one slow/hung Google endpoint can't stall a
+// sync indefinitely.
+const YOUTUBE_FETCH_TIMEOUT_MS = 10_000;
+
 export interface YouTubeCredentials {
   accessToken: string;
   refreshToken: string | null;
@@ -79,7 +84,7 @@ export async function refreshAccessToken(
   const response = await fetch(GOOGLE_TOKEN_URL, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    signal: AbortSignal.timeout(10_000),
+    signal: AbortSignal.timeout(YOUTUBE_FETCH_TIMEOUT_MS),
     body: new URLSearchParams({
       grant_type: "refresh_token",
       refresh_token: refreshToken,
@@ -152,7 +157,7 @@ export async function fetchYouTubeSubscriptions(
 
     const response = await fetch(`${YOUTUBE_SUBSCRIPTIONS_URL}?${params}`, {
       headers: { Authorization: `Bearer ${accessToken}` },
-      signal: AbortSignal.timeout(10_000),
+      signal: AbortSignal.timeout(YOUTUBE_FETCH_TIMEOUT_MS),
     });
 
     if (!response.ok) {
@@ -234,7 +239,11 @@ const PAGE_LIMIT = 50;
 // long time via feedSyncBackoff.ts (which can push retries out to 24h) can't
 // turn this into an unbounded loop inside the sync function. 20 pages * 50
 // items = up to 1000 uploads per sync, comfortably above any realistic gap
-// between two periodic syncs.
+// between two periodic syncs. The caller (netlify/functions/sync-feed.ts) is
+// a Netlify Async Workload (see its asyncWorkloadFn/ErrorRetryAfterDelay
+// imports), not a classic short-timeout serverless function, so a worst-case
+// walk of 20 sequential requests is within its execution budget rather than
+// risking a mid-sync timeout.
 const MAX_PAGES = 20;
 
 // First sync (lastSyncedAt is null — no watermark to page toward) is capped
@@ -282,10 +291,19 @@ export async function fetchChannelUploadsPage(
 
   const response = await fetch(`${YOUTUBE_PLAYLIST_ITEMS_URL}?${params}`, {
     headers: { Authorization: `Bearer ${accessToken}` },
-    signal: AbortSignal.timeout(10_000),
+    signal: AbortSignal.timeout(YOUTUBE_FETCH_TIMEOUT_MS),
   });
 
   if (!response.ok) {
+    // A channel with no public uploads has no uploads playlist to fetch, so
+    // this specific, deterministically-derived playlist id 404s
+    // (playlistNotFound) rather than returning an empty page. Treat that the
+    // same as an empty page instead of throwing, so a channel that simply
+    // hasn't posted anything doesn't get stuck failing every sync forever.
+    if (response.status === 404) {
+      return { items: [] };
+    }
+
     throw new Error(
       `Channel uploads fetch failed for playlist ${playlistId}: ${response.status} ${response.statusText}`,
     );
@@ -368,6 +386,28 @@ function isPastPaginationWatermark(
   return orderDate != null && orderDate <= watermark;
 }
 
+// Stopping pagination exactly at lastSyncedAt still has two narrow gaps: a
+// video that was added to the playlist (snippet.publishedAt) shortly before
+// the previous sync but only became public afterward (premieres/scheduled
+// uploads — see PlaylistItemContentDetails), and API indexing lag placing an
+// item's add time just ahead of when the previous sync actually observed it.
+// Both would otherwise be walked past and never re-checked. Widening the
+// pagination stop point by this overlap re-walks a little already-synced
+// ground on every sync, which is safe and cheap: feedItems dedupes on
+// (feedId, guid) — see upsertFeedItems in sync-feed.ts — so re-collecting an
+// already-stored video is a harmless no-op, not a duplicate.
+const PAGINATION_WATERMARK_OVERLAP_MS = 24 * 60 * 60 * 1000;
+
+function resolvePaginationStopWatermark(
+  lastSyncedAt: Date | null,
+): Date | null {
+  if (!lastSyncedAt) {
+    return null;
+  }
+
+  return new Date(lastSyncedAt.getTime() - PAGINATION_WATERMARK_OVERLAP_MS);
+}
+
 // An item with no resolvable publish date can't be placed relative to the
 // watermark, so — matching the previous filterItemsByWatermark semantics —
 // it's excluded from the results once a watermark exists. Unlike
@@ -388,14 +428,19 @@ interface PageCollectionResult {
 
 // Maps and filters one page's worth of playlist items: drops malformed
 // entries (deleted/unavailable videos can come back without a resourceId),
-// stops at the first item that has caught up to the watermark, and excludes
-// (without stopping) any item whose publish date can't be resolved — see
-// isPastPaginationWatermark/isExcludedByMissingDate for why those are different.
+// stops once an item's playlist order has caught up to
+// paginationStopWatermark (lastSyncedAt minus PAGINATION_WATERMARK_OVERLAP_MS
+// — see resolvePaginationStopWatermark), and excludes (without stopping) any
+// item whose publish date can't be resolved. lastSyncedAt itself — not the
+// widened stop watermark — governs the missing-date exclusion, since that
+// check answers "is a watermark active at all," not "where does pagination
+// stop."
 function collectPageItems(
   pageItems: PlaylistItem[],
   feedId: number,
   channelTitle: string,
   lastSyncedAt: Date | null,
+  paginationStopWatermark: Date | null,
 ): PageCollectionResult {
   const items: NewFeedItem[] = [];
 
@@ -404,7 +449,10 @@ function collectPageItems(
       continue;
     }
 
-    if (lastSyncedAt && isPastPaginationWatermark(item.snippet, lastSyncedAt)) {
+    if (
+      paginationStopWatermark &&
+      isPastPaginationWatermark(item.snippet, paginationStopWatermark)
+    ) {
       return { items, reachedWatermark: true };
     }
 
@@ -463,6 +511,7 @@ export async function fetchNewUploadsForChannel(
   let pageToken: string | undefined;
   let pagesFetched = 0;
   const pageLimit = lastSyncedAt ? MAX_PAGES : FIRST_SYNC_PAGE_LIMIT;
+  const paginationStopWatermark = resolvePaginationStopWatermark(lastSyncedAt);
 
   while (pagesFetched < pageLimit) {
     const page = await fetchChannelUploadsPage(
@@ -482,6 +531,7 @@ export async function fetchNewUploadsForChannel(
       feedId,
       channelTitle,
       lastSyncedAt,
+      paginationStopWatermark,
     );
     items.push(...pageResults);
 

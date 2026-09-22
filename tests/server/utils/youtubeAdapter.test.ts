@@ -638,7 +638,14 @@ describe("fetchNewUploadsForChannel", () => {
     expect(mockFetch).toHaveBeenCalledTimes(1);
   });
 
-  it("excludes items published at exactly the watermark, matching the old RSS-based semantics", async () => {
+  // A video added to the playlist just before the previous sync can go
+  // public only afterward (premieres/scheduled uploads), or the API can lag
+  // slightly behind real time — either way, an item right at the exact
+  // watermark boundary might actually be new. Rather than exclude it
+  // outright, pagination now stops PAGINATION_WATERMARK_OVERLAP_MS (24h)
+  // *before* the watermark and lets feedItems' (feedId, guid) dedupe absorb
+  // any already-synced items re-collected in that window.
+  it("includes an item at exactly the watermark, relying on dedupe rather than excluding it outright", async () => {
     const watermark = new Date("2024-05-01T00:00:00Z");
     mockPlaylistPages({
       items: [
@@ -660,8 +667,41 @@ describe("fetchNewUploadsForChannel", () => {
       watermark,
       "token",
     );
-    expect(result).toHaveLength(1);
-    expect(result[0].guid).toBe("yt:video:new");
+    const guids = result.map((item) => item.guid);
+    expect(guids).toContain("yt:video:new");
+    expect(guids).toContain("yt:video:exact");
+  });
+
+  it("stops pagination once an item's playlist-order date is past the widened (watermark minus 24h) stop point", async () => {
+    const watermark = new Date("2024-05-01T00:00:00Z");
+    mockPlaylistPages({
+      items: [
+        makePlaylistItem({
+          resourceId: { videoId: "new" },
+          publishedAt: "2024-06-01T00:00:00Z",
+        }),
+        makePlaylistItem({
+          resourceId: { videoId: "within-overlap" },
+          publishedAt: "2024-05-01T00:00:00Z",
+        }),
+        makePlaylistItem({
+          resourceId: { videoId: "well-past-overlap" },
+          publishedAt: "2024-01-01T00:00:00Z",
+        }),
+      ],
+    });
+
+    const result = await fetchNewUploadsForChannel(
+      "UCtest",
+      1,
+      "Channel",
+      watermark,
+      "token",
+    );
+    const guids = result.map((item) => item.guid);
+    expect(guids).toContain("yt:video:new");
+    expect(guids).toContain("yt:video:within-overlap");
+    expect(guids).not.toContain("yt:video:well-past-overlap");
   });
 
   // Regression test for the silent-skip bug (#288): the channel RSS feed
@@ -771,39 +811,90 @@ describe("fetchNewUploadsForChannel", () => {
   it("logs a warning when it stops at MAX_PAGES without reaching the watermark", async () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
-    // A watermark far enough in the past that MAX_PAGES worth of items,
-    // published newest-first down to 2024-06-01, never reaches it — keeps
-    // the loop under the returning-sync page cap (MAX_PAGES) rather than the
-    // first-sync one (a null watermark would only ever fetch one page).
-    mockFetch.mockImplementation(() =>
-      Promise.resolve({
-        ok: true,
-        json: () =>
-          Promise.resolve({
-            items: [
-              makePlaylistItem({
-                resourceId: { videoId: "v" },
-                publishedAt: "2024-06-01T00:00:00Z",
-              }),
-            ],
-            nextPageToken: "always-more",
-          }),
-      }),
-    );
+    try {
+      // A watermark far enough in the past that MAX_PAGES worth of items,
+      // published newest-first down to 2024-06-01, never reaches it — keeps
+      // the loop under the returning-sync page cap (MAX_PAGES) rather than
+      // the first-sync one (a null watermark would only ever fetch one
+      // page).
+      mockFetch.mockImplementation(() =>
+        Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              items: [
+                makePlaylistItem({
+                  resourceId: { videoId: "v" },
+                  publishedAt: "2024-06-01T00:00:00Z",
+                }),
+              ],
+              nextPageToken: "always-more",
+            }),
+        }),
+      );
 
-    await fetchNewUploadsForChannel(
-      "UCtest",
-      1,
-      "Channel",
-      new Date("2020-01-01T00:00:00Z"),
-      "token",
-    );
+      await fetchNewUploadsForChannel(
+        "UCtest",
+        1,
+        "Channel",
+        new Date("2020-01-01T00:00:00Z"),
+        "token",
+      );
 
-    expect(errorSpy).toHaveBeenCalledWith(
-      expect.stringContaining("stopped after 20 pages for channel UCtest"),
-    );
+      expect(errorSpy).toHaveBeenCalledWith(
+        expect.stringContaining("stopped after 20 pages for channel UCtest"),
+      );
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
 
-    errorSpy.mockRestore();
+  it("does not log the MAX_PAGES warning when the watermark is reached on the final page", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const watermark = new Date("2024-05-01T00:00:00Z");
+
+    try {
+      // 20 pages (the MAX_PAGES cap) where every page's item is newer than
+      // the watermark except the very last one, which reaches it — and the
+      // API still reports a nextPageToken on that last page (there's more
+      // history behind it). Hitting the cap, reaching the watermark, and
+      // still having a next page all on the same page must not be logged as
+      // a truncation: the sync got everything it needed, it just also
+      // happened to be the last page it was willing to fetch.
+      let callCount = 0;
+      mockFetch.mockImplementation(() => {
+        callCount += 1;
+        const isFinalPage = callCount === 20;
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              items: [
+                makePlaylistItem({
+                  resourceId: { videoId: `v${callCount}` },
+                  publishedAt: isFinalPage
+                    ? "2024-04-01T00:00:00Z"
+                    : "2024-06-01T00:00:00Z",
+                }),
+              ],
+              nextPageToken: "more",
+            }),
+        });
+      });
+
+      await fetchNewUploadsForChannel(
+        "UCtest",
+        1,
+        "Channel",
+        watermark,
+        "token",
+      );
+
+      expect(errorSpy).not.toHaveBeenCalled();
+      expect(mockFetch).toHaveBeenCalledTimes(20);
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   it("stops after MAX_PAGES instead of paginating forever", async () => {
@@ -975,6 +1066,24 @@ describe("fetchNewUploadsForChannel", () => {
     await expect(
       fetchNewUploadsForChannel("UCtest", 1, "Channel", null, "token"),
     ).rejects.toThrow("Channel uploads fetch failed for playlist UUtest: 503");
+  });
+
+  it("treats a 404 (channel has no uploads playlist) as an empty page instead of throwing", async () => {
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 404,
+      statusText: "Not Found",
+    });
+
+    const result = await fetchNewUploadsForChannel(
+      "UCtest",
+      1,
+      "Channel",
+      null,
+      "token",
+    );
+
+    expect(result).toEqual([]);
   });
 
   it("throws when the channel id can't be turned into an uploads playlist id", async () => {
