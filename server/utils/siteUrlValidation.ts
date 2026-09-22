@@ -148,9 +148,44 @@ export function requireValidSiteUrlForBuild(
 // with what the runtime override would later produce, and so behavior is
 // unchanged (falls back to the existing NUXT_SITE_URL-derived value) when no
 // dedicated public override is configured anywhere.
+//
+// When a public override IS provided, validate it the same way
+// requireValidSiteUrlForBuild validates the private key for a production
+// build — an unvalidated bad value here would otherwise bake silently into
+// og:url/canonical instead of failing the build (canonicalUrl only ever
+// drops the tag, it can't fail the deploy the way this can). Outside a
+// production build (`nuxt dev`), any raw value passes through unvalidated,
+// same as the private key, so local dev isn't blocked by an incomplete
+// value.
 export function resolvePublicSiteUrl(
   rawPublicSiteUrl: string | undefined,
   rawSiteUrl: string | undefined,
+  isProductionBuild: boolean,
 ): string {
-  return rawPublicSiteUrl || rawSiteUrl || "";
+  if (!rawPublicSiteUrl) {
+    return rawSiteUrl || "";
+  }
+
+  if (!isProductionBuild) {
+    return rawPublicSiteUrl;
+  }
+
+  const validationResult = validateSiteUrl(rawPublicSiteUrl);
+  if (!validationResult.valid) {
+    throw new Error(
+      `${validationResult.message} — NUXT_PUBLIC_SITE_URL, when set, becomes ` +
+        "the public og:url/canonical base and must be a bare origin. Fix its " +
+        "value or unset it to fall back to NUXT_SITE_URL.",
+    );
+  }
+
+  if (!isSecureSiteOrigin(validationResult.origin)) {
+    throw new Error(
+      "NUXT_PUBLIC_SITE_URL must use https for a production build, matching " +
+        "NUXT_SITE_URL's own production requirement. Fix its value or unset " +
+        "it to fall back to NUXT_SITE_URL.",
+    );
+  }
+
+  return validationResult.origin;
 }

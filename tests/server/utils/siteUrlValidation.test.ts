@@ -173,28 +173,64 @@ describe("resolvePublicSiteUrl", () => {
       resolvePublicSiteUrl(
         "https://preview-123.example",
         "https://basin.example",
+        true,
       ),
     ).toBe("https://preview-123.example");
   });
 
   it("falls back to the private site URL when no public override is set", () => {
-    expect(resolvePublicSiteUrl(undefined, "https://basin.example")).toBe(
+    expect(resolvePublicSiteUrl(undefined, "https://basin.example", true)).toBe(
       "https://basin.example",
     );
-    expect(resolvePublicSiteUrl("", "https://basin.example")).toBe(
+    expect(resolvePublicSiteUrl("", "https://basin.example", true)).toBe(
       "https://basin.example",
     );
   });
 
   it("returns an empty string when neither is set", () => {
-    expect(resolvePublicSiteUrl(undefined, undefined)).toBe("");
-    expect(resolvePublicSiteUrl("", "")).toBe("");
+    expect(resolvePublicSiteUrl(undefined, undefined, true)).toBe("");
+    expect(resolvePublicSiteUrl("", "", true)).toBe("");
   });
 
-  it("does not validate its inputs — that's validateSiteUrl's job downstream", () => {
-    // resolvePublicSiteUrl only decides precedence; canonicalUrl (siteMeta.ts)
-    // and getConfiguredSiteUrl both independently validate the resulting
-    // runtimeConfig.public.siteUrl / siteUrl before using it.
-    expect(resolvePublicSiteUrl("not-a-url", undefined)).toBe("not-a-url");
+  it("returns the raw public override unvalidated outside a production build", () => {
+    expect(resolvePublicSiteUrl("not-a-url", undefined, false)).toBe(
+      "not-a-url",
+    );
+    expect(resolvePublicSiteUrl("http://basin.example", undefined, false)).toBe(
+      "http://basin.example",
+    );
+  });
+
+  it("returns the normalized origin, not the raw value, for a production build", () => {
+    expect(
+      resolvePublicSiteUrl("https://basin.example/", undefined, true),
+    ).toBe("https://basin.example");
+  });
+
+  it("throws for a production build when the public override is malformed", () => {
+    expect(() =>
+      resolvePublicSiteUrl("not-a-url", undefined, true),
+    ).toThrowError(/valid absolute URL/);
+  });
+
+  it("throws for a production build when the public override has a path", () => {
+    expect(() =>
+      resolvePublicSiteUrl("https://basin.example/app", undefined, true),
+    ).toThrowError(/bare origin/);
+  });
+
+  it("throws for a production build when the public override is http instead of https", () => {
+    expect(() =>
+      resolvePublicSiteUrl("http://basin.example", undefined, true),
+    ).toThrowError(/must use https for a production build/);
+  });
+
+  it("does not validate the private fallback — that's requireValidSiteUrlForBuild's job", () => {
+    // When no public override is set, resolvePublicSiteUrl just returns
+    // rawSiteUrl as-is; nuxt.config.ts's requireSiteUrlForBuild independently
+    // validates that same raw value for the private `siteUrl` key.
+    expect(resolvePublicSiteUrl(undefined, "not-a-url", true)).toBe(
+      "not-a-url",
+    );
   });
 });
