@@ -195,12 +195,14 @@ export default defineNuxtConfig({
       // its own `public` copy because the private `siteUrl` key above
       // resolves to empty once the client takes over after hydration.
       //
-      // Prefers NUXT_PUBLIC_SITE_URL over NUXT_SITE_URL, and Nitro re-applies
-      // that same preference from the *live* environment at every Netlify
-      // Function cold start — see resolvePublicSiteUrl's own comment for the
-      // full precedence/validation rules and why that's what keeps
-      // og:url/canonical correct on a runtime-configured deploy (e.g. a
-      // Deploy Preview) without a rebuild.
+      // This BUILD-time default prefers NUXT_PUBLIC_SITE_URL over
+      // resolvedSiteUrl — see resolvePublicSiteUrl's own comment for the
+      // full precedence/validation rules. Separately, at each Netlify
+      // Function cold start, Nitro does its own plain env-var substitution
+      // (no fallback, no validation) of a live NUXT_PUBLIC_SITE_URL over
+      // this default — that override, not this function, is what actually
+      // keeps og:url/canonical correct on a runtime-configured deploy (e.g.
+      // a Deploy Preview) without a rebuild.
       siteUrl: resolvePublicSiteUrl(
         process.env.NUXT_PUBLIC_SITE_URL,
         resolvedSiteUrl,

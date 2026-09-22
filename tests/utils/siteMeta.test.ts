@@ -26,6 +26,16 @@ describe("canonicalUrl", () => {
     expect(canonicalUrl("/about")).toBe("https://reader.example/about");
   });
 
+  it("accepts an http origin", () => {
+    // The runtime-override path (a Netlify env var, not a dotenvx file)
+    // skips nuxt.config.ts's build-time https requirement, so this must
+    // behave the same as a locally-configured http value, not reject it.
+    vi.stubGlobal("useRuntimeConfig", () => ({
+      public: { siteUrl: "http://localhost:3000" },
+    }));
+    expect(canonicalUrl("/pricing")).toBe("http://localhost:3000/pricing");
+  });
+
   it("changes output when the configured origin changes", () => {
     vi.stubGlobal("useRuntimeConfig", () => ({
       public: { siteUrl: "https://staging.reader.example" },

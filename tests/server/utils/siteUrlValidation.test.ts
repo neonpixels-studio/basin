@@ -192,6 +192,16 @@ describe("resolvePublicSiteUrl", () => {
     expect(resolvePublicSiteUrl("", "", true)).toBe("");
   });
 
+  it("falls back the same way outside a production build (nuxt dev)", () => {
+    expect(
+      resolvePublicSiteUrl(undefined, "http://localhost:3000", false),
+    ).toBe("http://localhost:3000");
+    expect(resolvePublicSiteUrl("", "http://localhost:3000", false)).toBe(
+      "http://localhost:3000",
+    );
+    expect(resolvePublicSiteUrl(undefined, undefined, false)).toBe("");
+  });
+
   it("returns the raw public override unvalidated outside a production build", () => {
     expect(resolvePublicSiteUrl("not-a-url", undefined, false)).toBe(
       "not-a-url",
