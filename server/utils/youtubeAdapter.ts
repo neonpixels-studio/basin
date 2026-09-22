@@ -1,4 +1,3 @@
-import { parseRssFeedFromXml } from "./rssAdapter";
 import type { NewFeedItem } from "./rssAdapter";
 
 // Configurable so tests can point these at a local mock server.
@@ -9,9 +8,9 @@ const YOUTUBE_SUBSCRIPTIONS_URL =
   process.env.YOUTUBE_SUBSCRIPTIONS_URL ??
   "https://www.googleapis.com/youtube/v3/subscriptions";
 
-const YOUTUBE_CHANNEL_RSS_BASE =
-  process.env.YOUTUBE_CHANNEL_RSS_BASE ??
-  "https://www.youtube.com/feeds/videos.xml";
+const YOUTUBE_PLAYLIST_ITEMS_URL =
+  process.env.YOUTUBE_PLAYLIST_ITEMS_URL ??
+  "https://www.googleapis.com/youtube/v3/playlistItems";
 
 export interface YouTubeCredentials {
   accessToken: string;
@@ -192,39 +191,214 @@ export async function fetchSubscriptionChannelIds(
   return subscriptions.map((subscription) => subscription.channelId);
 }
 
-export async function fetchChannelRssXml(channelId: string): Promise<string> {
-  const url = `${YOUTUBE_CHANNEL_RSS_BASE}?channel_id=${channelId}`;
-  const response = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+export interface PlaylistItemSnippet {
+  title?: string;
+  description?: string;
+  publishedAt?: string;
+  channelTitle?: string;
+  resourceId: {
+    videoId: string;
+  };
+  thumbnails?: {
+    high?: { url: string };
+    medium?: { url: string };
+    default?: { url: string };
+  };
+}
 
-  if (!response.ok) {
+export interface PlaylistItem {
+  snippet: PlaylistItemSnippet;
+}
+
+export interface PlaylistItemsPage {
+  items?: PlaylistItem[];
+  nextPageToken?: string;
+}
+
+// YouTube caps playlistItems.list pages at 50 results; requesting the max
+// minimizes how many pages (and quota units — 1 each) are needed to reach
+// the watermark.
+const PAGE_LIMIT = 50;
+
+// Safety cap mirroring blueskyAdapter's MAX_PAGES: bounds how many pages a
+// single sync will walk before giving up, so a channel with a very old or
+// missing watermark (first sync, or one that backed off for a long time via
+// feedSyncBackoff.ts, which can push retries out to 24h) can't turn this into
+// an unbounded loop inside the serverless sync function. 20 pages * 50 items
+// = up to 1000 uploads per sync, comfortably above any realistic gap between
+// syncs.
+const MAX_PAGES = 20;
+
+const CHANNEL_ID_PREFIX = "UC";
+const UPLOADS_PLAYLIST_PREFIX = "UU";
+
+// Every YouTube channel's "uploads" playlist id is derivable from the channel
+// id by swapping its UC prefix for UU — YouTube's own documented convention
+// — which avoids a separate channels.list round trip (and its own quota
+// unit) just to look the playlist id up.
+export function uploadsPlaylistIdForChannel(channelId: string): string {
+  if (!channelId.startsWith(CHANNEL_ID_PREFIX)) {
     throw new Error(
-      `Channel RSS fetch failed for ${channelId}: ${response.status} ${response.statusText}`,
+      `Cannot derive uploads playlist id: channel id "${channelId}" does not start with "${CHANNEL_ID_PREFIX}"`,
     );
   }
 
-  return response.text();
+  return UPLOADS_PLAYLIST_PREFIX + channelId.slice(CHANNEL_ID_PREFIX.length);
 }
 
-export function filterItemsByWatermark(
-  items: NewFeedItem[],
-  lastSyncedAt: Date | null,
-): NewFeedItem[] {
-  if (!lastSyncedAt) {
-    return items;
+// Isolated network call so fetchNewUploadsForChannel's pagination/watermark
+// logic can be unit-tested against canned pages instead of a live API.
+export async function fetchChannelUploadsPage(
+  playlistId: string,
+  accessToken: string,
+  pageToken?: string,
+): Promise<PlaylistItemsPage> {
+  const params = new URLSearchParams({
+    part: "snippet",
+    playlistId,
+    maxResults: String(PAGE_LIMIT),
+  });
+
+  if (pageToken) {
+    params.set("pageToken", pageToken);
   }
 
-  return items.filter(
-    (item) => item.publishedAt !== null && item.publishedAt > lastSyncedAt,
+  const response = await fetch(`${YOUTUBE_PLAYLIST_ITEMS_URL}?${params}`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+    signal: AbortSignal.timeout(10_000),
+  });
+
+  if (!response.ok) {
+    throw new Error(
+      `Channel uploads fetch failed for playlist ${playlistId}: ${response.status} ${response.statusText}`,
+    );
+  }
+
+  return (await response.json()) as PlaylistItemsPage;
+}
+
+function resolveThumbnailUrl(
+  thumbnails: PlaylistItemSnippet["thumbnails"],
+): string | null {
+  return (
+    thumbnails?.high?.url ??
+    thumbnails?.medium?.url ??
+    thumbnails?.default?.url ??
+    null
   );
 }
 
+function resolveUploadPublishedAt(
+  publishedAt: string | undefined,
+): Date | null {
+  if (!publishedAt) {
+    return null;
+  }
+
+  const date = new Date(publishedAt);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+// Exported for unit testing. Uses the "yt:video:<id>" guid format the old
+// Atom-feed <id> element produced, so switching from the RSS feed to this API
+// call doesn't re-insert every video a prior RSS-backed sync already stored
+// (feedItems dedupes on (feedId, guid)).
+export function mapPlaylistItemToFeedItem(
+  item: PlaylistItem,
+  feedId: number,
+  channelTitle: string,
+): NewFeedItem {
+  const { snippet } = item;
+  const videoId = snippet.resourceId.videoId;
+
+  return {
+    feedId,
+    guid: `yt:video:${videoId}`,
+    title: snippet.title ?? "(untitled)",
+    url: `https://www.youtube.com/watch?v=${videoId}`,
+    author: snippet.channelTitle ?? channelTitle,
+    content: snippet.description || null,
+    imageUrl: resolveThumbnailUrl(snippet.thumbnails),
+    publishedAt: resolveUploadPublishedAt(snippet.publishedAt),
+    savedAt: null,
+    readAt: null,
+    starred: false,
+    tags: null,
+    searchVector: null,
+  };
+}
+
+// Matches the previous filterItemsByWatermark semantics (strictly-after,
+// null publishedAt treated as unpublishable/excluded once a watermark
+// exists) so replacing the RSS-backed fetch changes only how far back a sync
+// reaches, not which side of an exact-watermark boundary an item falls on.
+function isAtOrBeforeWatermark(
+  feedItem: NewFeedItem,
+  watermark: Date | null,
+): boolean {
+  if (!watermark) {
+    return false;
+  }
+
+  return feedItem.publishedAt == null || feedItem.publishedAt <= watermark;
+}
+
+// Paginates the channel's uploads playlist (newest first) via the YouTube
+// Data API, stopping once a page's items reach lastSyncedAt or the API runs
+// out of pages — mirroring fetchNewBlueskyPosts's cursor walk in
+// blueskyAdapter.ts. The previous implementation read the channel's public
+// RSS feed (videos.xml), which only ever returns the 15 most recent uploads
+// with no way to page past that fixed window; a channel that posted more
+// than 15 videos between two syncs (or one that backed off via
+// feedSyncBackoff.ts, which can push retries out to 24h) silently lost the
+// overflow forever. This calls an authenticated endpoint, so it needs a
+// valid OAuth access token — the youtube.readonly scope already granted at
+// connect time (see buildYouTubeAuthUrl in google.ts) covers it, so no new
+// credential or external service is required.
 export async function fetchNewUploadsForChannel(
   channelId: string,
   feedId: number,
   channelTitle: string,
   lastSyncedAt: Date | null,
+  accessToken: string,
 ): Promise<NewFeedItem[]> {
-  const xml = await fetchChannelRssXml(channelId);
-  const allItems = await parseRssFeedFromXml(xml, feedId, channelTitle);
-  return filterItemsByWatermark(allItems, lastSyncedAt);
+  const playlistId = uploadsPlaylistIdForChannel(channelId);
+  const items: NewFeedItem[] = [];
+  let pageToken: string | undefined;
+  let pagesFetched = 0;
+
+  while (pagesFetched < MAX_PAGES) {
+    const page = await fetchChannelUploadsPage(
+      playlistId,
+      accessToken,
+      pageToken,
+    );
+    pagesFetched += 1;
+
+    const pageItems = page.items ?? [];
+    if (pageItems.length === 0) {
+      break;
+    }
+
+    let reachedWatermark = false;
+
+    for (const item of pageItems) {
+      const feedItem = mapPlaylistItemToFeedItem(item, feedId, channelTitle);
+
+      if (isAtOrBeforeWatermark(feedItem, lastSyncedAt)) {
+        reachedWatermark = true;
+        break;
+      }
+
+      items.push(feedItem);
+    }
+
+    if (reachedWatermark || !page.nextPageToken) {
+      break;
+    }
+
+    pageToken = page.nextPageToken;
+  }
+
+  return items;
 }

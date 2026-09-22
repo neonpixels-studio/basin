@@ -302,16 +302,18 @@ async function syncYouTubeFeed(
     );
   }
 
-  // Resolve (and refresh if needed) the access token so it stays current.
-  // Even though we use the no-quota RSS feed for uploads, keeping the token
-  // fresh ensures the subscriptions API works on subsequent calls.
-  await resolveValidAccessToken(integration);
+  // Resolve (and refresh if needed) the access token so it stays current —
+  // fetchNewUploadsForChannel calls the authenticated playlistItems.list API
+  // (not the old unauthenticated RSS feed), so a stale token fails the fetch
+  // itself, not just later subscriptions-API calls.
+  const accessToken = await resolveValidAccessToken(integration);
 
   const newItems = await fetchNewUploadsForChannel(
     channelId,
     feedId,
     channelTitle ?? channelId,
     lastSyncedAt,
+    accessToken,
   );
 
   return upsertFeedItems(feedId, newItems);
