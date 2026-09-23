@@ -19,6 +19,22 @@ function stubVisibility(value: "visible" | "hidden") {
   });
 }
 
+// Captures a target's addEventListener calls into `handlers`, keyed by
+// "<target>:<type>" — window and document each have their own "online" (in
+// principle) and must not overwrite each other's entry in a shared map.
+function captureListenersOn(
+  target: typeof window | typeof document,
+  targetName: string,
+  handlers: Record<string, () => void>,
+) {
+  vi.spyOn(target, "addEventListener").mockImplementation(((
+    type: string,
+    handler: () => void,
+  ) => {
+    handlers[`${targetName}:${type}`] = handler;
+  }) as typeof target.addEventListener);
+}
+
 // Registers the plugin against a stubbed useSyncQueue() so each test can
 // assert on flushSyncQueue in isolation, mirroring the appearance.client
 // plugin test's setupPlugin() helper. Captures the "online"/"visibilitychange"
@@ -31,18 +47,8 @@ function setupPlugin() {
   vi.stubGlobal("useSyncQueue", () => ({ flushSyncQueue }));
 
   const handlers: Record<string, () => void> = {};
-  vi.spyOn(window, "addEventListener").mockImplementation(((
-    type: string,
-    handler: () => void,
-  ) => {
-    handlers[type] = handler;
-  }) as typeof window.addEventListener);
-  vi.spyOn(document, "addEventListener").mockImplementation(((
-    type: string,
-    handler: () => void,
-  ) => {
-    handlers[type] = handler;
-  }) as typeof document.addEventListener);
+  captureListenersOn(window, "window", handlers);
+  captureListenersOn(document, "document", handlers);
 
   syncPlugin();
   return { flushSyncQueue, handlers };
@@ -86,13 +92,20 @@ describe("sync.client plugin", () => {
     expect(flushSyncQueue).not.toHaveBeenCalled();
   });
 
+  it("registers 'online' on window and 'visibilitychange' on document", () => {
+    const { handlers } = setupPlugin();
+
+    expect(handlers["window:online"]).toBeInstanceOf(Function);
+    expect(handlers["document:visibilitychange"]).toBeInstanceOf(Function);
+  });
+
   it("flushes when the browser fires the online event", () => {
     stubOnline(false);
     const { flushSyncQueue, handlers } = setupPlugin();
     expect(flushSyncQueue).not.toHaveBeenCalled();
 
     stubOnline(true);
-    handlers.online();
+    handlers["window:online"]();
 
     expect(flushSyncQueue).toHaveBeenCalledTimes(1);
   });
@@ -103,11 +116,11 @@ describe("sync.client plugin", () => {
     const { flushSyncQueue, handlers } = setupPlugin();
 
     stubVisibility("visible");
-    handlers.visibilitychange();
+    handlers["document:visibilitychange"]();
     expect(flushSyncQueue).not.toHaveBeenCalled();
 
     stubOnline(true);
-    handlers.visibilitychange();
+    handlers["document:visibilitychange"]();
     expect(flushSyncQueue).toHaveBeenCalledTimes(1);
   });
 
@@ -117,7 +130,7 @@ describe("sync.client plugin", () => {
     const { flushSyncQueue, handlers } = setupPlugin();
     expect(flushSyncQueue).not.toHaveBeenCalled();
 
-    handlers.visibilitychange();
+    handlers["document:visibilitychange"]();
 
     expect(flushSyncQueue).not.toHaveBeenCalled();
   });
