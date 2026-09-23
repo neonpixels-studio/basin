@@ -1,9 +1,10 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import syncPlugin from "~/plugins/sync.client";
 
-// Stubs navigator.onLine — happy-dom defines it as a plain readonly
-// property, not a getter, so a direct assignment silently no-ops instead
-// of throwing; redefining it is the only way a test can control it.
+// Stubs navigator.onLine — it's exposed as a getter with no setter, so a
+// direct assignment throws a TypeError in strict mode (this file is an ES
+// module, which is always strict); redefining the property is the only way
+// a test can control it.
 function stubOnline(value: boolean) {
   Object.defineProperty(navigator, "onLine", {
     value,
@@ -80,9 +81,8 @@ describe("sync.client plugin", () => {
     expect(flushSyncQueue).not.toHaveBeenCalled();
   });
 
-  // A session restore can reopen several tabs in the background at once —
-  // each boots against the same shared IndexedDB queue, so a hidden tab
-  // must not flush until it's actually the one the user is looking at.
+  // Matches the existing visibilitychange handler's behavior: defer sync
+  // work in a tab the user isn't currently looking at.
   it("does not flush at boot when the tab is hidden", () => {
     stubOnline(true);
     stubVisibility("hidden");
