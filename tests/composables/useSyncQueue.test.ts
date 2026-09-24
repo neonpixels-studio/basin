@@ -155,6 +155,72 @@ describe("useSyncQueue", () => {
       expect(syncQueueStore.recordRetryableFailure).not.toHaveBeenCalled();
     });
 
+    it("reports a permanently-failing (403) item to Sentry with actionable context and no raw payload", async () => {
+      // This is a real data-loss path — the mutation is dropped for good —
+      // so it must be reported, unlike a routine retryable failure.
+      const items = [
+        makeItem({
+          id: 1,
+          action: "star",
+          payload: JSON.stringify({ feedId: 1, guid: "secret-guid" }),
+        }),
+      ];
+      vi.mocked(syncQueueStore.getPendingItems).mockResolvedValue(items);
+      const forbidden = Object.assign(new Error("Forbidden"), {
+        statusCode: 403,
+      });
+      mockFetch.mockRejectedValueOnce(forbidden);
+
+      const { flushSyncQueue } = useSyncQueue();
+      await flushSyncQueue();
+
+      expect(SentrySDK.captureException).toHaveBeenCalledWith(forbidden);
+      expect(mockSentryScope.setExtras).toHaveBeenCalledWith(
+        expect.objectContaining({
+          stage: "sync-queue-item-quarantined",
+          reason: "permanent-failure",
+          action: "star",
+          itemId: 1,
+          attempts: 1,
+          statusCode: 403,
+        }),
+      );
+      const reportedExtras = vi.mocked(mockSentryScope.setExtras).mock
+        .calls[0]?.[0];
+      expect(JSON.stringify(reportedExtras)).not.toContain("secret-guid");
+    });
+
+    it("reports quarantine-by-exhausted-retry-budget to Sentry with that reason", async () => {
+      const item = makeItem({ id: 1, attempts: 4 });
+      vi.mocked(syncQueueStore.getPendingItems).mockResolvedValue([item]);
+      const stillDown = new Error("Still down");
+      mockFetch.mockRejectedValueOnce(stillDown);
+
+      const { flushSyncQueue } = useSyncQueue();
+      await flushSyncQueue();
+
+      expect(SentrySDK.captureException).toHaveBeenCalledWith(stillDown);
+      expect(mockSentryScope.setExtras).toHaveBeenCalledWith(
+        expect.objectContaining({
+          stage: "sync-queue-item-quarantined",
+          reason: "retry-budget-exhausted",
+          itemId: 1,
+          attempts: 5,
+        }),
+      );
+    });
+
+    it("does not report a still-retryable failure to Sentry", async () => {
+      const items = [makeItem({ id: 1 })];
+      vi.mocked(syncQueueStore.getPendingItems).mockResolvedValue(items);
+      mockFetch.mockRejectedValueOnce(new Error("Network error"));
+
+      const { flushSyncQueue } = useSyncQueue();
+      await flushSyncQueue();
+
+      expect(SentrySDK.captureException).not.toHaveBeenCalled();
+    });
+
     // Documents a deliberate tradeoff: not head-of-line-blocking on a
     // permanent failure means a later mutation for the *same* entity can
     // apply even though an earlier one for that entity was quarantined.
@@ -269,6 +335,34 @@ describe("useSyncQueue", () => {
       // Item 1 never reached the network — only item 2's request was made.
       expect(mockFetch).toHaveBeenCalledTimes(1);
       expect(syncQueueStore.markSynced).toHaveBeenCalledWith(fakeDb, 2);
+    });
+
+    it("reports an unparseable payload to Sentry with actionable context and no raw payload content", async () => {
+      // This is the other real data-loss path: the payload will never parse
+      // on a later attempt either, so it's quarantined and must be reported.
+      const items = [
+        makeItem({ id: 1, action: "save", payload: "{not valid json" }),
+      ];
+      vi.mocked(syncQueueStore.getPendingItems).mockResolvedValue(items);
+
+      const { flushSyncQueue } = useSyncQueue();
+      await flushSyncQueue();
+
+      expect(SentrySDK.captureException).toHaveBeenCalledWith(
+        expect.any(Error),
+      );
+      expect(mockSentryScope.setExtras).toHaveBeenCalledWith(
+        expect.objectContaining({
+          stage: "sync-queue-item-quarantined",
+          reason: "unparseable-payload",
+          action: "save",
+          itemId: 1,
+          attempts: 1,
+        }),
+      );
+      const reportedExtras = vi.mocked(mockSentryScope.setExtras).mock
+        .calls[0]?.[0];
+      expect(JSON.stringify(reportedExtras)).not.toContain("not valid json");
     });
 
     it("does not start a second pass while one is already in flight", async () => {

@@ -5,7 +5,7 @@ import {
   type SyncQueueAction,
   type SyncQueueRow,
 } from "./syncQueueStore";
-import { captureException } from "~/lib/sentry";
+import { captureException, type SentryExtras } from "~/lib/sentry";
 
 // A queued mutation gets this many attempts against a transient failure
 // (network error, 5xx) before it's quarantined too — a persistently-erroring
@@ -22,6 +22,19 @@ const HTTP_SERVER_ERROR_MIN = 500;
 // rejecting the request's content itself (ownership check, validation,
 // unknown action), which retrying verbatim can never fix.
 const RETRYABLE_CLIENT_ERROR_STATUSES = new Set([401, 408, 429]);
+
+// Why a sync_queue row ended up quarantined — attached to its Sentry report
+// so the two genuinely-data-losing paths (an unparseable payload, and
+// handleSyncFailure giving up on an item) are distinguishable from each
+// other in Sentry without inspecting the stack trace.
+const QUARANTINE_REASON = {
+  UNPARSEABLE_PAYLOAD: "unparseable-payload",
+  PERMANENT_FAILURE: "permanent-failure",
+  RETRY_BUDGET_EXHAUSTED: "retry-budget-exhausted",
+} as const;
+
+type QuarantineReason =
+  (typeof QUARANTINE_REASON)[keyof typeof QUARANTINE_REASON];
 
 // Number of sync_queue rows currently quarantined (status "failed"). Module-
 // level so every useSyncQueue() call — the sync plugin, the UI banner —
@@ -64,6 +77,29 @@ function describeError(error: unknown): string {
   return error instanceof Error ? error.message : DEFAULT_SYNC_ERROR_MESSAGE;
 }
 
+// Every quarantine is a data-loss event — the mutation stops retrying and
+// is never sent again — so both quarantine paths report through here rather
+// than falling silent like a routine retryable failure would. Only the
+// item's kind (action), the reason it was quarantined, and counts are
+// attached; never the row's raw payload, which may hold user content.
+function reportQuarantinedItem(
+  item: SyncQueueRow,
+  reason: QuarantineReason,
+  attempts: number,
+  error: unknown,
+  extraContext: SentryExtras = {},
+): void {
+  console.error(`Quarantining a sync_queue item (${reason})`, error);
+  captureException(error, {
+    stage: "sync-queue-item-quarantined",
+    reason,
+    action: item.action,
+    itemId: item.id,
+    attempts,
+    ...extraContext,
+  });
+}
+
 // Records a failed sync attempt and decides its fate. Returns whether the
 // item is still retryable — false means it was quarantined (permanent 4xx,
 // or its retry budget is exhausted).
@@ -78,6 +114,10 @@ async function handleSyncFailure(
   const retryBudgetExhausted = attempts >= MAX_SYNC_ATTEMPTS;
 
   if (isPermanentFailure(statusCode) || retryBudgetExhausted) {
+    const reason = retryBudgetExhausted
+      ? QUARANTINE_REASON.RETRY_BUDGET_EXHAUSTED
+      : QUARANTINE_REASON.PERMANENT_FAILURE;
+    reportQuarantinedItem(item, reason, attempts, error, { statusCode });
     await syncQueueStore.quarantine(db, item.id, attempts, message);
     return false;
   }
@@ -95,7 +135,14 @@ async function quarantineUnparseablePayload(
 ): Promise<void> {
   const message =
     error instanceof Error ? error.message : DEFAULT_PARSE_ERROR_MESSAGE;
-  await syncQueueStore.quarantine(db, item.id, item.attempts + 1, message);
+  const attempts = item.attempts + 1;
+  reportQuarantinedItem(
+    item,
+    QUARANTINE_REASON.UNPARSEABLE_PAYLOAD,
+    attempts,
+    error,
+  );
+  await syncQueueStore.quarantine(db, item.id, attempts, message);
 }
 
 // Sends one queued item to the server and reconciles its local state.
