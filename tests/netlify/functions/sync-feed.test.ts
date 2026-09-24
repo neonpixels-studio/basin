@@ -1015,6 +1015,10 @@ describe("sync-feed workload — permanent failure persistence", () => {
 
     vi.stubEnv("NUXT_GOOGLE_CLIENT_ID", "test-client-id");
     vi.stubEnv("NUXT_GOOGLE_CLIENT_SECRET", "test-client-secret");
+    // The forced-refresh path persists the refreshed token, which encrypts
+    // it — needs a real key, unlike the other tests in this block that never
+    // reach a successful refresh.
+    vi.stubEnv("TOKEN_ENCRYPTION_KEY", TEST_TOKEN_ENCRYPTION_KEY);
 
     // expiresAt says the stored token is still live (isTokenExpired stays
     // false throughout) — the forced refresh must happen anyway, driven by
@@ -1052,6 +1056,7 @@ describe("sync-feed workload — permanent failure persistence", () => {
 
     vi.stubEnv("NUXT_GOOGLE_CLIENT_ID", "test-client-id");
     vi.stubEnv("NUXT_GOOGLE_CLIENT_SECRET", "test-client-secret");
+    vi.stubEnv("TOKEN_ENCRYPTION_KEY", TEST_TOKEN_ENCRYPTION_KEY);
 
     await expect(
       (handler as Function)(makeYouTubeEvent({ attempt: 0 })),
