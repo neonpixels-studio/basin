@@ -407,6 +407,100 @@ describe("useAppearanceStore loadFromDb ownership guard", () => {
   });
 });
 
+// #301: init()'s isLoaded gate, the signed-out-from-the-start visitor path,
+// and the re-entrancy guard had no direct coverage — every existing test
+// above only ever exercises init() after isLoaded is already true.
+describe("useAppearanceStore init() gating", () => {
+  const userASettings = {
+    theme: "dark",
+    accentColor: "rose",
+    readingFont: "mono",
+    spacing: "compact",
+    radius: "round",
+    autoplayMediaPreviews: true,
+    compactNotifications: true,
+  };
+
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    localStorage.clear();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("does not call load() or leave the cloak lifted while Clerk's isLoaded is still false", async () => {
+    const load = vi.fn().mockResolvedValue(userASettings);
+    vi.stubGlobal("useUserSettings", () => ({
+      load,
+      save: vi.fn().mockResolvedValue(undefined),
+      error: ref(null),
+    }));
+
+    // stubAuth() defaults isLoaded to false — left untouched here so init()
+    // sees "Clerk hasn't resolved yet", not "genuinely signed out".
+    const { isSignedIn, userId } = stubAuth();
+    const store = useAppearanceStore();
+    store.init();
+
+    // A signed-in-looking userId can arrive before isLoaded flips true (see
+    // init()'s own comment) — it must still be ignored until isLoaded does.
+    isSignedIn.value = true;
+    userId.value = "user-a";
+    await nextTick();
+    await flushPromises();
+
+    expect(load).not.toHaveBeenCalled();
+    expect(store.ready).toBe(false);
+  });
+
+  it("marks a signed-out-from-the-start visitor ready without ever calling load()", async () => {
+    const load = vi.fn().mockResolvedValue(userASettings);
+    vi.stubGlobal("useUserSettings", () => ({
+      load,
+      save: vi.fn().mockResolvedValue(undefined),
+      error: ref(null),
+    }));
+
+    const { isLoaded } = stubAuth();
+    const store = useAppearanceStore();
+    store.init();
+
+    // isSignedIn/userId stay at their stubAuth() defaults (false / null) —
+    // this is an anonymous visitor, not merely "not yet resolved".
+    isLoaded.value = true;
+    await nextTick();
+    await flushPromises();
+
+    expect(store.ready).toBe(true);
+    expect(load).not.toHaveBeenCalled();
+    expect(store.state.theme).toBe("system");
+  });
+
+  it("does not read Clerk's useAuth() or register a second watcher when init() is called again", () => {
+    const isLoaded = ref(false);
+    const isSignedIn = ref(false);
+    const userId = ref<string | null>(null);
+    const useAuthSpy = vi.fn(() => ({ isLoaded, isSignedIn, userId }));
+    vi.stubGlobal("useAuth", useAuthSpy);
+
+    const store = useAppearanceStore();
+    store.init();
+    // A second call (e.g. the plugin's hookOnce firing more than expected,
+    // or a component re-mounting) must be a no-op — store.init() is a
+    // singleton concern per the store's own comment on `initialized`. Two
+    // watch([isLoaded, isSignedIn, userId], ..., { immediate: true })
+    // registrations converge to the same end state either way (loadFromDb's
+    // synchronous loadedUserId claim makes a second registration's own
+    // effects a no-op) — useAuth()'s call count is what actually pins the
+    // guard in place, since init() only calls it after the check.
+    store.init();
+
+    expect(useAuthSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
 // Regression (#285): useUserSettings().load() used to swallow a transient
 // fetch failure into a synthetic USER_SETTINGS_DEFAULTS return. loadFromDb()
 // then applied that fallback via applyLoadedSettings — overwriting a good
