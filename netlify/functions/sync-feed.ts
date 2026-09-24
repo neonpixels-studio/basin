@@ -13,6 +13,8 @@ import {
   refreshAccessToken,
   fetchNewUploadsForChannel,
   TokenRefreshAuthError,
+  YouTubeAuthError,
+  YouTubeQuotaExceededError,
 } from "../../server/utils/youtubeAdapter";
 import {
   decryptNullableTokenTolerant,
@@ -283,6 +285,58 @@ async function resolveValidAccessToken(
   return refreshed.accessToken;
 }
 
+// Translates a classified YouTube Data API failure (see youtubeAdapter.ts's
+// throwForFailedYouTubeResponse) into the workload's permanent-failure
+// vocabulary, mirroring how refreshYouTubeToken above translates
+// TokenRefreshAuthError: retrying a revoked token or an exhausted quota
+// within the same sync can't succeed, so both skip runAdapterWithRetry's
+// retry-with-delay path instead of burning attempts on it. Only the auth
+// case is attributed to the connection (IntegrationAuthError) so
+// SettingsConnections flags it for reconnect; a quota failure isn't the
+// account's fault — reconnecting doesn't fix it — so it's a feed-only
+// ErrorDoNotRetry instead, left to clear on its own once Google resets the
+// quota (surfaced to the user via the feed's syncError, same as any other
+// feed-level failure).
+function mapYouTubeApiFailure(error: unknown): never {
+  if (error instanceof YouTubeAuthError) {
+    throw new IntegrationAuthError(
+      "youtube",
+      "YouTube authorization expired or was revoked. Re-connect your YouTube account.",
+    );
+  }
+
+  if (error instanceof YouTubeQuotaExceededError) {
+    throw new ErrorDoNotRetry(
+      "YouTube API quota exceeded. This feed will resume syncing automatically once quota resets.",
+    );
+  }
+
+  throw error;
+}
+
+// Isolates the fetchNewUploadsForChannel call so its failures can be
+// reclassified (see mapYouTubeApiFailure) without that translation getting
+// tangled into syncYouTubeFeed's own token-resolution and persistence steps.
+async function fetchNewUploadsOrMapFailure(
+  channelId: string,
+  feedId: number,
+  channelTitle: string,
+  lastSyncedAt: Date | null,
+  accessToken: string,
+): Promise<Awaited<ReturnType<typeof fetchNewUploadsForChannel>>> {
+  try {
+    return await fetchNewUploadsForChannel(
+      channelId,
+      feedId,
+      channelTitle,
+      lastSyncedAt,
+      accessToken,
+    );
+  } catch (error) {
+    mapYouTubeApiFailure(error);
+  }
+}
+
 async function syncYouTubeFeed(
   feedId: number,
   channelId: string,
@@ -308,7 +362,7 @@ async function syncYouTubeFeed(
   // itself, not just later subscriptions-API calls.
   const accessToken = await resolveValidAccessToken(integration);
 
-  const newItems = await fetchNewUploadsForChannel(
+  const newItems = await fetchNewUploadsOrMapFailure(
     channelId,
     feedId,
     channelTitle ?? channelId,

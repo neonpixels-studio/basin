@@ -81,6 +81,22 @@ vi.mock("../../../server/utils/youtubeAdapter", () => ({
       this.status = status;
     }
   },
+  YouTubeAuthError: class YouTubeAuthError extends Error {
+    status: number;
+    constructor(status: number, statusText: string, context: string) {
+      super(`${context}: ${status} ${statusText}`);
+      this.name = "YouTubeAuthError";
+      this.status = status;
+    }
+  },
+  YouTubeQuotaExceededError: class YouTubeQuotaExceededError extends Error {
+    status: number;
+    constructor(status: number, statusText: string, context: string) {
+      super(`${context}: ${status} ${statusText}`);
+      this.name = "YouTubeQuotaExceededError";
+      this.status = status;
+    }
+  },
 }));
 
 vi.mock("../../../server/utils/blueskyAdapter", () => ({
@@ -113,7 +129,11 @@ import {
   flushSentry as mockFlushSentry,
 } from "../../../netlify/functions/sentry";
 import { integrations } from "../../../server/db/schema";
-import { TokenRefreshAuthError } from "../../../server/utils/youtubeAdapter";
+import {
+  TokenRefreshAuthError,
+  YouTubeAuthError,
+  YouTubeQuotaExceededError,
+} from "../../../server/utils/youtubeAdapter";
 import type { BlueskySessionTokens } from "../../../server/utils/blueskyAdapter";
 import {
   encryptToken,
@@ -940,6 +960,66 @@ describe("sync-feed workload — permanent failure persistence", () => {
     // writes: the atomic increment and the derived nextRetryAt), not the
     // integration.
     expect(mockUpdateWhere).toHaveBeenCalledTimes(2);
+  });
+
+  it("marks the integration for reconnect when the uploads API rejects the access token (401)", async () => {
+    mockFindFirst
+      .mockResolvedValueOnce(makeYouTubeFeed())
+      .mockResolvedValueOnce(makeIntegration());
+    mockFetchNewUploadsForChannel.mockRejectedValue(
+      new YouTubeAuthError(401, "Unauthorized", "Channel uploads fetch failed"),
+    );
+
+    // A rejected access token can't succeed on retry, so this must skip
+    // straight to a permanent failure regardless of attempt number.
+    await expect(
+      (handler as Function)(makeYouTubeEvent({ attempt: 0 })),
+    ).rejects.toMatchObject({ name: "IntegrationAuthError" });
+
+    expect(mockFetchNewUploadsForChannel).toHaveBeenCalledTimes(1);
+
+    // Two updates for the feed (the atomic increment and the derived
+    // nextRetryAt) and one for the integration: a revoked/rejected token
+    // genuinely needs the user to reconnect.
+    expect(mockUpdateWhere).toHaveBeenCalledTimes(3);
+    expect(mockUpdateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        syncStatus: "error",
+        syncError: expect.stringContaining("Re-connect your YouTube account"),
+      }),
+    );
+  });
+
+  it("does not mark the integration when the uploads API reports quota exhaustion (403)", async () => {
+    mockFindFirst
+      .mockResolvedValueOnce(makeYouTubeFeed())
+      .mockResolvedValueOnce(makeIntegration());
+    mockFetchNewUploadsForChannel.mockRejectedValue(
+      new YouTubeQuotaExceededError(
+        403,
+        "Forbidden",
+        "Channel uploads fetch failed",
+      ),
+    );
+
+    // Quota exhaustion can't succeed on retry within this run either, but it
+    // isn't the connected account's fault, so it must not be flagged as
+    // IntegrationAuthError.
+    await expect(
+      (handler as Function)(makeYouTubeEvent({ attempt: 0 })),
+    ).rejects.toMatchObject({ name: "ErrorDoNotRetry" });
+
+    expect(mockFetchNewUploadsForChannel).toHaveBeenCalledTimes(1);
+
+    // Only the feed is updated (its two failure writes) — the integration
+    // itself is healthy, so it must not be flagged for reconnect.
+    expect(mockUpdateWhere).toHaveBeenCalledTimes(2);
+    expect(mockUpdateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        syncStatus: "error",
+        syncError: expect.stringContaining("quota exceeded"),
+      }),
+    );
   });
 
   it("clears a previously-recorded failure on the next successful sync", async () => {

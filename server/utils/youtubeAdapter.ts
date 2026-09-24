@@ -66,6 +66,63 @@ export class TokenRefreshAuthError extends Error {
   }
 }
 
+// Thrown for a YouTube Data API response (subscriptions.list,
+// playlistItems.list — anything other than the separate OAuth token
+// endpoint, which has its own TokenRefreshAuthError above) whose access
+// token was rejected outright. Mirrors TokenRefreshAuthError's shape so
+// callers can react to either the same way: the credential itself needs a
+// user to reconnect the account, not a retry.
+export class YouTubeAuthError extends Error {
+  status: number;
+
+  constructor(status: number, statusText: string, context: string) {
+    super(`${context}: ${status} ${statusText}`);
+    this.name = "YouTubeAuthError";
+    this.status = status;
+  }
+}
+
+// Thrown when the YouTube Data API reports the project's quota is
+// exhausted. Distinct from YouTubeAuthError: the connected account is fine
+// and reconnecting won't help — the caller should back off and retry later
+// instead of prompting the user to reconnect.
+export class YouTubeQuotaExceededError extends Error {
+  status: number;
+
+  constructor(status: number, statusText: string, context: string) {
+    super(`${context}: ${status} ${statusText}`);
+    this.name = "YouTubeQuotaExceededError";
+    this.status = status;
+  }
+}
+
+// Google returns 401 for a revoked/expired access token and 403 for both an
+// exhausted quota and a handful of unrelated permission failures; the Data
+// API doesn't distinguish the latter two in the status code alone, but
+// quota exhaustion is by far the common case in an unattended sync, so 403
+// is classified as quota here rather than left generic. Shared by every
+// YouTube Data API call in this file (subscriptions, playlist items) so a
+// revoked token or exhausted quota is classified the same way regardless of
+// which endpoint surfaced it.
+function throwForFailedYouTubeResponse(
+  response: Response,
+  context: string,
+): never {
+  if (response.status === 401) {
+    throw new YouTubeAuthError(response.status, response.statusText, context);
+  }
+
+  if (response.status === 403) {
+    throw new YouTubeQuotaExceededError(
+      response.status,
+      response.statusText,
+      context,
+    );
+  }
+
+  throw new Error(`${context}: ${response.status} ${response.statusText}`);
+}
+
 export function isTokenExpired(expiresAt: Date | null): boolean {
   if (!expiresAt) {
     return true;
@@ -161,9 +218,7 @@ export async function fetchYouTubeSubscriptions(
     });
 
     if (!response.ok) {
-      throw new Error(
-        `Subscriptions API error: ${response.status} ${response.statusText}`,
-      );
+      throwForFailedYouTubeResponse(response, "Subscriptions API error");
     }
 
     const page = (await response.json()) as SubscriptionsPage;
@@ -304,8 +359,9 @@ export async function fetchChannelUploadsPage(
       return { items: [] };
     }
 
-    throw new Error(
-      `Channel uploads fetch failed for playlist ${playlistId}: ${response.status} ${response.statusText}`,
+    throwForFailedYouTubeResponse(
+      response,
+      `Channel uploads fetch failed for playlist ${playlistId}`,
     );
   }
 
