@@ -27,6 +27,7 @@ const needsReconnect = makeConnection({
 });
 
 const mockConnect = vi.fn();
+const mockReconnect = vi.fn();
 const mockConnectBluesky = vi.fn();
 const mockDisconnect = vi.fn();
 const mockLoad = vi.fn();
@@ -41,6 +42,7 @@ function stubConnections(
     error: ref(opts.error ?? null),
     load: mockLoad,
     connect: mockConnect,
+    reconnect: mockReconnect,
     connectBluesky: mockConnectBluesky,
     disconnect: mockDisconnect,
   }));
@@ -175,6 +177,60 @@ describe("SettingsConnections", () => {
       stubConnections([needsReconnect, disconnected]);
       const wrapper = shallowMount(SettingsConnections);
       expect(wrapper.html()).toMatchSnapshot();
+    });
+
+    it("offers both Reconnect and Disconnect for a needs-reconnect connection", () => {
+      stubConnections([needsReconnect]);
+      const wrapper = shallowMount(SettingsConnections);
+      const labels = wrapper.findAll("button.btn").map((btn) => btn.text());
+      expect(labels).toEqual(["Reconnect", "Disconnect"]);
+    });
+
+    it("does not offer Reconnect for a healthy connected account", () => {
+      stubConnections([connected]);
+      const wrapper = shallowMount(SettingsConnections);
+      const labels = wrapper.findAll("button.btn").map((btn) => btn.text());
+      expect(labels).toEqual(["Disconnect"]);
+    });
+
+    it("re-runs the OAuth connect flow when Reconnect is clicked", async () => {
+      stubConnections([needsReconnect]);
+      const wrapper = shallowMount(SettingsConnections);
+      const reconnectButton = wrapper
+        .findAll("button.btn")
+        .find((btn) => btn.text() === "Reconnect");
+      await reconnectButton!.trigger("click");
+      expect(mockReconnect).toHaveBeenCalledWith(needsReconnect.id);
+      expect(mockDisconnect).not.toHaveBeenCalled();
+    });
+
+    it("still allows Disconnect for a needs-reconnect connection", async () => {
+      stubConnections([needsReconnect]);
+      const wrapper = shallowMount(SettingsConnections);
+      const disconnectButton = wrapper
+        .findAll("button.btn")
+        .find((btn) => btn.text() === "Disconnect");
+      await disconnectButton!.trigger("click");
+      expect(mockDisconnect).toHaveBeenCalledWith(needsReconnect.id);
+      expect(mockReconnect).not.toHaveBeenCalled();
+    });
+
+    it("re-opens the Bluesky form when reconnecting a needs-reconnect Bluesky account", async () => {
+      const needsReconnectBluesky = makeConnection({
+        id: "bluesky",
+        name: "Bluesky",
+        connected: true,
+        needsReconnect: true,
+        syncError: "Bluesky session expired.",
+      });
+      stubConnections([needsReconnectBluesky]);
+      const wrapper = shallowMount(SettingsConnections);
+      const reconnectButton = wrapper
+        .findAll("button.btn")
+        .find((btn) => btn.text() === "Reconnect");
+      await reconnectButton!.trigger("click");
+      expect(wrapper.find(".bluesky-form").exists()).toBe(true);
+      expect(mockReconnect).not.toHaveBeenCalled();
     });
   });
 });

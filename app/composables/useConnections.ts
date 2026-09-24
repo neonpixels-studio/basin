@@ -97,6 +97,14 @@ export function useConnections() {
     }
   }
 
+  // A needs-reconnect integration re-runs the same provider connect flow used
+  // for a first-time connect (OAuth redirect, form, or "coming soon" toast).
+  // Kept as its own export so callers can express reconnect intent explicitly
+  // without duplicating the provider branching in `connect`.
+  function reconnect(id: string) {
+    connect(id);
+  }
+
   function normalizeBlueskyHandle(handle: string): string {
     handle = handle.trim();
     const stripped = handle.startsWith("@") ? handle.slice(1) : handle;
@@ -155,5 +163,14 @@ export function useConnections() {
     }
   }
 
-  return { items, loading, error, load, connect, connectBluesky, disconnect };
+  return {
+    items,
+    loading,
+    error,
+    load,
+    connect,
+    reconnect,
+    connectBluesky,
+    disconnect,
+  };
 }

@@ -13,7 +13,10 @@ exports[`SettingsConnections > matches snapshot 1`] = `
           <div data-v-d3b98f0f="" class="conn-desc">Subscribe to channels</div>
           <div data-v-d3b98f0f="" class="conn-since">@mychannel · Connected Jan 2024</div>
           <!--v-if-->
-        </div><button data-v-d3b98f0f="" class="btn">Disconnect</button>
+        </div>
+        <div data-v-d3b98f0f="" class="conn-buttons">
+          <!--v-if--><button data-v-d3b98f0f="" class="btn">Disconnect</button>
+        </div>
       </div>
       <!--v-if-->
     </div>
@@ -26,7 +29,10 @@ exports[`SettingsConnections > matches snapshot 1`] = `
           <div data-v-d3b98f0f="" class="conn-desc">Subscribe to channels</div>
           <!--v-if-->
           <!--v-if-->
-        </div><button data-v-d3b98f0f="" class="btn btn-primary">Connect</button>
+        </div>
+        <div data-v-d3b98f0f="" class="conn-buttons">
+          <!--v-if--><button data-v-d3b98f0f="" class="btn btn-primary">Connect</button>
+        </div>
       </div>
       <!--v-if-->
     </div>
@@ -46,7 +52,8 @@ exports[`SettingsConnections > needs-reconnect indicator > matches snapshot with
           <div data-v-d3b98f0f="" class="conn-name">YouTube <span data-v-d3b98f0f="" class="live"></span></div>
           <div data-v-d3b98f0f="" class="conn-desc">Subscribe to channels</div>
           <div data-v-d3b98f0f="" class="conn-since">@mychannel · Connected Jan 2024</div><span data-v-d3b98f0f="" class="feed-stat error" title="YouTube access token expired. Re-connect your YouTube account."><r-icon-stub data-v-d3b98f0f="" name="alertTriangle" size="12"></r-icon-stub> Needs reconnect</span>
-        </div><button data-v-d3b98f0f="" class="btn">Disconnect</button>
+        </div>
+        <div data-v-d3b98f0f="" class="conn-buttons"><button data-v-d3b98f0f="" class="btn btn-primary"> Reconnect </button><button data-v-d3b98f0f="" class="btn">Disconnect</button></div>
       </div>
       <!--v-if-->
     </div>
@@ -59,7 +66,10 @@ exports[`SettingsConnections > needs-reconnect indicator > matches snapshot with
           <div data-v-d3b98f0f="" class="conn-desc">Subscribe to channels</div>
           <!--v-if-->
           <!--v-if-->
-        </div><button data-v-d3b98f0f="" class="btn btn-primary">Connect</button>
+        </div>
+        <div data-v-d3b98f0f="" class="conn-buttons">
+          <!--v-if--><button data-v-d3b98f0f="" class="btn btn-primary">Connect</button>
+        </div>
       </div>
       <!--v-if-->
     </div>
