@@ -13,6 +13,8 @@ import {
   refreshAccessToken,
   fetchNewUploadsForChannel,
   TokenRefreshAuthError,
+  YouTubeAuthError,
+  YouTubeQuotaExceededError,
 } from "../../server/utils/youtubeAdapter";
 import {
   decryptNullableTokenTolerant,
@@ -243,8 +245,14 @@ async function refreshYouTubeToken(
 
 async function resolveValidAccessToken(
   integration: NonNullable<Awaited<ReturnType<typeof fetchYouTubeIntegration>>>,
+  // Bypasses the isTokenExpired check — used when the uploads API itself
+  // just rejected the stored token with a 401 despite expiresAt saying it's
+  // still live (see fetchYouTubeUploadsWithReauth): expiresAt can drift from
+  // what Google actually honors (early invalidation, clock skew), so a live
+  // 401 is stronger evidence than the stored timestamp.
+  { forceRefresh = false }: { forceRefresh?: boolean } = {},
 ): Promise<string> {
-  if (!isTokenExpired(integration.expiresAt)) {
+  if (!forceRefresh && !isTokenExpired(integration.expiresAt)) {
     return integration.accessToken;
   }
 
@@ -283,6 +291,114 @@ async function resolveValidAccessToken(
   return refreshed.accessToken;
 }
 
+// Translates a classified YouTube Data API failure (see youtubeAdapter.ts's
+// resolveFailedYouTubeResponseError) into the workload's permanent-failure
+// vocabulary, mirroring how refreshYouTubeToken above translates
+// TokenRefreshAuthError: retrying a revoked token or an exhausted quota
+// within the same sync can't succeed, so both skip runAdapterWithRetry's
+// retry-with-delay path instead of burning attempts on it. Only the auth
+// case is attributed to the connection (IntegrationAuthError) so
+// SettingsConnections flags it for reconnect; a quota failure isn't the
+// account's fault — reconnecting doesn't fix it — so it's a feed-only
+// ErrorDoNotRetry instead, left to clear on its own once Google resets the
+// quota (surfaced to the user via the feed's syncError, same as any other
+// feed-level failure). Both branches skip runAdapterWithRetry's own
+// "sync-feed.error" log (thrown as ErrorDoNotRetry, they never reach it), so
+// each logs its own structured event here instead — otherwise a
+// project-wide quota exhaustion, exactly the kind of incident worth paging
+// on, would leave nothing but per-feed syncError rows to notice it by.
+function mapYouTubeApiFailure(error: unknown, feedId: number): never {
+  if (error instanceof YouTubeAuthError) {
+    logSyncEvent(
+      "sync-feed.youtube-auth-error",
+      { feedId, error: error.message },
+      "error",
+    );
+    throw new IntegrationAuthError(
+      "youtube",
+      "YouTube authorization expired or was revoked. Re-connect your YouTube account.",
+    );
+  }
+
+  if (error instanceof YouTubeQuotaExceededError) {
+    logSyncEvent(
+      "sync-feed.youtube-quota-exceeded",
+      { feedId, error: error.message },
+      "error",
+    );
+    throw new ErrorDoNotRetry(
+      "YouTube API quota exceeded. This feed will resume syncing automatically once quota resets.",
+    );
+  }
+
+  throw error;
+}
+
+// True only for the narrow case a forced-refresh retry can actually fix: the
+// uploads API rejected the token outright (401) and there's a refresh token
+// to try. A 403 auth-like rejection (see AUTH_LIKE_403_REASONS in
+// youtubeAdapter.ts) is a scope/account problem a refresh can't fix, and
+// with no refresh token there's nothing to retry with — both escalate
+// immediately instead.
+function canRetryAfterForcedRefresh(
+  error: unknown,
+  integration: NonNullable<Awaited<ReturnType<typeof fetchYouTubeIntegration>>>,
+): boolean {
+  return (
+    error instanceof YouTubeAuthError &&
+    error.status === 401 &&
+    Boolean(integration.refreshToken)
+  );
+}
+
+// Isolates the fetchNewUploadsForChannel call so its failures can be
+// reclassified (see mapYouTubeApiFailure) without that translation getting
+// tangled into syncYouTubeFeed's own persistence steps. A 401 gets one
+// forced-refresh-and-retry before being escalated: expiresAt can say the
+// token is still live while Google has already invalidated it (early
+// invalidation, clock skew), so a live 401 is stronger evidence than the
+// stored timestamp, and only a refresh that itself fails (revoked refresh
+// token) or a second 401 on the retried request proves the account
+// genuinely needs reconnecting.
+async function fetchYouTubeUploadsWithReauth(
+  integration: NonNullable<Awaited<ReturnType<typeof fetchYouTubeIntegration>>>,
+  accessToken: string,
+  channelId: string,
+  feedId: number,
+  channelTitle: string,
+  lastSyncedAt: Date | null,
+): ReturnType<typeof fetchNewUploadsForChannel> {
+  try {
+    return await fetchNewUploadsForChannel(
+      channelId,
+      feedId,
+      channelTitle,
+      lastSyncedAt,
+      accessToken,
+    );
+  } catch (error) {
+    if (!canRetryAfterForcedRefresh(error, integration)) {
+      mapYouTubeApiFailure(error, feedId);
+    }
+
+    const refreshedAccessToken = await resolveValidAccessToken(integration, {
+      forceRefresh: true,
+    });
+
+    try {
+      return await fetchNewUploadsForChannel(
+        channelId,
+        feedId,
+        channelTitle,
+        lastSyncedAt,
+        refreshedAccessToken,
+      );
+    } catch (retryError) {
+      mapYouTubeApiFailure(retryError, feedId);
+    }
+  }
+}
+
 async function syncYouTubeFeed(
   feedId: number,
   channelId: string,
@@ -308,12 +424,13 @@ async function syncYouTubeFeed(
   // itself, not just later subscriptions-API calls.
   const accessToken = await resolveValidAccessToken(integration);
 
-  const newItems = await fetchNewUploadsForChannel(
+  const newItems = await fetchYouTubeUploadsWithReauth(
+    integration,
+    accessToken,
     channelId,
     feedId,
     channelTitle ?? channelId,
     lastSyncedAt,
-    accessToken,
   );
 
   return upsertFeedItems(feedId, newItems);

@@ -11,6 +11,7 @@ import {
   uploadsPlaylistIdForChannel,
   mapPlaylistItemToFeedItem,
   fetchNewUploadsForChannel,
+  fetchChannelUploadsPage,
   TokenRefreshAuthError,
 } from "../../../server/utils/youtubeAdapter";
 import type {
@@ -339,6 +340,91 @@ describe("fetchYouTubeSubscriptions", () => {
       expect.stringContaining("stopped after 20 pages"),
     );
   });
+
+  it("classifies a 401 as YouTubeAuthError", async () => {
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 401,
+      statusText: "Unauthorized",
+    });
+
+    await expect(
+      fetchYouTubeSubscriptions("access-token"),
+    ).rejects.toMatchObject({ name: "YouTubeAuthError", status: 401 });
+  });
+
+  it("classifies a 403 with a quotaExceeded reason as YouTubeQuotaExceededError", async () => {
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 403,
+      statusText: "Forbidden",
+      json: () =>
+        Promise.resolve({
+          error: { errors: [{ reason: "quotaExceeded" }] },
+        }),
+    });
+
+    await expect(
+      fetchYouTubeSubscriptions("access-token"),
+    ).rejects.toMatchObject({ name: "YouTubeQuotaExceededError", status: 403 });
+  });
+
+  it("classifies a 403 with an insufficientPermissions reason as YouTubeAuthError, not quota", async () => {
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 403,
+      statusText: "Forbidden",
+      json: () =>
+        Promise.resolve({
+          error: { errors: [{ reason: "insufficientPermissions" }] },
+        }),
+    });
+
+    await expect(
+      fetchYouTubeSubscriptions("access-token"),
+    ).rejects.toMatchObject({ name: "YouTubeAuthError", status: 403 });
+  });
+
+  it("keeps the generic Error for a 403 with a rateLimitExceeded reason (a burst throttle that clears on retry, unlike a day-long quota)", async () => {
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 403,
+      statusText: "Forbidden",
+      json: () =>
+        Promise.resolve({
+          error: { errors: [{ reason: "rateLimitExceeded" }] },
+        }),
+    });
+
+    const rejection = fetchYouTubeSubscriptions("access-token");
+    await expect(rejection).rejects.toMatchObject({ name: "Error" });
+    await expect(rejection).rejects.toThrow("reason: rateLimitExceeded");
+  });
+
+  it("keeps the generic Error for a 403 with no parseable reason, rather than guessing it's quota", async () => {
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 403,
+      statusText: "Forbidden",
+      json: () => Promise.reject(new SyntaxError("Unexpected token <")),
+    });
+
+    await expect(
+      fetchYouTubeSubscriptions("access-token"),
+    ).rejects.toMatchObject({ name: "Error" });
+  });
+
+  it("keeps the generic Error for other non-ok statuses (e.g. 500)", async () => {
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 500,
+      statusText: "Internal Server Error",
+    });
+
+    const rejection = fetchYouTubeSubscriptions("access-token");
+    await expect(rejection).rejects.toThrow("Subscriptions API error: 500");
+    await expect(rejection).rejects.toMatchObject({ name: "Error" });
+  });
 });
 
 // --- fetchSubscriptionChannelIds ---
@@ -569,6 +655,112 @@ describe("mapPlaylistItemToFeedItem", () => {
 
     const result = mapPlaylistItemToFeedItem(item, 1, "Channel");
     expect(result.publishedAt).toEqual(new Date("2024-05-01T00:00:00Z"));
+  });
+});
+
+// --- fetchChannelUploadsPage ---
+
+describe("fetchChannelUploadsPage", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("classifies a 401 as YouTubeAuthError", async () => {
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 401,
+      statusText: "Unauthorized",
+    });
+
+    await expect(
+      fetchChannelUploadsPage("UUtest", "access-token"),
+    ).rejects.toMatchObject({ name: "YouTubeAuthError", status: 401 });
+  });
+
+  it("classifies a 403 with a quotaExceeded reason as YouTubeQuotaExceededError", async () => {
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 403,
+      statusText: "Forbidden",
+      json: () =>
+        Promise.resolve({
+          error: { errors: [{ reason: "quotaExceeded" }] },
+        }),
+    });
+
+    await expect(
+      fetchChannelUploadsPage("UUtest", "access-token"),
+    ).rejects.toMatchObject({ name: "YouTubeQuotaExceededError", status: 403 });
+  });
+
+  it("keeps the generic Error for a 403 with a rateLimitExceeded reason (a burst throttle that clears on retry, unlike a day-long quota)", async () => {
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 403,
+      statusText: "Forbidden",
+      json: () =>
+        Promise.resolve({
+          error: { errors: [{ reason: "rateLimitExceeded" }] },
+        }),
+    });
+
+    const rejection = fetchChannelUploadsPage("UUtest", "access-token");
+    await expect(rejection).rejects.toMatchObject({ name: "Error" });
+    await expect(rejection).rejects.toThrow("reason: rateLimitExceeded");
+  });
+
+  it("keeps the generic Error for a 403 with no parseable reason, rather than guessing it's quota", async () => {
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 403,
+      statusText: "Forbidden",
+      json: () => Promise.reject(new SyntaxError("Unexpected token <")),
+    });
+
+    await expect(
+      fetchChannelUploadsPage("UUtest", "access-token"),
+    ).rejects.toMatchObject({ name: "Error" });
+  });
+
+  it("classifies a 403 with an insufficientPermissions reason as YouTubeAuthError, not quota", async () => {
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 403,
+      statusText: "Forbidden",
+      json: () =>
+        Promise.resolve({
+          error: { errors: [{ reason: "insufficientPermissions" }] },
+        }),
+    });
+
+    await expect(
+      fetchChannelUploadsPage("UUtest", "access-token"),
+    ).rejects.toMatchObject({ name: "YouTubeAuthError", status: 403 });
+  });
+
+  it("keeps the generic Error for other non-ok statuses (e.g. 500)", async () => {
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 500,
+      statusText: "Internal Server Error",
+    });
+
+    const rejection = fetchChannelUploadsPage("UUtest", "access-token");
+    await expect(rejection).rejects.toThrow(
+      "Channel uploads fetch failed for playlist UUtest: 500",
+    );
+    await expect(rejection).rejects.toMatchObject({ name: "Error" });
+  });
+
+  it("treats a 404 as an empty page instead of throwing", async () => {
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 404,
+      statusText: "Not Found",
+    });
+
+    const result = await fetchChannelUploadsPage("UUtest", "access-token");
+    expect(result).toEqual({ items: [] });
   });
 });
 
