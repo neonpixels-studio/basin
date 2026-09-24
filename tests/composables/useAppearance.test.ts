@@ -460,6 +460,113 @@ describe("useAppearanceStore", () => {
       setItemSpy.mockRestore();
     });
 
+    // #301: readCachedSettings's shape guard (object, not array/primitive)
+    // and loadFromDb's "apply threw → discard the cache entry" backstop had
+    // no coverage — every existing cache test above only exercises the
+    // storage-access-itself-throws case (Safari lockdown).
+    it.each([
+      ["an array", JSON.stringify(["theme", "dark"])],
+      ["a plain string", JSON.stringify("dark")],
+      ["a number", JSON.stringify(42)],
+    ])(
+      "treats a cached value that is %s as a cache miss instead of applying it",
+      async (_label, rawValue) => {
+        localStorage.setItem(
+          "basin-appearance-cache:user_dirty_flag_test",
+          rawValue,
+        );
+        const { deferredLoad } = setupSignedInLoad();
+        store.init();
+        await flushPromises();
+
+        // Falls through to defaults, not whatever the malformed value held —
+        // and this is a shape mismatch, not a thrown error, so it must not
+        // be reported to Sentry the way a genuine storage failure is.
+        expect(store.state.theme).toBe("system");
+        expect(SentrySDK.captureException).not.toHaveBeenCalled();
+
+        deferredLoad.resolve({ ...USER_SETTINGS_DEFAULTS });
+        await flushPromises();
+      },
+    );
+
+    it("discards a cache entry and reports to Sentry when applying it throws", async () => {
+      localStorage.setItem(
+        "basin-appearance-cache:user_dirty_flag_test",
+        JSON.stringify({ ...USER_SETTINGS_DEFAULTS, theme: "dark" }),
+      );
+      // Targets only the cached-apply's applyToDom() call: teardownLoadedAccount()
+      // (which runs first, resetting to DEFAULTS' theme "system") calls
+      // removeAttribute, not setAttribute("data-theme", ...), so it's unaffected —
+      // only the cached "dark" theme's setAttribute call throws.
+      const applyError = new Error("DOM write blocked");
+      const setAttributeSpy = vi
+        .spyOn(document.documentElement, "setAttribute")
+        .mockImplementation((name) => {
+          if (name === "data-theme") {
+            throw applyError;
+          }
+        });
+      consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      const { deferredLoad } = setupSignedInLoad();
+      store.init();
+      await flushPromises();
+
+      expect(SentrySDK.captureException).toHaveBeenCalledWith(applyError);
+      expect(mockSentryScope.setExtras).toHaveBeenCalledWith({
+        stage: "appearance-cache-discard",
+      });
+      expect(
+        localStorage.getItem("basin-appearance-cache:user_dirty_flag_test"),
+      ).toBeNull();
+
+      setAttributeSpy.mockRestore();
+      deferredLoad.resolve({ ...USER_SETTINGS_DEFAULTS });
+      await flushPromises();
+    });
+
+    it("reports to Sentry when clearing a bad cache entry also fails, and still completes the load", async () => {
+      localStorage.setItem(
+        "basin-appearance-cache:user_dirty_flag_test",
+        JSON.stringify({ ...USER_SETTINGS_DEFAULTS, theme: "dark" }),
+      );
+      const applyError = new Error("DOM write blocked");
+      const setAttributeSpy = vi
+        .spyOn(document.documentElement, "setAttribute")
+        .mockImplementation((name) => {
+          if (name === "data-theme") {
+            throw applyError;
+          }
+        });
+      const removeError = new Error("storage locked");
+      const removeItemSpy = vi
+        .spyOn(localStorage, "removeItem")
+        .mockImplementation(() => {
+          throw removeError;
+        });
+      consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      const { deferredLoad } = setupSignedInLoad();
+      store.init();
+      await flushPromises();
+
+      expect(SentrySDK.captureException).toHaveBeenCalledWith(removeError);
+      expect(mockSentryScope.setExtras).toHaveBeenCalledWith({
+        stage: "appearance-cache-clear",
+      });
+      // The double failure doesn't get loadFromDb stuck — it still reaches
+      // the DB fetch below instead of leaving the cloak down forever.
+      expect(store.ready).toBe(false);
+
+      setAttributeSpy.mockRestore();
+      removeItemSpy.mockRestore();
+      deferredLoad.resolve({ ...USER_SETTINGS_DEFAULTS });
+      await flushPromises();
+
+      expect(store.ready).toBe(true);
+    });
+
     it("reports to Sentry (as a message, not an exception) when a save resolves falsy", async () => {
       const { deferredLoad, save } = setupSignedInLoad();
       save.mockResolvedValue(null);
