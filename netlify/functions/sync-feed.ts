@@ -245,8 +245,14 @@ async function refreshYouTubeToken(
 
 async function resolveValidAccessToken(
   integration: NonNullable<Awaited<ReturnType<typeof fetchYouTubeIntegration>>>,
+  // Bypasses the isTokenExpired check — used when the uploads API itself
+  // just rejected the stored token with a 401 despite expiresAt saying it's
+  // still live (see fetchYouTubeUploadsWithReauth): expiresAt can drift from
+  // what Google actually honors (early invalidation, clock skew), so a live
+  // 401 is stronger evidence than the stored timestamp.
+  { forceRefresh = false }: { forceRefresh?: boolean } = {},
 ): Promise<string> {
-  if (!isTokenExpired(integration.expiresAt)) {
+  if (!forceRefresh && !isTokenExpired(integration.expiresAt)) {
     return integration.accessToken;
   }
 
@@ -328,22 +334,68 @@ function mapYouTubeApiFailure(error: unknown, feedId: number): never {
   throw error;
 }
 
+// True only for the narrow case a forced-refresh retry can actually fix: the
+// uploads API rejected the token outright (401) and there's a refresh token
+// to try. A 403 auth-like rejection (see AUTH_LIKE_403_REASONS in
+// youtubeAdapter.ts) is a scope/account problem a refresh can't fix, and
+// with no refresh token there's nothing to retry with — both escalate
+// immediately instead.
+function canRetryAfterForcedRefresh(
+  error: unknown,
+  integration: NonNullable<Awaited<ReturnType<typeof fetchYouTubeIntegration>>>,
+): boolean {
+  return (
+    error instanceof YouTubeAuthError &&
+    error.status === 401 &&
+    Boolean(integration.refreshToken)
+  );
+}
+
 // Isolates the fetchNewUploadsForChannel call so its failures can be
 // reclassified (see mapYouTubeApiFailure) without that translation getting
-// tangled into syncYouTubeFeed's own token-resolution and persistence steps.
-// Forwards its arguments as a tuple typed off fetchNewUploadsForChannel
-// itself, rather than restating its positional parameters by hand, so a
-// future reorder there is a type error here instead of a silently
-// transposed call.
-async function fetchNewUploadsOrMapFailure(
-  ...args: Parameters<typeof fetchNewUploadsForChannel>
+// tangled into syncYouTubeFeed's own persistence steps. A 401 gets one
+// forced-refresh-and-retry before being escalated: expiresAt can say the
+// token is still live while Google has already invalidated it (early
+// invalidation, clock skew), so a live 401 is stronger evidence than the
+// stored timestamp, and only a refresh that itself fails (revoked refresh
+// token) or a second 401 on the retried request proves the account
+// genuinely needs reconnecting.
+async function fetchYouTubeUploadsWithReauth(
+  integration: NonNullable<Awaited<ReturnType<typeof fetchYouTubeIntegration>>>,
+  accessToken: string,
+  channelId: string,
+  feedId: number,
+  channelTitle: string,
+  lastSyncedAt: Date | null,
 ): ReturnType<typeof fetchNewUploadsForChannel> {
-  const [, feedId] = args;
-
   try {
-    return await fetchNewUploadsForChannel(...args);
+    return await fetchNewUploadsForChannel(
+      channelId,
+      feedId,
+      channelTitle,
+      lastSyncedAt,
+      accessToken,
+    );
   } catch (error) {
-    mapYouTubeApiFailure(error, feedId);
+    if (!canRetryAfterForcedRefresh(error, integration)) {
+      mapYouTubeApiFailure(error, feedId);
+    }
+
+    const refreshedAccessToken = await resolveValidAccessToken(integration, {
+      forceRefresh: true,
+    });
+
+    try {
+      return await fetchNewUploadsForChannel(
+        channelId,
+        feedId,
+        channelTitle,
+        lastSyncedAt,
+        refreshedAccessToken,
+      );
+    } catch (retryError) {
+      mapYouTubeApiFailure(retryError, feedId);
+    }
   }
 }
 
@@ -372,12 +424,13 @@ async function syncYouTubeFeed(
   // itself, not just later subscriptions-API calls.
   const accessToken = await resolveValidAccessToken(integration);
 
-  const newItems = await fetchNewUploadsOrMapFailure(
+  const newItems = await fetchYouTubeUploadsWithReauth(
+    integration,
+    accessToken,
     channelId,
     feedId,
     channelTitle ?? channelId,
     lastSyncedAt,
-    accessToken,
   );
 
   return upsertFeedItems(feedId, newItems);

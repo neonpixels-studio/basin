@@ -105,16 +105,14 @@ export class YouTubeQuotaExceededError extends YouTubeResponseError {
   }
 }
 
-// Reasons Google's JSON error body can carry on a 403 that mean the access
-// grant itself was rejected — insufficient/dropped scopes, an account-level
-// block — rather than the project's request quota running out. These need a
-// reconnect just like a 401. Status code alone can't distinguish this from
-// quota exhaustion — Google uses 403 for both — so the body has to be read.
-const AUTH_LIKE_403_REASONS = new Set([
-  "insufficientPermissions",
-  "insufficientScopes",
-  "authError",
-]);
+// Reason Google's JSON error body carries on a 403 when the access grant
+// itself was rejected (a scope dropped on re-consent) rather than the
+// project's request quota running out. This needs a reconnect just like a
+// 401. Status code alone can't distinguish this from quota exhaustion —
+// Google uses 403 for both — so the body has to be read. (Only this one
+// value is listed: it's the reason actually documented for the Data API;
+// speculative entries here would just be untested dead code.)
+const AUTH_LIKE_403_REASONS = new Set(["insufficientPermissions"]);
 
 // Reasons that mean the project's daily quota is actually exhausted (resets
 // on Google's schedule, typically ~24h). Deliberately narrower than "any

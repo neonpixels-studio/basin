@@ -962,21 +962,22 @@ describe("sync-feed workload — permanent failure persistence", () => {
     expect(mockUpdateWhere).toHaveBeenCalledTimes(2);
   });
 
-  it("marks the integration for reconnect when the uploads API rejects the access token (401)", async () => {
+  it("marks the integration for reconnect when the uploads API rejects the access token (401) and there's no refresh token to retry with", async () => {
     mockFindFirst
       .mockResolvedValueOnce(makeYouTubeFeed())
-      .mockResolvedValueOnce(makeIntegration());
+      .mockResolvedValueOnce(makeIntegration({ refreshToken: null }));
     mockFetchNewUploadsForChannel.mockRejectedValue(
       new YouTubeAuthError(401, "Unauthorized", "Channel uploads fetch failed"),
     );
 
-    // A rejected access token can't succeed on retry, so this must skip
+    // With no refresh token there's nothing to retry with, so this must skip
     // straight to a permanent failure regardless of attempt number.
     await expect(
       (handler as Function)(makeYouTubeEvent({ attempt: 0 })),
     ).rejects.toMatchObject({ name: "IntegrationAuthError" });
 
     expect(mockFetchNewUploadsForChannel).toHaveBeenCalledTimes(1);
+    expect(mockRefreshAccessToken).not.toHaveBeenCalled();
 
     // Two updates for the feed (the atomic increment and the derived
     // nextRetryAt) and one for the integration: a revoked/rejected token
@@ -988,6 +989,108 @@ describe("sync-feed workload — permanent failure persistence", () => {
         syncError: expect.stringContaining("Re-connect your YouTube account"),
       }),
     );
+    expect(console.error).toHaveBeenCalledWith(
+      expect.stringContaining('"event":"sync-feed.youtube-auth-error"'),
+    );
+  });
+
+  it("recovers from a 401 by forcing a token refresh and retrying once, without flagging the integration", async () => {
+    mockFindFirst
+      .mockResolvedValueOnce(makeYouTubeFeed())
+      .mockResolvedValueOnce(makeIntegration());
+    mockFetchNewUploadsForChannel
+      .mockRejectedValueOnce(
+        new YouTubeAuthError(
+          401,
+          "Unauthorized",
+          "Channel uploads fetch failed",
+        ),
+      )
+      .mockResolvedValueOnce([makeVideoItem()]);
+    mockRefreshAccessToken.mockResolvedValue({
+      accessToken: "refreshed-access-token",
+      expiresAt: new Date(Date.now() + 3_600_000),
+    });
+    mockInsertReturning.mockResolvedValue([{ id: 30 }]);
+
+    vi.stubEnv("NUXT_GOOGLE_CLIENT_ID", "test-client-id");
+    vi.stubEnv("NUXT_GOOGLE_CLIENT_SECRET", "test-client-secret");
+
+    // expiresAt says the stored token is still live (isTokenExpired stays
+    // false throughout) — the forced refresh must happen anyway, driven by
+    // the live 401 rather than the stored expiry.
+    await (handler as Function)(makeYouTubeEvent());
+
+    expect(mockFetchNewUploadsForChannel).toHaveBeenCalledTimes(2);
+    expect(mockFetchNewUploadsForChannel).toHaveBeenLastCalledWith(
+      "UCxxxxxx",
+      2,
+      "Test Channel",
+      null,
+      "refreshed-access-token",
+    );
+    expect(mockRefreshAccessToken).toHaveBeenCalledTimes(1);
+
+    // A recovered sync is a success, not a failure: only the feed and
+    // integration's healthy-state writes, never an IntegrationAuthError.
+    expect(mockUpdateSet).not.toHaveBeenCalledWith(
+      expect.objectContaining({ syncStatus: "error" }),
+    );
+  });
+
+  it("escalates to IntegrationAuthError when a forced-refresh retry still 401s", async () => {
+    mockFindFirst
+      .mockResolvedValueOnce(makeYouTubeFeed())
+      .mockResolvedValueOnce(makeIntegration());
+    mockFetchNewUploadsForChannel.mockRejectedValue(
+      new YouTubeAuthError(401, "Unauthorized", "Channel uploads fetch failed"),
+    );
+    mockRefreshAccessToken.mockResolvedValue({
+      accessToken: "refreshed-access-token",
+      expiresAt: new Date(Date.now() + 3_600_000),
+    });
+
+    vi.stubEnv("NUXT_GOOGLE_CLIENT_ID", "test-client-id");
+    vi.stubEnv("NUXT_GOOGLE_CLIENT_SECRET", "test-client-secret");
+
+    await expect(
+      (handler as Function)(makeYouTubeEvent({ attempt: 0 })),
+    ).rejects.toMatchObject({ name: "IntegrationAuthError" });
+
+    // Once for the original attempt, once for the retry after a forced
+    // refresh — a third attempt would mean the retry isn't actually capped
+    // at one.
+    expect(mockFetchNewUploadsForChannel).toHaveBeenCalledTimes(2);
+    expect(mockRefreshAccessToken).toHaveBeenCalledTimes(1);
+    expect(mockUpdateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        syncStatus: "error",
+        syncError: expect.stringContaining("Re-connect your YouTube account"),
+      }),
+    );
+  });
+
+  it("escalates to IntegrationAuthError when the forced refresh itself fails (revoked refresh token)", async () => {
+    mockFindFirst
+      .mockResolvedValueOnce(makeYouTubeFeed())
+      .mockResolvedValueOnce(makeIntegration());
+    mockFetchNewUploadsForChannel.mockRejectedValue(
+      new YouTubeAuthError(401, "Unauthorized", "Channel uploads fetch failed"),
+    );
+    mockRefreshAccessToken.mockRejectedValue(
+      new TokenRefreshAuthError(400, "Bad Request"),
+    );
+
+    vi.stubEnv("NUXT_GOOGLE_CLIENT_ID", "test-client-id");
+    vi.stubEnv("NUXT_GOOGLE_CLIENT_SECRET", "test-client-secret");
+
+    await expect(
+      (handler as Function)(makeYouTubeEvent({ attempt: 0 })),
+    ).rejects.toMatchObject({ name: "IntegrationAuthError" });
+
+    // The refresh token was already proven dead — no point retrying the
+    // uploads call a second time.
+    expect(mockFetchNewUploadsForChannel).toHaveBeenCalledTimes(1);
   });
 
   it("does not mark the integration when the uploads API reports quota exhaustion (403)", async () => {
@@ -1019,6 +1122,9 @@ describe("sync-feed workload — permanent failure persistence", () => {
         syncStatus: "error",
         syncError: expect.stringContaining("quota exceeded"),
       }),
+    );
+    expect(console.error).toHaveBeenCalledWith(
+      expect.stringContaining('"event":"sync-feed.youtube-quota-exceeded"'),
     );
   });
 
