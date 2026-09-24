@@ -138,6 +138,30 @@ describe("useConnections", () => {
     });
   });
 
+  describe("reconnect()", () => {
+    it("re-runs the OAuth flow for a needs-reconnect YouTube integration", () => {
+      const { reconnect } = useConnections();
+      reconnect("youtube");
+      expect(mockLocation.href).toBe("/api/auth/youtube");
+    });
+
+    it("shows a toast for an unsupported needs-reconnect provider instead of navigating", () => {
+      const { reconnect } = useConnections();
+      reconnect("twitter");
+      expect(mockShowToast).toHaveBeenCalledWith(
+        expect.stringContaining("twitter"),
+      );
+      expect(mockLocation.href).toBe("");
+    });
+
+    it("does not navigate or show a toast for a needs-reconnect Bluesky integration (form-based flow)", () => {
+      const { reconnect } = useConnections();
+      reconnect("bluesky");
+      expect(mockShowToast).not.toHaveBeenCalled();
+      expect(mockLocation.href).toBe("");
+    });
+  });
+
   describe("normalizeBlueskyHandle()", () => {
     async function postedHandle(handle: string): Promise<string> {
       mockFetch.mockResolvedValueOnce({ ok: true, handle });

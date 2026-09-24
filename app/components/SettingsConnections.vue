@@ -1,8 +1,16 @@
 <script setup>
 const NEEDS_RECONNECT_LABEL = "Needs reconnect";
 
-const { items, loading, error, load, connect, connectBluesky, disconnect } =
-  useConnections();
+const {
+  items,
+  loading,
+  error,
+  load,
+  connect,
+  reconnect,
+  connectBluesky,
+  disconnect,
+} = useConnections();
 onMounted(load);
 
 const blueskyHandle = ref("");
@@ -45,16 +53,28 @@ function toggleLabel(connection) {
   return connection.connected ? "Disconnect" : "Connect";
 }
 
+// Bluesky's connect flow is an inline form rather than a redirect, so both
+// the initial connect and a reconnect need to open it the same way. Kept as
+// one function so that branch isn't duplicated between toggleConn and
+// reconnectConn.
+function startConnectFlow(connection, connectAction) {
+  if (connection.id === "bluesky") {
+    showBlueskyForm.value = true;
+    return;
+  }
+  connectAction(connection.id);
+}
+
 function toggleConn(connection) {
   if (connection.connected) {
     disconnect(connection.id);
     return;
   }
-  if (connection.id === "bluesky") {
-    showBlueskyForm.value = true;
-    return;
-  }
-  connect(connection.id);
+  startConnectFlow(connection, connect);
+}
+
+function reconnectConn(connection) {
+  startConnectFlow(connection, reconnect);
 }
 
 async function submitBlueskyForm() {
@@ -123,14 +143,24 @@ const blueskySubmitDisabled = computed(
               {{ NEEDS_RECONNECT_LABEL }}
             </span>
           </div>
-          <button
-            class="btn"
-            :class="toggleButtonClass(connection)"
-            :disabled="loading"
-            @click="toggleConn(connection)"
-          >
-            {{ toggleLabel(connection) }}
-          </button>
+          <div class="conn-buttons">
+            <button
+              v-if="connection.needsReconnect"
+              class="btn btn-primary"
+              :disabled="loading"
+              @click="reconnectConn(connection)"
+            >
+              Reconnect
+            </button>
+            <button
+              class="btn"
+              :class="toggleButtonClass(connection)"
+              :disabled="loading"
+              @click="toggleConn(connection)"
+            >
+              {{ toggleLabel(connection) }}
+            </button>
+          </div>
         </div>
         <div v-if="isBlueskyFormOpen(connection)" class="bluesky-form">
           <p class="desc">
@@ -193,6 +223,11 @@ const blueskySubmitDisabled = computed(
 }
 
 .bluesky-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.conn-buttons {
   display: flex;
   gap: 8px;
 }
