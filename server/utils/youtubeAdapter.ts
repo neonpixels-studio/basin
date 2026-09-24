@@ -56,13 +56,30 @@ export interface SubscriptionsPage {
 // caller instead.
 const AUTH_FAILURE_STATUS_CODES = new Set([400, 401]);
 
-export class TokenRefreshAuthError extends Error {
+// Shared shape for every "this HTTP call to Google failed for a reason more
+// specific than a generic Error" case in this file (token refresh, YouTube
+// Data API auth rejection, YouTube Data API quota exhaustion) — same concern
+// (name a status-coded failure so callers can react to it distinctly) showing
+// up a third time, so it's factored into one base rather than three
+// hand-copied constructors.
+class YouTubeResponseError extends Error {
   status: number;
 
-  constructor(status: number, statusText: string) {
-    super(`Token refresh failed: ${status} ${statusText}`);
-    this.name = "TokenRefreshAuthError";
+  constructor(
+    name: string,
+    status: number,
+    statusText: string,
+    context: string,
+  ) {
+    super(`${context}: ${status} ${statusText}`);
+    this.name = name;
     this.status = status;
+  }
+}
+
+export class TokenRefreshAuthError extends YouTubeResponseError {
+  constructor(status: number, statusText: string) {
+    super("TokenRefreshAuthError", status, statusText, "Token refresh failed");
   }
 }
 
@@ -72,13 +89,9 @@ export class TokenRefreshAuthError extends Error {
 // token was rejected outright. Mirrors TokenRefreshAuthError's shape so
 // callers can react to either the same way: the credential itself needs a
 // user to reconnect the account, not a retry.
-export class YouTubeAuthError extends Error {
-  status: number;
-
+export class YouTubeAuthError extends YouTubeResponseError {
   constructor(status: number, statusText: string, context: string) {
-    super(`${context}: ${status} ${statusText}`);
-    this.name = "YouTubeAuthError";
-    this.status = status;
+    super("YouTubeAuthError", status, statusText, context);
   }
 }
 
@@ -86,33 +99,65 @@ export class YouTubeAuthError extends Error {
 // exhausted. Distinct from YouTubeAuthError: the connected account is fine
 // and reconnecting won't help — the caller should back off and retry later
 // instead of prompting the user to reconnect.
-export class YouTubeQuotaExceededError extends Error {
-  status: number;
-
+export class YouTubeQuotaExceededError extends YouTubeResponseError {
   constructor(status: number, statusText: string, context: string) {
-    super(`${context}: ${status} ${statusText}`);
-    this.name = "YouTubeQuotaExceededError";
-    this.status = status;
+    super("YouTubeQuotaExceededError", status, statusText, context);
   }
 }
 
-// Google returns 401 for a revoked/expired access token and 403 for both an
-// exhausted quota and a handful of unrelated permission failures; the Data
-// API doesn't distinguish the latter two in the status code alone, but
-// quota exhaustion is by far the common case in an unattended sync, so 403
-// is classified as quota here rather than left generic. Shared by every
-// YouTube Data API call in this file (subscriptions, playlist items) so a
-// revoked token or exhausted quota is classified the same way regardless of
-// which endpoint surfaced it.
-function throwForFailedYouTubeResponse(
+// Reasons Google's JSON error body can carry on a 403 that mean the access
+// grant itself was rejected — insufficient/dropped scopes, an account-level
+// block — rather than the project's request quota running out. These need a
+// reconnect just like a 401; everything else on a 403 (quotaExceeded,
+// dailyLimitExceeded, rateLimitExceeded, or no parseable reason at all) is
+// treated as quota exhaustion, the common case for an unattended sync. Status
+// code alone can't distinguish these — Google uses 403 for both — so the
+// body has to be read.
+const AUTH_LIKE_403_REASONS = new Set([
+  "insufficientPermissions",
+  "insufficientScopes",
+  "authError",
+]);
+
+interface GoogleApiErrorBody {
+  error?: {
+    errors?: { reason?: string }[];
+  };
+}
+
+// Best-effort read of the error reason Google's API embeds in the response
+// body. Never throws: a body that isn't JSON, or doesn't have the expected
+// shape, just means the reason is unknown, and the 403 falls back to the
+// quota classification below.
+async function resolveGoogleApiErrorReason(
+  response: Response,
+): Promise<string | undefined> {
+  try {
+    const body = (await response.json()) as GoogleApiErrorBody;
+    return body.error?.errors?.[0]?.reason;
+  } catch {
+    return undefined;
+  }
+}
+
+// Classifies a failed YouTube Data API response and throws the matching
+// error type. Shared by every YouTube Data API call in this file
+// (subscriptions, playlist items) so a revoked token or exhausted quota is
+// classified the same way regardless of which endpoint surfaced it.
+async function throwForFailedYouTubeResponse(
   response: Response,
   context: string,
-): never {
+): Promise<never> {
   if (response.status === 401) {
     throw new YouTubeAuthError(response.status, response.statusText, context);
   }
 
   if (response.status === 403) {
+    const reason = await resolveGoogleApiErrorReason(response);
+    if (reason && AUTH_LIKE_403_REASONS.has(reason)) {
+      throw new YouTubeAuthError(response.status, response.statusText, context);
+    }
+
     throw new YouTubeQuotaExceededError(
       response.status,
       response.statusText,
@@ -218,7 +263,7 @@ export async function fetchYouTubeSubscriptions(
     });
 
     if (!response.ok) {
-      throwForFailedYouTubeResponse(response, "Subscriptions API error");
+      await throwForFailedYouTubeResponse(response, "Subscriptions API error");
     }
 
     const page = (await response.json()) as SubscriptionsPage;
@@ -359,7 +404,7 @@ export async function fetchChannelUploadsPage(
       return { items: [] };
     }
 
-    throwForFailedYouTubeResponse(
+    await throwForFailedYouTubeResponse(
       response,
       `Channel uploads fetch failed for playlist ${playlistId}`,
     );

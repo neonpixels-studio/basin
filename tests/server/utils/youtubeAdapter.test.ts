@@ -365,6 +365,22 @@ describe("fetchYouTubeSubscriptions", () => {
     ).rejects.toMatchObject({ name: "YouTubeQuotaExceededError", status: 403 });
   });
 
+  it("classifies a 403 with an insufficientPermissions reason as YouTubeAuthError, not quota", async () => {
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 403,
+      statusText: "Forbidden",
+      json: () =>
+        Promise.resolve({
+          error: { errors: [{ reason: "insufficientPermissions" }] },
+        }),
+    });
+
+    await expect(
+      fetchYouTubeSubscriptions("access-token"),
+    ).rejects.toMatchObject({ name: "YouTubeAuthError", status: 403 });
+  });
+
   it("keeps the generic Error for other non-ok statuses (e.g. 500)", async () => {
     mockFetch.mockResolvedValue({
       ok: false,
@@ -638,6 +654,22 @@ describe("fetchChannelUploadsPage", () => {
     await expect(
       fetchChannelUploadsPage("UUtest", "access-token"),
     ).rejects.toMatchObject({ name: "YouTubeQuotaExceededError", status: 403 });
+  });
+
+  it("classifies a 403 with an insufficientPermissions reason as YouTubeAuthError, not quota", async () => {
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 403,
+      statusText: "Forbidden",
+      json: () =>
+        Promise.resolve({
+          error: { errors: [{ reason: "insufficientPermissions" }] },
+        }),
+    });
+
+    await expect(
+      fetchChannelUploadsPage("UUtest", "access-token"),
+    ).rejects.toMatchObject({ name: "YouTubeAuthError", status: 403 });
   });
 
   it("keeps the generic Error for other non-ok statuses (e.g. 500)", async () => {

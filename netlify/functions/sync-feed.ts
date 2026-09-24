@@ -317,21 +317,15 @@ function mapYouTubeApiFailure(error: unknown): never {
 // Isolates the fetchNewUploadsForChannel call so its failures can be
 // reclassified (see mapYouTubeApiFailure) without that translation getting
 // tangled into syncYouTubeFeed's own token-resolution and persistence steps.
+// Forwards its arguments as a tuple typed off fetchNewUploadsForChannel
+// itself, rather than restating its positional parameters by hand, so a
+// future reorder there is a type error here instead of a silently
+// transposed call.
 async function fetchNewUploadsOrMapFailure(
-  channelId: string,
-  feedId: number,
-  channelTitle: string,
-  lastSyncedAt: Date | null,
-  accessToken: string,
-): Promise<Awaited<ReturnType<typeof fetchNewUploadsForChannel>>> {
+  ...args: Parameters<typeof fetchNewUploadsForChannel>
+): ReturnType<typeof fetchNewUploadsForChannel> {
   try {
-    return await fetchNewUploadsForChannel(
-      channelId,
-      feedId,
-      channelTitle,
-      lastSyncedAt,
-      accessToken,
-    );
+    return await fetchNewUploadsForChannel(...args);
   } catch (error) {
     mapYouTubeApiFailure(error);
   }
