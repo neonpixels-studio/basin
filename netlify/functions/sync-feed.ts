@@ -286,7 +286,7 @@ async function resolveValidAccessToken(
 }
 
 // Translates a classified YouTube Data API failure (see youtubeAdapter.ts's
-// throwForFailedYouTubeResponse) into the workload's permanent-failure
+// resolveFailedYouTubeResponseError) into the workload's permanent-failure
 // vocabulary, mirroring how refreshYouTubeToken above translates
 // TokenRefreshAuthError: retrying a revoked token or an exhausted quota
 // within the same sync can't succeed, so both skip runAdapterWithRetry's
@@ -296,9 +296,18 @@ async function resolveValidAccessToken(
 // account's fault — reconnecting doesn't fix it — so it's a feed-only
 // ErrorDoNotRetry instead, left to clear on its own once Google resets the
 // quota (surfaced to the user via the feed's syncError, same as any other
-// feed-level failure).
-function mapYouTubeApiFailure(error: unknown): never {
+// feed-level failure). Both branches skip runAdapterWithRetry's own
+// "sync-feed.error" log (thrown as ErrorDoNotRetry, they never reach it), so
+// each logs its own structured event here instead — otherwise a
+// project-wide quota exhaustion, exactly the kind of incident worth paging
+// on, would leave nothing but per-feed syncError rows to notice it by.
+function mapYouTubeApiFailure(error: unknown, feedId: number): never {
   if (error instanceof YouTubeAuthError) {
+    logSyncEvent(
+      "sync-feed.youtube-auth-error",
+      { feedId, error: error.message },
+      "error",
+    );
     throw new IntegrationAuthError(
       "youtube",
       "YouTube authorization expired or was revoked. Re-connect your YouTube account.",
@@ -306,6 +315,11 @@ function mapYouTubeApiFailure(error: unknown): never {
   }
 
   if (error instanceof YouTubeQuotaExceededError) {
+    logSyncEvent(
+      "sync-feed.youtube-quota-exceeded",
+      { feedId, error: error.message },
+      "error",
+    );
     throw new ErrorDoNotRetry(
       "YouTube API quota exceeded. This feed will resume syncing automatically once quota resets.",
     );
@@ -324,10 +338,12 @@ function mapYouTubeApiFailure(error: unknown): never {
 async function fetchNewUploadsOrMapFailure(
   ...args: Parameters<typeof fetchNewUploadsForChannel>
 ): ReturnType<typeof fetchNewUploadsForChannel> {
+  const [, feedId] = args;
+
   try {
     return await fetchNewUploadsForChannel(...args);
   } catch (error) {
-    mapYouTubeApiFailure(error);
+    mapYouTubeApiFailure(error, feedId);
   }
 }
 

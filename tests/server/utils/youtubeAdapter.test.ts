@@ -353,11 +353,15 @@ describe("fetchYouTubeSubscriptions", () => {
     ).rejects.toMatchObject({ name: "YouTubeAuthError", status: 401 });
   });
 
-  it("classifies a 403 as YouTubeQuotaExceededError", async () => {
+  it("classifies a 403 with a quotaExceeded reason as YouTubeQuotaExceededError", async () => {
     mockFetch.mockResolvedValue({
       ok: false,
       status: 403,
       statusText: "Forbidden",
+      json: () =>
+        Promise.resolve({
+          error: { errors: [{ reason: "quotaExceeded" }] },
+        }),
     });
 
     await expect(
@@ -379,6 +383,35 @@ describe("fetchYouTubeSubscriptions", () => {
     await expect(
       fetchYouTubeSubscriptions("access-token"),
     ).rejects.toMatchObject({ name: "YouTubeAuthError", status: 403 });
+  });
+
+  it("keeps the generic Error for a 403 with a rateLimitExceeded reason (a burst throttle that clears on retry, unlike a day-long quota)", async () => {
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 403,
+      statusText: "Forbidden",
+      json: () =>
+        Promise.resolve({
+          error: { errors: [{ reason: "rateLimitExceeded" }] },
+        }),
+    });
+
+    const rejection = fetchYouTubeSubscriptions("access-token");
+    await expect(rejection).rejects.toMatchObject({ name: "Error" });
+    await expect(rejection).rejects.toThrow("reason: rateLimitExceeded");
+  });
+
+  it("keeps the generic Error for a 403 with no parseable reason, rather than guessing it's quota", async () => {
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 403,
+      statusText: "Forbidden",
+      json: () => Promise.reject(new SyntaxError("Unexpected token <")),
+    });
+
+    await expect(
+      fetchYouTubeSubscriptions("access-token"),
+    ).rejects.toMatchObject({ name: "Error" });
   });
 
   it("keeps the generic Error for other non-ok statuses (e.g. 500)", async () => {
@@ -644,16 +677,49 @@ describe("fetchChannelUploadsPage", () => {
     ).rejects.toMatchObject({ name: "YouTubeAuthError", status: 401 });
   });
 
-  it("classifies a 403 as YouTubeQuotaExceededError", async () => {
+  it("classifies a 403 with a quotaExceeded reason as YouTubeQuotaExceededError", async () => {
     mockFetch.mockResolvedValue({
       ok: false,
       status: 403,
       statusText: "Forbidden",
+      json: () =>
+        Promise.resolve({
+          error: { errors: [{ reason: "quotaExceeded" }] },
+        }),
     });
 
     await expect(
       fetchChannelUploadsPage("UUtest", "access-token"),
     ).rejects.toMatchObject({ name: "YouTubeQuotaExceededError", status: 403 });
+  });
+
+  it("keeps the generic Error for a 403 with a rateLimitExceeded reason (a burst throttle that clears on retry, unlike a day-long quota)", async () => {
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 403,
+      statusText: "Forbidden",
+      json: () =>
+        Promise.resolve({
+          error: { errors: [{ reason: "rateLimitExceeded" }] },
+        }),
+    });
+
+    const rejection = fetchChannelUploadsPage("UUtest", "access-token");
+    await expect(rejection).rejects.toMatchObject({ name: "Error" });
+    await expect(rejection).rejects.toThrow("reason: rateLimitExceeded");
+  });
+
+  it("keeps the generic Error for a 403 with no parseable reason, rather than guessing it's quota", async () => {
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 403,
+      statusText: "Forbidden",
+      json: () => Promise.reject(new SyntaxError("Unexpected token <")),
+    });
+
+    await expect(
+      fetchChannelUploadsPage("UUtest", "access-token"),
+    ).rejects.toMatchObject({ name: "Error" });
   });
 
   it("classifies a 403 with an insufficientPermissions reason as YouTubeAuthError, not quota", async () => {

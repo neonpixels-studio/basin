@@ -108,16 +108,26 @@ export class YouTubeQuotaExceededError extends YouTubeResponseError {
 // Reasons Google's JSON error body can carry on a 403 that mean the access
 // grant itself was rejected — insufficient/dropped scopes, an account-level
 // block — rather than the project's request quota running out. These need a
-// reconnect just like a 401; everything else on a 403 (quotaExceeded,
-// dailyLimitExceeded, rateLimitExceeded, or no parseable reason at all) is
-// treated as quota exhaustion, the common case for an unattended sync. Status
-// code alone can't distinguish these — Google uses 403 for both — so the
-// body has to be read.
+// reconnect just like a 401. Status code alone can't distinguish this from
+// quota exhaustion — Google uses 403 for both — so the body has to be read.
 const AUTH_LIKE_403_REASONS = new Set([
   "insufficientPermissions",
   "insufficientScopes",
   "authError",
 ]);
+
+// Reasons that mean the project's daily quota is actually exhausted (resets
+// on Google's schedule, typically ~24h). Deliberately narrower than "any
+// other 403": a burst-rate reason like rateLimitExceeded/
+// userRateLimitExceeded clears in seconds and is better served by the
+// generic Error's normal retry-with-backoff ladder than by being told to
+// wait a day, and an operator-facing reason like accessNotConfigured (the
+// Data API disabled for this project) isn't something either message is
+// honest about. An allowlist here — rather than treating "not auth-like" as
+// "must be quota" — means an unrecognized or unparseable 403 falls through
+// to the generic Error path below, which is the safer default: it retries
+// instead of asserting a specific (and possibly wrong) cause.
+const QUOTA_403_REASONS = new Set(["quotaExceeded", "dailyLimitExceeded"]);
 
 interface GoogleApiErrorBody {
   error?: {
@@ -128,7 +138,7 @@ interface GoogleApiErrorBody {
 // Best-effort read of the error reason Google's API embeds in the response
 // body. Never throws: a body that isn't JSON, or doesn't have the expected
 // shape, just means the reason is unknown, and the 403 falls back to the
-// quota classification below.
+// generic (retryable) classification below.
 async function resolveGoogleApiErrorReason(
   response: Response,
 ): Promise<string | undefined> {
@@ -140,32 +150,57 @@ async function resolveGoogleApiErrorReason(
   }
 }
 
-// Classifies a failed YouTube Data API response and throws the matching
-// error type. Shared by every YouTube Data API call in this file
-// (subscriptions, playlist items) so a revoked token or exhausted quota is
-// classified the same way regardless of which endpoint surfaced it.
-async function throwForFailedYouTubeResponse(
+// Appends the parsed reason (when there is one) to a context string, so a
+// misclassified or generic failure still carries Google's own explanation
+// for an operator to grep for, even though the response body has already
+// been consumed by the time this is read.
+function describeContext(context: string, reason: string | undefined): string {
+  return reason ? `${context} (reason: ${reason})` : context;
+}
+
+// Builds the error a failed YouTube Data API response should raise, without
+// throwing it itself — the throw stays at each call site so TypeScript's
+// control-flow analysis can see it directly. (A function returning
+// `Promise<never>` doesn't narrow reachability the way a synchronous `never`
+// does, so a call site doing `await throwX(...)` would still type-check as
+// reachable afterward — building the error and throwing at the call site
+// avoids relying on that.) Shared by every YouTube Data API call in this
+// file (subscriptions, playlist items) so a revoked token or exhausted quota
+// is classified the same way regardless of which endpoint surfaced it.
+async function resolveFailedYouTubeResponseError(
   response: Response,
   context: string,
-): Promise<never> {
+): Promise<Error> {
   if (response.status === 401) {
-    throw new YouTubeAuthError(response.status, response.statusText, context);
+    return new YouTubeAuthError(response.status, response.statusText, context);
   }
 
   if (response.status === 403) {
     const reason = await resolveGoogleApiErrorReason(response);
+    const describedContext = describeContext(context, reason);
+
     if (reason && AUTH_LIKE_403_REASONS.has(reason)) {
-      throw new YouTubeAuthError(response.status, response.statusText, context);
+      return new YouTubeAuthError(
+        response.status,
+        response.statusText,
+        describedContext,
+      );
     }
 
-    throw new YouTubeQuotaExceededError(
-      response.status,
-      response.statusText,
-      context,
+    if (reason && QUOTA_403_REASONS.has(reason)) {
+      return new YouTubeQuotaExceededError(
+        response.status,
+        response.statusText,
+        describedContext,
+      );
+    }
+
+    return new Error(
+      `${describedContext}: ${response.status} ${response.statusText}`,
     );
   }
 
-  throw new Error(`${context}: ${response.status} ${response.statusText}`);
+  return new Error(`${context}: ${response.status} ${response.statusText}`);
 }
 
 export function isTokenExpired(expiresAt: Date | null): boolean {
@@ -263,7 +298,10 @@ export async function fetchYouTubeSubscriptions(
     });
 
     if (!response.ok) {
-      await throwForFailedYouTubeResponse(response, "Subscriptions API error");
+      throw await resolveFailedYouTubeResponseError(
+        response,
+        "Subscriptions API error",
+      );
     }
 
     const page = (await response.json()) as SubscriptionsPage;
@@ -404,7 +442,7 @@ export async function fetchChannelUploadsPage(
       return { items: [] };
     }
 
-    await throwForFailedYouTubeResponse(
+    throw await resolveFailedYouTubeResponseError(
       response,
       `Channel uploads fetch failed for playlist ${playlistId}`,
     );
