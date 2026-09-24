@@ -18,7 +18,7 @@ const schema = {
 };
 export type ClientDb = ReturnType<typeof drizzle<typeof schema>>;
 
-let _db: ClientDb | null = null;
+let dbPromise: Promise<ClientDb> | null = null;
 
 // DDL kept in sync with app/db/schema.ts — run once on first init. Exported
 // so tests can stand up a real (in-memory) PGlite instance against the same
@@ -74,12 +74,26 @@ export const MIGRATIONS = /* sql */ `
   ALTER TABLE sync_queue ADD COLUMN IF NOT EXISTS failed_at TIMESTAMP;
 `;
 
-export async function useClientDb(): Promise<ClientDb> {
-  if (_db) return _db;
-
+async function openClientDb(): Promise<ClientDb> {
   const client = new PGlite("idb://reader-app");
   await client.exec(MIGRATIONS);
-  _db = drizzle(client, { schema });
+  return drizzle(client, { schema });
+}
 
-  return _db;
+// Memoizes the in-flight *promise*, not the resolved db — callers that both
+// run early in boot (the sync plugin's boot flush and SyncQueueAlert's
+// onMounted) can otherwise both see no db yet and each construct their own
+// PGlite("idb://reader-app") against the same store, corrupting it. Every
+// caller in the same tick-or-later now shares the one open in progress.
+// Reset on failure so a transient open error (e.g. a blocked IndexedDB
+// upgrade) doesn't cache a rejected promise forever — the next call gets a
+// fresh attempt, matching the previous retry-on-next-call behavior.
+export function useClientDb(): Promise<ClientDb> {
+  if (!dbPromise) {
+    dbPromise = openClientDb().catch((error: unknown) => {
+      dbPromise = null;
+      throw error;
+    });
+  }
+  return dbPromise;
 }
