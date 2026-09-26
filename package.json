@@ -40,7 +40,7 @@
     "@netlify/async-workloads": "^0.0.106",
     "@netlify/functions": "^6.0.0",
     "@pinia/nuxt": "^1.0.2",
-    "@sentry/nuxt": "^10.75.0",
+    "@sentry/nuxt": "^11.0.0",
     "dompurify": "^3.4.15",
     "drizzle-orm": "^0.45.2",
     "h3": "^1.15.11",
