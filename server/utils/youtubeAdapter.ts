@@ -152,6 +152,13 @@ const QUOTA_403_REASONS = new Set(["quotaExceeded", "dailyLimitExceeded"]);
 // the 404-as-empty-page case in fetchChannelUploadsPage below (a channel
 // with no uploads playlist at all) — this is a playlist that exists but is
 // deliberately walled off.
+//
+// "forbidden" is Google's generic 403 reason, not one specific to playlists
+// — it also turns up on subscriptions.list for unrelated causes — so this
+// set is only ever checked for the playlistItems.list call site (see
+// ResolveFailedYouTubeResponseErrorOptions.classifyPlaylistInaccessible
+// below); an unscoped check here would misclassify an unrelated
+// subscriptions-side 403 as a permanently inaccessible playlist.
 const PLAYLIST_INACCESSIBLE_403_REASONS = new Set([
   "playlistItemsNotAccessible",
   "forbidden",
@@ -186,6 +193,67 @@ function describeContext(context: string, reason: string | undefined): string {
   return reason ? `${context} (reason: ${reason})` : context;
 }
 
+// A reason-set paired with the factory for the error it should produce.
+// Every 403-reason-based error class in this file takes the same
+// (status, statusText, context) shape, so each factory below is just that
+// class's constructor wrapped in a closure — this is what lets
+// resolveFailedYouTubeResponseError below hold all of them in one lookup
+// instead of hand-copying an `if (reason && SET.has(reason)) return new
+// XError(...)` branch per class.
+interface Reason403Classifier {
+  reasons: Set<string>;
+  // Parameter names are prefixed with `_` purely to satisfy this project's
+  // base (non-TS-aware) no-unused-vars lint rule, which can't tell a type
+  // signature's parameter names from a real, invocable parameter list — the
+  // names carry no meaning here beyond documentation.
+  buildError: (_status: number, _statusText: string, _context: string) => Error;
+}
+
+// Ordered reason-set -> error lookup for a 403's parsed reason. Order never
+// affects the result (the three reason sets are disjoint — a reason belongs
+// to at most one), but is kept auth-like, then quota, then
+// playlist-inaccessible to match the order those sets are declared above.
+// `classifyPlaylistInaccessible` gates the last entry (see its call sites)
+// so it's included only when relevant.
+function reason403Classifiers(
+  classifyPlaylistInaccessible: boolean,
+): Reason403Classifier[] {
+  const classifiers: Reason403Classifier[] = [
+    {
+      reasons: AUTH_LIKE_403_REASONS,
+      buildError: (status, statusText, context) =>
+        new YouTubeAuthError(status, statusText, context),
+    },
+    {
+      reasons: QUOTA_403_REASONS,
+      buildError: (status, statusText, context) =>
+        new YouTubeQuotaExceededError(status, statusText, context),
+    },
+  ];
+
+  if (classifyPlaylistInaccessible) {
+    classifiers.push({
+      reasons: PLAYLIST_INACCESSIBLE_403_REASONS,
+      buildError: (status, statusText, context) =>
+        new YouTubePlaylistInaccessibleError(status, statusText, context),
+    });
+  }
+
+  return classifiers;
+}
+
+interface ResolveFailedYouTubeResponseErrorOptions {
+  // "forbidden" is Google's generic 403 reason, not one specific to
+  // playlists — a subscriptions.list 403 forbidden means something
+  // completely different (e.g. the API project itself is restricted) than a
+  // playlistItems.list 403 forbidden (this specific uploads playlist is
+  // private/region-blocked). True only for the playlistItems.list call site
+  // (see fetchChannelUploadsPage) so the other endpoints sharing this
+  // function can't have an unrelated 403 misclassified as a permanently
+  // inaccessible playlist.
+  classifyPlaylistInaccessible?: boolean;
+}
+
 // Builds the error a failed YouTube Data API response should raise, without
 // throwing it itself — the throw stays at each call site so TypeScript's
 // control-flow analysis can see it directly. (A function returning
@@ -198,6 +266,7 @@ function describeContext(context: string, reason: string | undefined): string {
 async function resolveFailedYouTubeResponseError(
   response: Response,
   context: string,
+  options: ResolveFailedYouTubeResponseErrorOptions = {},
 ): Promise<Error> {
   if (response.status === 401) {
     return new YouTubeAuthError(response.status, response.statusText, context);
@@ -207,24 +276,15 @@ async function resolveFailedYouTubeResponseError(
     const reason = await resolveGoogleApiErrorReason(response);
     const describedContext = describeContext(context, reason);
 
-    if (reason && AUTH_LIKE_403_REASONS.has(reason)) {
-      return new YouTubeAuthError(
-        response.status,
-        response.statusText,
-        describedContext,
-      );
-    }
+    const classifiers = reason403Classifiers(
+      Boolean(options.classifyPlaylistInaccessible),
+    );
+    const matchedClassifier = reason
+      ? classifiers.find((classifier) => classifier.reasons.has(reason))
+      : undefined;
 
-    if (reason && QUOTA_403_REASONS.has(reason)) {
-      return new YouTubeQuotaExceededError(
-        response.status,
-        response.statusText,
-        describedContext,
-      );
-    }
-
-    if (reason && PLAYLIST_INACCESSIBLE_403_REASONS.has(reason)) {
-      return new YouTubePlaylistInaccessibleError(
+    if (matchedClassifier) {
+      return matchedClassifier.buildError(
         response.status,
         response.statusText,
         describedContext,
@@ -481,6 +541,7 @@ export async function fetchChannelUploadsPage(
     throw await resolveFailedYouTubeResponseError(
       response,
       `Channel uploads fetch failed for playlist ${playlistId}`,
+      { classifyPlaylistInaccessible: true },
     );
   }
 

@@ -14,8 +14,8 @@ import {
   fetchNewUploadsForChannel,
   TokenRefreshAuthError,
   YouTubeAuthError,
-  YouTubeQuotaExceededError,
   YouTubePlaylistInaccessibleError,
+  YouTubeQuotaExceededError,
 } from "../../server/utils/youtubeAdapter";
 import {
   decryptNullableTokenTolerant,
@@ -292,6 +292,21 @@ async function resolveValidAccessToken(
   return refreshed.accessToken;
 }
 
+// Logs the structured event for a permanent YouTube API failure, then throws
+// the workload-vocabulary error it maps to. Factored out of
+// mapYouTubeApiFailure below because every one of its three branches is this
+// same "log the original classified error, then throw the translated one"
+// pair — the only things that vary are the event name and the thrown error.
+function logAndThrowPermanentFailure(
+  event: string,
+  feedId: number,
+  error: Error,
+  thrown: Error,
+): never {
+  logSyncEvent(event, { feedId, error: error.message }, "error");
+  throw thrown;
+}
+
 // Translates a classified YouTube Data API failure (see youtubeAdapter.ts's
 // resolveFailedYouTubeResponseError) into the workload's permanent-failure
 // vocabulary, mirroring how refreshYouTubeToken above translates
@@ -313,36 +328,36 @@ async function resolveValidAccessToken(
 // nothing but per-feed syncError rows to notice it by.
 function mapYouTubeApiFailure(error: unknown, feedId: number): never {
   if (error instanceof YouTubeAuthError) {
-    logSyncEvent(
+    logAndThrowPermanentFailure(
       "sync-feed.youtube-auth-error",
-      { feedId, error: error.message },
-      "error",
-    );
-    throw new IntegrationAuthError(
-      "youtube",
-      "YouTube authorization expired or was revoked. Re-connect your YouTube account.",
+      feedId,
+      error,
+      new IntegrationAuthError(
+        "youtube",
+        "YouTube authorization expired or was revoked. Re-connect your YouTube account.",
+      ),
     );
   }
 
   if (error instanceof YouTubeQuotaExceededError) {
-    logSyncEvent(
+    logAndThrowPermanentFailure(
       "sync-feed.youtube-quota-exceeded",
-      { feedId, error: error.message },
-      "error",
-    );
-    throw new ErrorDoNotRetry(
-      "YouTube API quota exceeded. This feed will resume syncing automatically once quota resets.",
+      feedId,
+      error,
+      new ErrorDoNotRetry(
+        "YouTube API quota exceeded. This feed will resume syncing automatically once quota resets.",
+      ),
     );
   }
 
   if (error instanceof YouTubePlaylistInaccessibleError) {
-    logSyncEvent(
+    logAndThrowPermanentFailure(
       "sync-feed.youtube-playlist-inaccessible",
-      { feedId, error: error.message },
-      "error",
-    );
-    throw new ErrorDoNotRetry(
-      "This channel's uploads playlist is private or unavailable and can't be synced.",
+      feedId,
+      error,
+      new ErrorDoNotRetry(
+        "This channel's uploads playlist is private or unavailable and can't be synced.",
+      ),
     );
   }
 

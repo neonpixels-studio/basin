@@ -140,8 +140,8 @@ import { integrations } from "../../../server/db/schema";
 import {
   TokenRefreshAuthError,
   YouTubeAuthError,
-  YouTubeQuotaExceededError,
   YouTubePlaylistInaccessibleError,
+  YouTubeQuotaExceededError,
 } from "../../../server/utils/youtubeAdapter";
 import type { BlueskySessionTokens } from "../../../server/utils/blueskyAdapter";
 import {
