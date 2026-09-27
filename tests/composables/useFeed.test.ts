@@ -1302,6 +1302,15 @@ describe("useFeedStore", () => {
         // a redundant markRead sync even though the server already knows
         // it's read.
         it("does not re-fire markRead when the fresher search row shows the item already read", async () => {
+          // Documents the known, pre-existing trade-off named in
+          // resolveOpenedItem's @todo: this merge only reconciles the item
+          // itself, not state.counts, so a count seeded to match the now-
+          // corrected loaded row's *old* value is left untouched here — it
+          // stays stale by one until the next full counts reload, exactly
+          // as it would have if the loaded row had been marked read locally
+          // by some other path. Not a regression this test is asserting
+          // against; a documented gap the follow-up @todo covers.
+          state.counts = { unread: 2 };
           const loadedItem = state.items[0]; // seeded with id: 1, unread: true
           const searchCopy = searchCopyOf(loadedItem, {
             readAt: new Date("2026-01-01T00:00:00Z"),
@@ -1313,6 +1322,44 @@ describe("useFeedStore", () => {
           expect(state.activeItem).toBe(loadedItem);
           expect(loadedItem.unread).toBe(false);
           expect(queueAction).not.toHaveBeenCalled();
+          expect(state.counts.unread).toBe(2);
+        });
+
+        // Reverse direction of the test above: the loaded row is stale in
+        // the "already read" direction, and the fresher search row shows it
+        // genuinely unread again (e.g. a feed re-sync reset readAt). The
+        // merge must let this fresher `unread: true` through so openItem's
+        // wasUnread check still fires the markRead sync.
+        it("fires markRead when the fresher search row shows the item newly unread", async () => {
+          const loadedItem = state.items[1]; // seeded with id: 2, unread: false
+          const searchCopy = searchCopyOf(loadedItem, { readAt: null });
+          expect(searchCopy.unread).toBe(true);
+
+          await feed.openItem(searchCopy);
+
+          expect(state.activeItem).toBe(loadedItem);
+          expect(loadedItem.unread).toBe(false); // openItem always marks read on open
+          expect(queueAction).toHaveBeenCalledOnce();
+          const [action, payload] = queueAction.mock.calls[0];
+          expect(action).toBe("markRead");
+          expect(payload.feedId).toBe(loadedItem.feedId);
+          expect(payload.guid).toBe(loadedItem.guid);
+        });
+
+        // `starred` is nullable at the DB layer (unlike saved/unread, which
+        // deriveFeedItemFields always resolves to a boolean) — a genuine
+        // `null` from a fresher row must still pass through the merge, not
+        // be mistaken for "the incoming row omits this field".
+        it("merges a fresher starred: null (not just true/false) onto the loaded row", async () => {
+          const loadedItem = state.items[1]; // seeded with id: 2, starred: false
+          loadedItem.starred = true;
+          const searchCopy = searchCopyOf(loadedItem, { starred: null });
+          expect(searchCopy.starred).toBeNull();
+
+          await feed.openItem(searchCopy);
+
+          expect(state.activeItem).toBe(loadedItem);
+          expect(loadedItem.starred).toBeNull();
         });
 
         it("falls back to the raw row when no loaded item shares its id", async () => {

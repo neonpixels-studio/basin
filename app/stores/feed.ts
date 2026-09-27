@@ -595,23 +595,15 @@ export const useFeedStore = defineStore("feed", () => {
     }
   }
 
-  // A caller (e.g. SearchOverlay's chooseRow) can hand in a fresh object for
-  // an item that's already loaded in state.items — a separate /api/search
-  // response row, not the same reference. Without reconciling by id first,
-  // toggling unread/saved/starred from that detached copy would adjust the
-  // global count correctly for that one toggle but leave the stale duplicate
-  // in state.items out of sync, so a later toggle on that duplicate would
-  // double-count. Operating on the loaded row (when one exists) instead keeps
-  // every view mutating the same object.
-  //
   // The three server-owned fields resolveOpenedItem reconciles from a
   // fresher row onto the loaded one. Named here so the merge below (and any
   // future caller) can't drift out of sync with what "server-owned" means.
-  // Deliberately excludes counts-affecting side effects: state.counts is
-  // left untouched by this merge (see the @todo below and #313's evidence),
-  // so a merged saved/unread flip can leave a count stale by one until the
-  // next counts reload — the same pre-existing trade-off the old
-  // unconditional-keep behavior had, just shifted from the item to the count.
+  // @todo state.counts is left untouched by this merge, so a merged
+  // saved/unread flip can leave a count stale by one until the next counts
+  // reload — the same pre-existing "off by one until reload" trade-off the
+  // old unconditional-keep behavior had, just shifted from the item to the
+  // count. Weigh adjusting state.counts[field] alongside a field this merge
+  // actually changes.
   const SERVER_OWNED_ITEM_FIELDS = ["saved", "unread", "starred"] as const;
 
   // Patches the server-owned fields onto `target` from `source`, but only
