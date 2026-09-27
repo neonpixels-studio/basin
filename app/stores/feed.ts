@@ -604,27 +604,37 @@ export const useFeedStore = defineStore("feed", () => {
   // double-count. Operating on the loaded row (when one exists) instead keeps
   // every view mutating the same object.
   //
-  // Deliberately keeps the loaded row's own unread/saved/starred rather than
-  // copying the fresher search row's values onto it: an unsynced optimistic
-  // toggle sitting in the outbox is local state we don't want a stale server
-  // response clobbering. Trade-off: if the item's real saved/unread state
-  // changed elsewhere (another device, another tab) since this page's items
-  // loaded, the search row's fresher value is discarded here and a toggle
-  // against the now-stale loaded value can itself drift from the server by
-  // one count until the next counts reload.
-  // @todo weigh reconciling specific server-owned fields (not the whole row)
-  // from the fresher row onto the loaded one, guarded so it never overwrites
-  // a field with a pending unsynced local change.
+  // Merges the server-owned saved/unread/starred fields from the incoming
+  // (potentially fresher, e.g. an /api/search row) item onto the already-
+  // loaded row, rather than either keeping the loaded row's stale values or
+  // replacing the loaded row wholesale. Keeping the loaded row as the return
+  // value (same reference, just patched) preserves the property above this
+  // comment describes: every view keeps mutating the same object. Patching
+  // its fields onto that same reference means a change made elsewhere
+  // (another device, another tab) since this page's items loaded is no
+  // longer silently discarded — see #313.
+  // @todo guard each field against a pending unsynced local change (an
+  // optimistic toggle still sitting in the outbox) before overwriting it,
+  // so a fresher-but-not-yet-caught-up server value can't clobber a change
+  // the client made and is still waiting to sync.
   function resolveOpenedItem(
     item: Record<string, unknown>,
   ): Record<string, unknown> {
     if (item.id === undefined || item.id === null) {
       return item;
     }
-    return (
-      state.items.find((row: Record<string, unknown>) => row.id === item.id) ??
-      item
+    const loadedRow = state.items.find(
+      (row: Record<string, unknown>) => row.id === item.id,
     );
+    if (!loadedRow) {
+      return item;
+    }
+    if (loadedRow !== item) {
+      loadedRow.saved = item.saved;
+      loadedRow.unread = item.unread;
+      loadedRow.starred = item.starred;
+    }
+    return loadedRow;
   }
 
   async function openItem(rawItem: Record<string, unknown>) {

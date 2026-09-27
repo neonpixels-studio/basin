@@ -1230,13 +1230,16 @@ describe("useFeedStore", () => {
         // desync from the dashboard's copy of the same item and double-count
         // a later toggle there.
         it("resolves to the already-loaded item so toggleSave mutates the same object the dashboard renders", async () => {
-          state.counts = { saved: 1 };
+          state.counts = { saved: 0 };
           const loadedItem = state.items[1]; // seeded with id: 2, saved: true
-          // savedAt is deliberately left null (unlike loadedItem's saved:true)
-          // to prove the resolution is identity-based, not field-copying: the
-          // loaded row's own saved value must win, not whatever this fresh
-          // search row happens to carry.
-          const searchCopy = searchCopyOf(loadedItem);
+          // savedAt matches loadedItem's saved:true here (unlike the #313
+          // regression test below), so this test stays about identity, not
+          // field-merging: it fails on a wholesale-replace resolution (a new
+          // object assigned to state.activeItem) even when the merged value
+          // happens to agree with the stale one.
+          const searchCopy = searchCopyOf(loadedItem, {
+            savedAt: new Date("2026-01-01T00:00:00Z"),
+          });
 
           await feed.openItem(searchCopy);
           expect(state.activeItem).toBe(loadedItem);
@@ -1246,6 +1249,50 @@ describe("useFeedStore", () => {
 
           expect(loadedItem.saved).toBe(false);
           expect(state.counts.saved).toBe(0);
+        });
+
+        // Regression: #313. resolveOpenedItem used to unconditionally keep
+        // the loaded row's own saved/unread/starred and discard whatever the
+        // fresher search row carried, so a change made elsewhere (another
+        // device/tab) since this page's items loaded was silently lost.
+        // Here the loaded row is stale (saved:true, starred:false from the
+        // beforeEach seed) while the search row is fresher (unsaved,
+        // starred) — the merge must win, but still on the same object
+        // reference so every other view keeps mutating it (asserted via
+        // toBe, not just equality of values).
+        it("merges the fresher search row's saved/starred state onto the resolved item", async () => {
+          const loadedItem = state.items[1]; // seeded with id: 2, saved: true
+          expect(loadedItem.starred).toBe(false);
+          const searchCopy = searchCopyOf(loadedItem, {
+            savedAt: null,
+            starred: true,
+          });
+
+          await feed.openItem(searchCopy);
+
+          expect(state.activeItem).toBe(loadedItem);
+          expect(loadedItem.saved).toBe(false);
+          expect(loadedItem.starred).toBe(true);
+        });
+
+        // Regression: #313 (unread half). A loaded row can be stale in the
+        // "still unread" direction too — e.g. read from another tab after
+        // this page's items loaded. Without the merge, openItem would judge
+        // wasUnread against the stale (still-unread) loaded value and fire
+        // a redundant markRead sync even though the server already knows
+        // it's read.
+        it("does not re-fire markRead when the fresher search row shows the item already read", async () => {
+          const loadedItem = state.items[0]; // seeded with id: 1, unread: true
+          const searchCopy = searchCopyOf(loadedItem, {
+            readAt: new Date("2026-01-01T00:00:00Z"),
+          });
+          expect(searchCopy.unread).toBe(false);
+
+          await feed.openItem(searchCopy);
+
+          expect(state.activeItem).toBe(loadedItem);
+          expect(loadedItem.unread).toBe(false);
+          expect(queueAction).not.toHaveBeenCalled();
         });
 
         it("falls back to the raw row when no loaded item shares its id", async () => {
@@ -1302,14 +1349,12 @@ describe("useFeedStore", () => {
         // away from and back to that item must land on the same canonical
         // object each time — never re-surface the detached search row.
         it("lets detailNav navigate to and from an item opened via search", async () => {
-          const loadedItem = state.items[0]; // id: 1
-          // readAt here doesn't gate the markRead sync: openItem's
-          // wasUnread check runs against the resolved canonical item (still
-          // seeded unread: true), not this detached row's own derived
-          // unread — asserted below, not just claimed in this comment.
-          const searchCopy = searchCopyOf(loadedItem, {
-            readAt: new Date("2026-01-01T00:00:00Z"),
-          });
+          const loadedItem = state.items[0]; // id: 1, seeded unread: true
+          // readAt deliberately left null (unread: true) so this test's
+          // markRead assertion is about detailNav/canonical-object behavior,
+          // not the fresher-value merge — that's covered by the dedicated
+          // #313 regression tests above.
+          const searchCopy = searchCopyOf(loadedItem, { readAt: null });
 
           await feed.openItem(searchCopy);
           expect(state.activeItem).toBe(loadedItem);
