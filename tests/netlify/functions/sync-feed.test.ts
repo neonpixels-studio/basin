@@ -97,6 +97,14 @@ vi.mock("../../../server/utils/youtubeAdapter", () => ({
       this.status = status;
     }
   },
+  YouTubePlaylistInaccessibleError: class YouTubePlaylistInaccessibleError extends Error {
+    status: number;
+    constructor(status: number, statusText: string, context: string) {
+      super(`${context}: ${status} ${statusText}`);
+      this.name = "YouTubePlaylistInaccessibleError";
+      this.status = status;
+    }
+  },
 }));
 
 vi.mock("../../../server/utils/blueskyAdapter", () => ({
@@ -133,6 +141,7 @@ import {
   TokenRefreshAuthError,
   YouTubeAuthError,
   YouTubeQuotaExceededError,
+  YouTubePlaylistInaccessibleError,
 } from "../../../server/utils/youtubeAdapter";
 import type { BlueskySessionTokens } from "../../../server/utils/blueskyAdapter";
 import {
@@ -1130,6 +1139,43 @@ describe("sync-feed workload — permanent failure persistence", () => {
     );
     expect(console.error).toHaveBeenCalledWith(
       expect.stringContaining('"event":"sync-feed.youtube-quota-exceeded"'),
+    );
+  });
+
+  it("does not mark the integration when a channel's uploads playlist is permanently inaccessible (403 playlistItemsNotAccessible)", async () => {
+    mockFindFirst
+      .mockResolvedValueOnce(makeYouTubeFeed())
+      .mockResolvedValueOnce(makeIntegration());
+    mockFetchNewUploadsForChannel.mockRejectedValue(
+      new YouTubePlaylistInaccessibleError(
+        403,
+        "Forbidden",
+        "Channel uploads fetch failed",
+      ),
+    );
+
+    // A private/region-blocked playlist can't succeed on retry either, but
+    // it isn't the connected account's fault — every account would get the
+    // same 403 — so it must not be flagged as IntegrationAuthError.
+    await expect(
+      (handler as Function)(makeYouTubeEvent({ attempt: 0 })),
+    ).rejects.toMatchObject({ name: "ErrorDoNotRetry" });
+
+    expect(mockFetchNewUploadsForChannel).toHaveBeenCalledTimes(1);
+
+    // Only the feed is updated (its two failure writes) — the integration
+    // itself is healthy, so it must not be flagged for reconnect.
+    expect(mockUpdateWhere).toHaveBeenCalledTimes(2);
+    expect(mockUpdateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        syncStatus: "error",
+        syncError: expect.stringContaining("private or unavailable"),
+      }),
+    );
+    expect(console.error).toHaveBeenCalledWith(
+      expect.stringContaining(
+        '"event":"sync-feed.youtube-playlist-inaccessible"',
+      ),
     );
   });
 

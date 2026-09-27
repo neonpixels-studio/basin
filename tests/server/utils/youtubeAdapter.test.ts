@@ -385,6 +385,25 @@ describe("fetchYouTubeSubscriptions", () => {
     ).rejects.toMatchObject({ name: "YouTubeAuthError", status: 403 });
   });
 
+  it("classifies a 403 with a playlistItemsNotAccessible reason as YouTubePlaylistInaccessibleError", async () => {
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 403,
+      statusText: "Forbidden",
+      json: () =>
+        Promise.resolve({
+          error: { errors: [{ reason: "playlistItemsNotAccessible" }] },
+        }),
+    });
+
+    await expect(
+      fetchYouTubeSubscriptions("access-token"),
+    ).rejects.toMatchObject({
+      name: "YouTubePlaylistInaccessibleError",
+      status: 403,
+    });
+  });
+
   it("keeps the generic Error for a 403 with a rateLimitExceeded reason (a burst throttle that clears on retry, unlike a day-long quota)", async () => {
     mockFetch.mockResolvedValue({
       ok: false,
@@ -736,6 +755,44 @@ describe("fetchChannelUploadsPage", () => {
     await expect(
       fetchChannelUploadsPage("UUtest", "access-token"),
     ).rejects.toMatchObject({ name: "YouTubeAuthError", status: 403 });
+  });
+
+  it("classifies a 403 with a playlistItemsNotAccessible reason as YouTubePlaylistInaccessibleError (channel made its uploads playlist private)", async () => {
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 403,
+      statusText: "Forbidden",
+      json: () =>
+        Promise.resolve({
+          error: { errors: [{ reason: "playlistItemsNotAccessible" }] },
+        }),
+    });
+
+    await expect(
+      fetchChannelUploadsPage("UUtest", "access-token"),
+    ).rejects.toMatchObject({
+      name: "YouTubePlaylistInaccessibleError",
+      status: 403,
+    });
+  });
+
+  it("classifies a 403 with a forbidden reason as YouTubePlaylistInaccessibleError (region-blocked playlist)", async () => {
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 403,
+      statusText: "Forbidden",
+      json: () =>
+        Promise.resolve({
+          error: { errors: [{ reason: "forbidden" }] },
+        }),
+    });
+
+    await expect(
+      fetchChannelUploadsPage("UUtest", "access-token"),
+    ).rejects.toMatchObject({
+      name: "YouTubePlaylistInaccessibleError",
+      status: 403,
+    });
   });
 
   it("keeps the generic Error for other non-ok statuses (e.g. 500)", async () => {

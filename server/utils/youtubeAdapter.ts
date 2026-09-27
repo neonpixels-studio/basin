@@ -105,6 +105,20 @@ export class YouTubeQuotaExceededError extends YouTubeResponseError {
   }
 }
 
+// Thrown when a channel's uploads playlist exists but this caller can never
+// list it (private/region-blocked — see PLAYLIST_INACCESSIBLE_403_REASONS).
+// Unlike YouTubeAuthError, this is not the connected account's fault — every
+// account would get the same 403 — so it must be attributed to the feed
+// alone, not surfaced as a "reconnect YouTube" prompt. Unlike
+// YouTubeQuotaExceededError, it never clears on its own: retrying later
+// can't succeed either, so the caller should fail this feed once rather than
+// keep it in the transient-error retry ladder.
+export class YouTubePlaylistInaccessibleError extends YouTubeResponseError {
+  constructor(status: number, statusText: string, context: string) {
+    super("YouTubePlaylistInaccessibleError", status, statusText, context);
+  }
+}
+
 // Reason Google's JSON error body carries on a 403 when the access grant
 // itself was rejected (a scope dropped on re-consent) rather than the
 // project's request quota running out. This needs a reconnect just like a
@@ -126,6 +140,22 @@ const AUTH_LIKE_403_REASONS = new Set(["insufficientPermissions"]);
 // to the generic Error path below, which is the safer default: it retries
 // instead of asserting a specific (and possibly wrong) cause.
 const QUOTA_403_REASONS = new Set(["quotaExceeded", "dailyLimitExceeded"]);
+
+// Reasons Google's playlistItems.list returns when a specific channel's
+// uploads playlist itself can never be listed by this caller — the channel
+// made it private, or it's blocked in the caller's region — as opposed to
+// AUTH_LIKE_403_REASONS (the *caller's* grant is the problem) or
+// QUOTA_403_REASONS (the *project's* quota is the problem). Unlike either of
+// those, reconnecting the account or waiting out a quota window can never
+// fix this: the playlist is unreachable for every account, permanently, so
+// it must fail once for this feed rather than retry forever. Distinct from
+// the 404-as-empty-page case in fetchChannelUploadsPage below (a channel
+// with no uploads playlist at all) — this is a playlist that exists but is
+// deliberately walled off.
+const PLAYLIST_INACCESSIBLE_403_REASONS = new Set([
+  "playlistItemsNotAccessible",
+  "forbidden",
+]);
 
 interface GoogleApiErrorBody {
   error?: {
@@ -187,6 +217,14 @@ async function resolveFailedYouTubeResponseError(
 
     if (reason && QUOTA_403_REASONS.has(reason)) {
       return new YouTubeQuotaExceededError(
+        response.status,
+        response.statusText,
+        describedContext,
+      );
+    }
+
+    if (reason && PLAYLIST_INACCESSIBLE_403_REASONS.has(reason)) {
+      return new YouTubePlaylistInaccessibleError(
         response.status,
         response.statusText,
         describedContext,
