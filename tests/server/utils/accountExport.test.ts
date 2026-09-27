@@ -57,7 +57,10 @@ function baseInput(): AccountExportInput {
         title: "Saved Article",
         url: "https://example.com/a",
         author: "Author",
-        authorHandle: "@author",
+        // Stored raw, no leading "@" — feedItems.ts's mapRow adds that at
+        // presentation time, not the export (which passes the column through
+        // as-is, matching every other field here).
+        authorHandle: "author-handle",
         imageUrl: "https://example.com/a.png",
         content: "Body",
         tags: ["news"],

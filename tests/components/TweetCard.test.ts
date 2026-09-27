@@ -38,9 +38,6 @@ describe("TweetCard", () => {
     });
     expect(wrapper.find(".tw-id b").text()).toBe("Real Author");
     expect(wrapper.find(".tw-handle").text()).toBe("@real · 3h");
-    expect(wrapper.find(".tw-id b").text()).not.toBe(
-      makeTweet().source as string,
-    );
   });
 
   it("falls back to the feed title when the item has no author", () => {
@@ -48,6 +45,14 @@ describe("TweetCard", () => {
       props: { item: makeTweet({ author: null }) },
     });
     expect(wrapper.find(".tw-id b").text()).toBe(makeTweet().source as string);
+  });
+
+  it("renders no initials rather than throwing when neither author nor source is set", () => {
+    const wrapper = shallowMount(TweetCard, {
+      props: { item: makeTweet({ author: null, source: "" }) },
+    });
+    expect(wrapper.find(".avatar").text()).toBe("");
+    expect(wrapper.find(".tw-id b").text()).toBe("");
   });
 
   it("renders no engagement counts (the mock-only likes/reposts are gone)", () => {
