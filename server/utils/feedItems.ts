@@ -109,6 +109,15 @@ export interface FeedItemRow {
   updatedAt: Date | null;
 }
 
+// authorHandle is stored raw (e.g. "alice.bsky.social", matching what the
+// Bluesky API hands back) so the adapter never has to know how a handle is
+// displayed. The "@" is added here, at the presentation-derivation boundary,
+// the same place formatRelativeTime formats `time` — not in the adapter or
+// the column itself.
+function formatHandle(authorHandle: string): string {
+  return `@${authorHandle}`;
+}
+
 // Enumerates every raw column explicitly (rather than spreading the row) so
 // an unexpected extra column never leaks into the API response unreviewed.
 // `handle` prefers the item's own `authorHandle` (e.g. a Bluesky post's real
@@ -139,7 +148,7 @@ function mapRow(row: FeedItemRow): FeedItemResult {
     source,
     time,
     unread,
-    handle: row.authorHandle ?? source,
+    handle: row.authorHandle ? formatHandle(row.authorHandle) : source,
     saved,
   };
 }

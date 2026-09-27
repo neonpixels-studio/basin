@@ -32,10 +32,12 @@ describe("TweetCard", () => {
   // the handle line must show the real handle, not the feed's own title.
   it("renders the post author's name and handle instead of the feed's title", () => {
     const wrapper = shallowMount(TweetCard, {
-      props: { item: makeTweet({ author: "Real Author", handle: "@real" }) },
+      props: {
+        item: makeTweet({ author: "Real Author", handle: "@real", time: "3h" }),
+      },
     });
     expect(wrapper.find(".tw-id b").text()).toBe("Real Author");
-    expect(wrapper.find(".tw-handle").text()).toContain("@real");
+    expect(wrapper.find(".tw-handle").text()).toBe("@real · 3h");
     expect(wrapper.find(".tw-id b").text()).not.toBe(
       makeTweet().source as string,
     );

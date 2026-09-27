@@ -264,13 +264,14 @@ describe("fetchFeedItems", () => {
 
   // Regression guard for basin#310: a synced post's own handle must win over
   // the feed's title, or every Bluesky card shows the feed name where the
-  // real author's handle belongs.
-  it("prefers the row's authorHandle over the feed title for handle", async () => {
+  // real author's handle belongs. Formatted with a leading "@" to match the
+  // convention Bluesky itself displays handles with.
+  it("prefers the row's authorHandle over the feed title for handle, formatted with a leading @", async () => {
     mockOffset.mockResolvedValue([
       { ...mockRow, feedSource: "bluesky", authorHandle: "alice.bsky.social" },
     ]);
     const result = await fetchFeedItems(1, {});
-    expect(result.items[0].handle).toBe("alice.bsky.social");
+    expect(result.items[0].handle).toBe("@alice.bsky.social");
   });
 
   it("clamps limit to the maximum allowed value", async () => {

@@ -923,27 +923,19 @@ describe("fetchNewBlueskyPosts", () => {
 
   it("falls back to the handle for author when the post has no display name", async () => {
     const watermark = new Date("2024-05-31T00:00:00.000Z");
+    // Reuses makePost()'s defaults for everything but author, so this test
+    // can't drift from them the way a fully hand-duplicated post object could.
+    const basePost = makePost().post;
 
     mockDeps.getTimeline.mockResolvedValueOnce({
       feed: [
         makePost({
           post: {
-            uri: "at://did:plc:abc123/app.bsky.feed.post/3kp123",
-            cid: "bafyreid123",
+            ...basePost,
             author: {
-              did: "did:plc:abc123",
-              handle: "alice.bsky.social",
+              did: basePost.author.did,
+              handle: basePost.author.handle,
             },
-            record: {
-              $type: "app.bsky.feed.post",
-              text: "Hello Bluesky!",
-              createdAt: "2024-06-01T10:00:00.000Z",
-            },
-            embed: null,
-            replyCount: 0,
-            repostCount: 0,
-            likeCount: 0,
-            indexedAt: "2024-06-01T10:00:01.000Z",
           },
         }),
       ],
