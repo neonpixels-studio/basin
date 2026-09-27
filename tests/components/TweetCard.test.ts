@@ -55,6 +55,13 @@ describe("TweetCard", () => {
     expect(wrapper.find(".tw-id b").text()).toBe("");
   });
 
+  it("falls back to the feed title when author is whitespace-only", () => {
+    const wrapper = shallowMount(TweetCard, {
+      props: { item: makeTweet({ author: "   " }) },
+    });
+    expect(wrapper.find(".tw-id b").text()).toBe(makeTweet().source as string);
+  });
+
   it("renders no engagement counts (the mock-only likes/reposts are gone)", () => {
     // The synced API returns no engagement data; the like/repost spans that
     // read item.meta must be absent — only the save/star buttons remain.

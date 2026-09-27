@@ -7,10 +7,11 @@ defineEmits(["save", "star", "open"]);
 
 // Real synced posts always carry the post author's display name; only a feed
 // with no per-post author (shouldn't happen for tweet-type items, but keeps
-// this resilient) falls back to the feed's own title. The final "" guards a
+// this resilient) falls back to the feed's own title. trim() means a
+// whitespace-only author isn't treated as present; the final "" guards a
 // malformed/partial item where neither is set, so initials never throws.
 const displayName = computed(
-  () => props.item.author || props.item.source || "",
+  () => props.item.author?.trim() || props.item.source || "",
 );
 const initials = computed(() =>
   displayName.value
