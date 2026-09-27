@@ -306,13 +306,76 @@ describe("useSyncQueue", () => {
       await flushSyncQueue();
 
       expect(mockFetch).toHaveBeenCalledTimes(1);
+      // Attempts is left unchanged (0, not incremented to 1) — a 401 must
+      // never draw from MAX_SYNC_ATTEMPTS. See the next two tests for why.
       expect(syncQueueStore.recordRetryableFailure).toHaveBeenCalledWith(
         fakeDb,
         1,
-        1,
+        0,
         "Unauthorized",
       );
       expect(syncQueueStore.quarantine).not.toHaveBeenCalled();
+    });
+
+    it("does not quarantine an item after more than MAX_SYNC_ATTEMPTS worth of 401s", async () => {
+      // Regression test for #311: a mutation stuck behind an expired session
+      // gets re-tried on every "online"/"visibilitychange" flush pass. Before
+      // the fix, 5 such passes would exhaust the same budget as a genuine
+      // content-rejection retry and permanently quarantine a mutation that
+      // never actually failed on its content.
+      const item = makeItem({ id: 1, attempts: 0 });
+      vi.mocked(syncQueueStore.getPendingItems).mockResolvedValue([item]);
+      const unauthorized = Object.assign(new Error("Unauthorized"), {
+        statusCode: 401,
+      });
+      mockFetch.mockRejectedValue(unauthorized);
+
+      const { flushSyncQueue } = useSyncQueue();
+      const attemptCountBeyondBudget = 8;
+      for (let i = 0; i < attemptCountBeyondBudget; i += 1) {
+        await flushSyncQueue();
+      }
+
+      expect(mockFetch).toHaveBeenCalledTimes(attemptCountBeyondBudget);
+      expect(syncQueueStore.quarantine).not.toHaveBeenCalled();
+      expect(syncQueueStore.recordRetryableFailure).toHaveBeenCalledTimes(
+        attemptCountBeyondBudget,
+      );
+      // Every call still reports the item's un-advanced attempts (0) — the
+      // failure count from the store's point of view never accumulates.
+      for (const call of vi.mocked(syncQueueStore.recordRetryableFailure).mock
+        .calls) {
+        expect(call).toEqual([fakeDb, 1, 0, "Unauthorized"]);
+      }
+    });
+
+    it("syncs a mutation successfully once reauthenticated, after repeated 401s", async () => {
+      // The other half of #311: not only must the item survive past what
+      // would have been its retry budget, it must actually sync once the
+      // session is valid again rather than being stuck forever.
+      const item = makeItem({ id: 1, attempts: 0 });
+      vi.mocked(syncQueueStore.getPendingItems).mockResolvedValue([item]);
+      const unauthorized = Object.assign(new Error("Unauthorized"), {
+        statusCode: 401,
+      });
+      mockFetch
+        .mockRejectedValueOnce(unauthorized)
+        .mockRejectedValueOnce(unauthorized)
+        .mockRejectedValueOnce(unauthorized)
+        .mockRejectedValueOnce(unauthorized)
+        .mockRejectedValueOnce(unauthorized)
+        .mockRejectedValueOnce(unauthorized)
+        .mockResolvedValueOnce({ ok: true });
+
+      const { flushSyncQueue } = useSyncQueue();
+      for (let i = 0; i < 6; i += 1) {
+        await flushSyncQueue();
+      }
+      // Reauthentication happened; this pass's fetch call succeeds.
+      await flushSyncQueue();
+
+      expect(syncQueueStore.quarantine).not.toHaveBeenCalled();
+      expect(syncQueueStore.markSynced).toHaveBeenCalledWith(fakeDb, 1);
     });
 
     it("quarantines an item with an unparseable payload without calling $fetch", async () => {
