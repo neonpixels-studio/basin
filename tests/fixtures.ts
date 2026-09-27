@@ -116,17 +116,6 @@ export const makePodcast = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 });
 
-export const makeFeed = (overrides: Record<string, unknown> = {}) => ({
-  id: "f1",
-  type: "rss",
-  name: "Test Feed",
-  url: "test.example.com/feed.xml",
-  count: 5,
-  color: "var(--src-rss)",
-  status: "ok",
-  ...overrides,
-});
-
 export const makeConnection = (overrides: Record<string, unknown> = {}) => ({
   id: "youtube",
   name: "YouTube",
