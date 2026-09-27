@@ -1230,7 +1230,10 @@ describe("useFeedStore", () => {
         // desync from the dashboard's copy of the same item and double-count
         // a later toggle there.
         it("resolves to the already-loaded item so toggleSave mutates the same object the dashboard renders", async () => {
-          state.counts = { saved: 0 };
+          // Seeded non-zero (not 0) so the post-toggle assertion below fails
+          // on a no-op decrement (or a decrement that clamps at zero
+          // regardless of input), not just on the count staying put.
+          state.counts = { saved: 1 };
           const loadedItem = state.items[1]; // seeded with id: 2, saved: true
           // savedAt matches loadedItem's saved:true here (unlike the #313
           // regression test below), so this test stays about identity, not
@@ -1273,6 +1276,23 @@ describe("useFeedStore", () => {
           expect(state.activeItem).toBe(loadedItem);
           expect(loadedItem.saved).toBe(false);
           expect(loadedItem.starred).toBe(true);
+        });
+
+        // #313 guard: a row that carries an id but omits saved/unread/starred
+        // entirely (e.g. a trimmed deep-link payload) must not wipe the
+        // loaded row's real values with `undefined` — the merge only
+        // overwrites a field the incoming row actually carries.
+        it("keeps the loaded row's saved/unread/starred when the incoming item omits them", async () => {
+          const loadedItem = state.items[1]; // seeded with id: 2, saved: true, unread: false
+          loadedItem.starred = true;
+          const partialItem = { id: loadedItem.id };
+
+          await feed.openItem(partialItem);
+
+          expect(state.activeItem).toBe(loadedItem);
+          expect(loadedItem.saved).toBe(true);
+          expect(loadedItem.starred).toBe(true);
+          expect(loadedItem.unread).toBe(false);
         });
 
         // Regression: #313 (unread half). A loaded row can be stale in the
