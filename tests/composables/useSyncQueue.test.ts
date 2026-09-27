@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { useSyncQueue } from "~/composables/useSyncQueue";
+import { useSyncQueue, MAX_SYNC_ATTEMPTS } from "~/composables/useSyncQueue";
 import { syncQueueStore } from "~/composables/syncQueueStore";
 // @sentry/nuxt is mocked once, globally, in tests/setup.ts — see that file's
 // comment for why a module-scoped mock here instead would silently miss the
@@ -39,6 +39,12 @@ function makeItem(overrides: Partial<Record<string, unknown>> = {}) {
     syncedAt: null,
     ...overrides,
   };
+}
+
+// The shape $fetch rejects with — extractStatusCode() in useSyncQueue.ts
+// reads .statusCode off the Error itself, not off a response body.
+function makeHttpError(message: string, statusCode: number): Error {
+  return Object.assign(new Error(message), { statusCode });
 }
 
 describe("useSyncQueue", () => {
@@ -274,9 +280,7 @@ describe("useSyncQueue", () => {
     it("keeps a 5xx failure queued for retry rather than quarantining it", async () => {
       const items = [makeItem({ id: 1 })];
       vi.mocked(syncQueueStore.getPendingItems).mockResolvedValue(items);
-      const serverError = Object.assign(new Error("Bad Gateway"), {
-        statusCode: 502,
-      });
+      const serverError = makeHttpError("Bad Gateway", 502);
       mockFetch.mockRejectedValueOnce(serverError);
 
       const { flushSyncQueue } = useSyncQueue();
@@ -297,9 +301,7 @@ describe("useSyncQueue", () => {
       // in a single flush the moment a session expires.
       const items = [makeItem({ id: 1 }), makeItem({ id: 2 })];
       vi.mocked(syncQueueStore.getPendingItems).mockResolvedValue(items);
-      const unauthorized = Object.assign(new Error("Unauthorized"), {
-        statusCode: 401,
-      });
+      const unauthorized = makeHttpError("Unauthorized", 401);
       mockFetch.mockRejectedValueOnce(unauthorized);
 
       const { flushSyncQueue } = useSyncQueue();
@@ -307,7 +309,9 @@ describe("useSyncQueue", () => {
 
       expect(mockFetch).toHaveBeenCalledTimes(1);
       // Attempts is left unchanged (0, not incremented to 1) — a 401 must
-      // never draw from MAX_SYNC_ATTEMPTS. See the next two tests for why.
+      // never draw from MAX_SYNC_ATTEMPTS. See the #311 regression tests
+      // below ("does not quarantine a 401 even when..." and "keeps retrying
+      // through repeated 401s...") for why this matters.
       expect(syncQueueStore.recordRetryableFailure).toHaveBeenCalledWith(
         fakeDb,
         1,
@@ -317,64 +321,135 @@ describe("useSyncQueue", () => {
       expect(syncQueueStore.quarantine).not.toHaveBeenCalled();
     });
 
-    it("does not quarantine an item after more than MAX_SYNC_ATTEMPTS worth of 401s", async () => {
-      // Regression test for #311: a mutation stuck behind an expired session
-      // gets re-tried on every "online"/"visibilitychange" flush pass. Before
-      // the fix, 5 such passes would exhaust the same budget as a genuine
-      // content-rejection retry and permanently quarantine a mutation that
-      // never actually failed on its content.
-      const item = makeItem({ id: 1, attempts: 0 });
+    it("does not quarantine a 401 even when the item is already at the edge of the retry budget", async () => {
+      // Regression test for #311. attempts: MAX_SYNC_ATTEMPTS - 1 is the same
+      // edge case as "respects the retry bound — quarantines once it's
+      // reached" above — for any *other* failure, attempts + 1 reaches
+      // MAX_SYNC_ATTEMPTS and the item gets quarantined. A 401 must not
+      // advance attempts at all, so it must survive this exact edge
+      // untouched.
+      const item = makeItem({ id: 1, attempts: MAX_SYNC_ATTEMPTS - 1 });
       vi.mocked(syncQueueStore.getPendingItems).mockResolvedValue([item]);
-      const unauthorized = Object.assign(new Error("Unauthorized"), {
-        statusCode: 401,
-      });
-      mockFetch.mockRejectedValue(unauthorized);
+      const unauthorized = makeHttpError("Unauthorized", 401);
+      mockFetch.mockRejectedValueOnce(unauthorized);
 
       const { flushSyncQueue } = useSyncQueue();
-      const attemptCountBeyondBudget = 8;
-      for (let i = 0; i < attemptCountBeyondBudget; i += 1) {
-        await flushSyncQueue();
-      }
-
-      expect(mockFetch).toHaveBeenCalledTimes(attemptCountBeyondBudget);
-      expect(syncQueueStore.quarantine).not.toHaveBeenCalled();
-      expect(syncQueueStore.recordRetryableFailure).toHaveBeenCalledTimes(
-        attemptCountBeyondBudget,
-      );
-      // Every call still reports the item's un-advanced attempts (0) — the
-      // failure count from the store's point of view never accumulates.
-      for (const call of vi.mocked(syncQueueStore.recordRetryableFailure).mock
-        .calls) {
-        expect(call).toEqual([fakeDb, 1, 0, "Unauthorized"]);
-      }
-    });
-
-    it("syncs a mutation successfully once reauthenticated, after repeated 401s", async () => {
-      // The other half of #311: not only must the item survive past what
-      // would have been its retry budget, it must actually sync once the
-      // session is valid again rather than being stuck forever.
-      const item = makeItem({ id: 1, attempts: 0 });
-      vi.mocked(syncQueueStore.getPendingItems).mockResolvedValue([item]);
-      const unauthorized = Object.assign(new Error("Unauthorized"), {
-        statusCode: 401,
-      });
-      mockFetch
-        .mockRejectedValueOnce(unauthorized)
-        .mockRejectedValueOnce(unauthorized)
-        .mockRejectedValueOnce(unauthorized)
-        .mockRejectedValueOnce(unauthorized)
-        .mockRejectedValueOnce(unauthorized)
-        .mockRejectedValueOnce(unauthorized)
-        .mockResolvedValueOnce({ ok: true });
-
-      const { flushSyncQueue } = useSyncQueue();
-      for (let i = 0; i < 6; i += 1) {
-        await flushSyncQueue();
-      }
-      // Reauthentication happened; this pass's fetch call succeeds.
       await flushSyncQueue();
 
       expect(syncQueueStore.quarantine).not.toHaveBeenCalled();
+      expect(syncQueueStore.recordRetryableFailure).toHaveBeenCalledWith(
+        fakeDb,
+        1,
+        MAX_SYNC_ATTEMPTS - 1,
+        "Unauthorized",
+      );
+    });
+
+    it("does not report a 401 to Sentry", async () => {
+      // A 401 is an expected, routine condition (an expired session) — it
+      // must not be treated as a data-loss event the way a real quarantine
+      // is, even when the item is sitting right at the edge of the budget.
+      const item = makeItem({ id: 1, attempts: MAX_SYNC_ATTEMPTS - 1 });
+      vi.mocked(syncQueueStore.getPendingItems).mockResolvedValue([item]);
+      const unauthorized = makeHttpError("Unauthorized", 401);
+      mockFetch.mockRejectedValueOnce(unauthorized);
+
+      const { flushSyncQueue } = useSyncQueue();
+      await flushSyncQueue();
+
+      expect(SentrySDK.captureException).not.toHaveBeenCalled();
+    });
+
+    it("resumes counting from the preserved attempts value after a 401 is followed by a genuine transient failure", async () => {
+      // The freeze only applies while the failure is a 401 — once the
+      // session is valid again but the server itself is unhappy (a 5xx), the
+      // item goes back to drawing from the normal budget starting from
+      // wherever it was frozen, not from zero. Uses stateful mocks (like
+      // "keeps retrying through repeated 401s" above) so the second flush
+      // pass reads back what the first pass actually persisted, rather than
+      // a static row that would make the second assertion pass regardless
+      // of what the 401 branch wrote.
+      const afterAuthFailureAttempts = 3;
+      let persistedAttempts = afterAuthFailureAttempts;
+      vi.mocked(syncQueueStore.getPendingItems).mockImplementation(async () => [
+        makeItem({ id: 1, attempts: persistedAttempts }),
+      ]);
+      vi.mocked(syncQueueStore.recordRetryableFailure).mockImplementation(
+        async (_db, _id, attempts) => {
+          persistedAttempts = attempts;
+        },
+      );
+      const unauthorized = makeHttpError("Unauthorized", 401);
+      mockFetch.mockRejectedValueOnce(unauthorized);
+
+      const { flushSyncQueue } = useSyncQueue();
+      await flushSyncQueue();
+
+      expect(persistedAttempts).toBe(afterAuthFailureAttempts);
+      expect(syncQueueStore.recordRetryableFailure).toHaveBeenCalledWith(
+        fakeDb,
+        1,
+        afterAuthFailureAttempts,
+        "Unauthorized",
+      );
+
+      const serverError = makeHttpError("Bad Gateway", 502);
+      mockFetch.mockRejectedValueOnce(serverError);
+      await flushSyncQueue();
+
+      expect(persistedAttempts).toBe(afterAuthFailureAttempts + 1);
+      expect(syncQueueStore.recordRetryableFailure).toHaveBeenCalledWith(
+        fakeDb,
+        1,
+        afterAuthFailureAttempts + 1,
+        "Bad Gateway",
+      );
+      expect(syncQueueStore.quarantine).not.toHaveBeenCalled();
+    });
+
+    it("keeps retrying through repeated 401s and syncs once reauthenticated", async () => {
+      // The other half of #311. Unlike the other tests in this file, the
+      // store mocks here are stateful (mirroring what recordRetryableFailure
+      // persists back into the row getPendingItems next returns) so this
+      // exercises a realistic sequence of flush passes rather than the same
+      // static row on every call — otherwise a naive "attempts never comes
+      // back incremented" assertion would pass even against the pre-fix
+      // code, which read the same stale attempts value every time too.
+      let persistedAttempts = 0;
+      vi.mocked(syncQueueStore.getPendingItems).mockImplementation(async () => [
+        makeItem({ id: 1, attempts: persistedAttempts }),
+      ]);
+      vi.mocked(syncQueueStore.recordRetryableFailure).mockImplementation(
+        async (_db, _id, attempts) => {
+          persistedAttempts = attempts;
+        },
+      );
+      const unauthorized = makeHttpError("Unauthorized", 401);
+
+      const { flushSyncQueue } = useSyncQueue();
+      const passesBeyondRetryBudget = MAX_SYNC_ATTEMPTS + 3;
+      for (
+        let passIndex = 0;
+        passIndex < passesBeyondRetryBudget;
+        passIndex += 1
+      ) {
+        mockFetch.mockRejectedValueOnce(unauthorized);
+        await flushSyncQueue();
+      }
+
+      // Every pass genuinely retried against the server (not silently
+      // skipped) and recorded its outcome, yet attempts never advanced.
+      expect(mockFetch).toHaveBeenCalledTimes(passesBeyondRetryBudget);
+      expect(syncQueueStore.recordRetryableFailure).toHaveBeenCalledTimes(
+        passesBeyondRetryBudget,
+      );
+      expect(persistedAttempts).toBe(0);
+      expect(syncQueueStore.quarantine).not.toHaveBeenCalled();
+
+      // Reauthentication happens; the next pass's request succeeds.
+      mockFetch.mockResolvedValueOnce({ ok: true });
+      await flushSyncQueue();
+
       expect(syncQueueStore.markSynced).toHaveBeenCalledWith(fakeDb, 1);
     });
 

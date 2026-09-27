@@ -9,33 +9,33 @@ import { captureException, type SentryExtras } from "~/lib/sentry";
 
 // A queued mutation gets this many attempts against a transient failure
 // (network error, 5xx) before it's quarantined too — a persistently-erroring
-// server must not retry forever and silently pile up behind it. A 401 does
-// NOT draw from this budget — see SESSION_EXPIRED_STATUS below.
-const MAX_SYNC_ATTEMPTS = 5;
+// server must not retry forever and silently pile up behind it. Exported so
+// the retry-bound tests can assert against it instead of duplicating the
+// literal (and risking drift between the two).
+export const MAX_SYNC_ATTEMPTS = 5;
 const DEFAULT_SYNC_ERROR_MESSAGE = "Sync failed";
 const DEFAULT_PARSE_ERROR_MESSAGE = "Queued payload could not be parsed";
 const HTTP_CLIENT_ERROR_MIN = 400;
 const HTTP_SERVER_ERROR_MIN = 500;
 
-// 4xx statuses that don't mean "this request can never succeed" — they mean
-// "try again once the underlying condition clears" (rate limit window
-// passed, request timed out). Everything else in the 4xx range is the server
-// rejecting the request's content itself (ownership check, validation,
-// unknown action), which retrying verbatim can never fix.
-const RETRYABLE_CLIENT_ERROR_STATUSES = new Set([408, 429]);
-
-// A 401 means the session itself has expired — it says nothing about
-// whether the request's content is valid, and unlike the statuses above its
-// condition (the user reauthenticating) can take an arbitrary amount of
-// human time to clear, not just a backoff window. Sharing MAX_SYNC_ATTEMPTS
-// with genuine transient/content failures would quarantine a perfectly good
-// mutation for no reason other than the user not having reauthenticated
-// within N flush passes (the "online"/"visibilitychange" listeners fire
-// often, so that budget burns fast). handleSyncFailure special-cases this
-// status before the budget check so it never advances `attempts`, letting
-// the item wait out reauthentication indefinitely and still sync once it
-// clears.
+// A 401 means the session itself has expired, not that the mutation's
+// content is invalid — and unlike the other retryable statuses below,
+// reauthenticating can take an arbitrary amount of human time, not just a
+// backoff window. handleSyncFailure special-cases this status so it never
+// draws from MAX_SYNC_ATTEMPTS, letting the item wait out reauthentication
+// indefinitely and still sync once it clears (see #311).
 const SESSION_EXPIRED_STATUS = 401;
+
+// 4xx statuses that don't mean "this request can never succeed" — they mean
+// "try again once the underlying condition clears" (session refreshed, rate
+// limit window passed, request timed out). Everything else in the 4xx range
+// is the server rejecting the request's content itself (ownership check,
+// validation, unknown action), which retrying verbatim can never fix.
+const RETRYABLE_CLIENT_ERROR_STATUSES = new Set([
+  SESSION_EXPIRED_STATUS,
+  408,
+  429,
+]);
 
 // Why a sync_queue row ended up quarantined — attached to its Sentry report
 // so the two genuinely-data-losing paths (an unparseable payload, and
@@ -74,6 +74,10 @@ function extractStatusCode(error: unknown): number | null {
     : null;
 }
 
+function isSessionExpired(statusCode: number | null): boolean {
+  return statusCode === SESSION_EXPIRED_STATUS;
+}
+
 // A 4xx response (other than the retryable ones above) means the server
 // rejected the request's content itself — retrying the exact same payload
 // can never succeed. Anything else (no status, a network error, a 5xx) is
@@ -85,10 +89,6 @@ function isPermanentFailure(statusCode: number | null): boolean {
   return (
     statusCode >= HTTP_CLIENT_ERROR_MIN && statusCode < HTTP_SERVER_ERROR_MIN
   );
-}
-
-function isSessionExpired(statusCode: number | null): boolean {
-  return statusCode === SESSION_EXPIRED_STATUS;
 }
 
 function describeError(error: unknown): string {
@@ -130,10 +130,8 @@ async function handleSyncFailure(
   const message = describeError(error);
 
   if (isSessionExpired(statusCode)) {
-    // Attempts is left exactly as it was — see SESSION_EXPIRED_STATUS above.
-    // The item stays pending and gets picked up by the very next flush pass,
-    // same as any other retryable failure; it just never runs down the
-    // shared budget while it waits.
+    // See SESSION_EXPIRED_STATUS above — attempts is passed through
+    // unchanged rather than item.attempts + 1.
     await syncQueueStore.recordRetryableFailure(
       db,
       item.id,
