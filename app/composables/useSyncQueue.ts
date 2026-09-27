@@ -31,6 +31,11 @@ const SESSION_EXPIRED_STATUS = 401;
 // limit window passed, request timed out). Everything else in the 4xx range
 // is the server rejecting the request's content itself (ownership check,
 // validation, unknown action), which retrying verbatim can never fix.
+// SESSION_EXPIRED_STATUS's membership here is redundant with (not the
+// primary source of) isPermanentFailure() returning false for it —
+// handleSyncFailure already returns before a 401 ever reaches that
+// classification — kept anyway so the classification stays correct on its
+// own if handleSyncFailure's ordering ever changes.
 const RETRYABLE_CLIENT_ERROR_STATUSES = new Set([
   SESSION_EXPIRED_STATUS,
   408,

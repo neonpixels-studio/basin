@@ -365,7 +365,7 @@ describe("useSyncQueue", () => {
       // session is valid again but the server itself is unhappy (a 5xx), the
       // item goes back to drawing from the normal budget starting from
       // wherever it was frozen, not from zero. Uses stateful mocks (like
-      // "keeps retrying through repeated 401s" above) so the second flush
+      // "keeps retrying through repeated 401s" below) so the second flush
       // pass reads back what the first pass actually persisted, rather than
       // a static row that would make the second assertion pass regardless
       // of what the 401 branch wrote.
