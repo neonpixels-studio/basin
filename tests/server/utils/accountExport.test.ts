@@ -57,6 +57,7 @@ function baseInput(): AccountExportInput {
         title: "Saved Article",
         url: "https://example.com/a",
         author: "Author",
+        authorHandle: "@author",
         imageUrl: "https://example.com/a.png",
         content: "Body",
         tags: ["news"],

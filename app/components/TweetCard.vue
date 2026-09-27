@@ -6,7 +6,7 @@ const props = defineProps({ item: { type: Object, required: true } });
 defineEmits(["save", "star", "open"]);
 
 const initials = computed(() =>
-  props.item.source
+  (props.item.author || props.item.source)
     .split(" ")
     .map((s) => s[0])
     .slice(0, 2)
@@ -20,7 +20,7 @@ const postText = computed(() => contentText(props.item.content));
     <div class="tw-head">
       <span class="avatar src-tweet">{{ initials }}</span>
       <div class="tw-id">
-        <b>{{ item.source }}</b>
+        <b>{{ item.author || item.source }}</b>
         <span class="tw-handle">{{ item.handle }} · {{ item.time }}</span>
       </div>
       <span class="tw-glyph src-tweet"><RIcon name="chat" :size="15" /></span>

@@ -46,6 +46,7 @@ const mockRow: FeedItemRow = {
   title: "Test Article",
   url: "https://example.com/article",
   author: "Jane Doe",
+  authorHandle: null,
   imageUrl: "https://example.com/image.jpg",
   content: "Article content",
   tags: ["test"],
@@ -137,6 +138,7 @@ describe("fetchFeedItems", () => {
     expect(selection.savedAt).toBe(feedItems.savedAt);
     expect(selection.mediaUrl).toBe(feedItems.mediaUrl);
     expect(selection.mediaDuration).toBe(feedItems.mediaDuration);
+    expect(selection.authorHandle).toBe(feedItems.authorHandle);
   });
 
   it("returns empty items array when no rows are found", async () => {
@@ -248,16 +250,27 @@ describe("fetchFeedItems", () => {
     expect(result.nextOffset).toBe(50 + FEED_ITEMS_DEFAULT_LIMIT);
   });
 
-  it("maps feedTitle to handle field on results", async () => {
+  it("falls back to feedTitle for handle when the row has no authorHandle", async () => {
     mockOffset.mockResolvedValue([mockRow]);
     const result = await fetchFeedItems(1, {});
     expect(result.items[0].handle).toBe("Test Feed");
   });
 
-  it("falls back to feedSource for handle when feedTitle is blank", async () => {
+  it("falls back to feedSource for handle when feedTitle is blank and there's no authorHandle", async () => {
     mockOffset.mockResolvedValue([{ ...mockRow, feedTitle: "   " }]);
     const result = await fetchFeedItems(1, {});
     expect(result.items[0].handle).toBe("rss");
+  });
+
+  // Regression guard for basin#310: a synced post's own handle must win over
+  // the feed's title, or every Bluesky card shows the feed name where the
+  // real author's handle belongs.
+  it("prefers the row's authorHandle over the feed title for handle", async () => {
+    mockOffset.mockResolvedValue([
+      { ...mockRow, feedSource: "bluesky", authorHandle: "alice.bsky.social" },
+    ]);
+    const result = await fetchFeedItems(1, {});
+    expect(result.items[0].handle).toBe("alice.bsky.social");
   });
 
   it("clamps limit to the maximum allowed value", async () => {

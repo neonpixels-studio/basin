@@ -108,8 +108,8 @@ exports[`ReaderDetail > matches snapshot (with active tweet) 1`] = `
       <!-- ARTICLE -->
       <!-- TWEET -->
       <div class="p-7 sm:p-8">
-        <div class="mb-5 flex items-center gap-3"><span class="avatar src-tweet" style="width: 48px; height: 48px; font-size: 16px;">TU</span>
-          <div class="min-w-0"><b class="text-ink block text-[15px] font-semibold">Test User</b><span class="text-muted text-[13px]">@testuser</span></div><span class="src-tweet ml-auto"><r-icon-stub name="chat" size="20"></r-icon-stub></span>
+        <div class="mb-5 flex items-center gap-3"><span class="avatar src-tweet" style="width: 48px; height: 48px; font-size: 16px;">MB</span>
+          <div class="min-w-0"><b class="text-ink block text-[15px] font-semibold">My Bluesky Feed</b><span class="text-muted text-[13px]">@testuser</span></div><span class="src-tweet ml-auto"><r-icon-stub name="chat" size="20"></r-icon-stub></span>
         </div>
         <p class="detail-tweet mb-5">This is a test tweet body text.</p>
         <div class="text-muted text-[12px]">3h ago</div>

@@ -211,6 +211,7 @@ function mapPostToFeedItem(
     title: deriveTitleFromText(text),
     url: buildPermalinkFromUri(handle, uri),
     author: displayName,
+    authorHandle: handle,
     content: text || null,
     imageUrl: resolvePostImageUrl(post),
     publishedAt,

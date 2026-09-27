@@ -67,7 +67,9 @@ export const makeTweet = (overrides: Record<string, unknown> = {}) => ({
   feedId: 30,
   guid: "tweet-guid-1",
   type: "tweet",
-  source: "Test User",
+  // Deliberately distinct from `author` — `source` is the feed's own title,
+  // which basin#310 was wrongly substituting for the post author.
+  source: "My Bluesky Feed",
   handle: "@testuser",
   title: "This is a test tweet body text.",
   time: "3h",

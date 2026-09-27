@@ -899,6 +899,68 @@ describe("fetchNewBlueskyPosts", () => {
     expect(item.guid).toBe("at://did:plc:abc123/app.bsky.feed.post/3kp123");
   });
 
+  // Regression guard for basin#310: the real author handle must be persisted
+  // onto the feed item (not just used to build the permalink and discarded),
+  // so TweetCard can render it instead of falling back to "undefined".
+  it("persists the post author's display name and handle", async () => {
+    const watermark = new Date("2024-05-31T00:00:00.000Z");
+
+    mockDeps.getTimeline.mockResolvedValueOnce({
+      feed: [makePost()],
+    });
+
+    const [item] = await fetchNewBlueskyPosts(
+      makeCredentials(),
+      FEED_ID,
+      watermark,
+      DEFAULT_POST_FILTER_POLICY,
+      mockDeps,
+    );
+
+    expect(item.author).toBe("Alice");
+    expect(item.authorHandle).toBe("alice.bsky.social");
+  });
+
+  it("falls back to the handle for author when the post has no display name", async () => {
+    const watermark = new Date("2024-05-31T00:00:00.000Z");
+
+    mockDeps.getTimeline.mockResolvedValueOnce({
+      feed: [
+        makePost({
+          post: {
+            uri: "at://did:plc:abc123/app.bsky.feed.post/3kp123",
+            cid: "bafyreid123",
+            author: {
+              did: "did:plc:abc123",
+              handle: "alice.bsky.social",
+            },
+            record: {
+              $type: "app.bsky.feed.post",
+              text: "Hello Bluesky!",
+              createdAt: "2024-06-01T10:00:00.000Z",
+            },
+            embed: null,
+            replyCount: 0,
+            repostCount: 0,
+            likeCount: 0,
+            indexedAt: "2024-06-01T10:00:01.000Z",
+          },
+        }),
+      ],
+    });
+
+    const [item] = await fetchNewBlueskyPosts(
+      makeCredentials(),
+      FEED_ID,
+      watermark,
+      DEFAULT_POST_FILTER_POLICY,
+      mockDeps,
+    );
+
+    expect(item.author).toBe("alice.bsky.social");
+    expect(item.authorHandle).toBe("alice.bsky.social");
+  });
+
   it("leaves new posts unsaved and unread by default", async () => {
     const watermark = new Date("2024-05-31T00:00:00.000Z");
 

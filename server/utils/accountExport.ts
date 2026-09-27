@@ -38,6 +38,7 @@ export interface AccountExportSavedItem {
   title: string;
   url: string | null;
   author: string | null;
+  authorHandle: string | null;
   imageUrl: string | null;
   content: string | null;
   tags: string[] | null;
@@ -107,6 +108,7 @@ function serializeSavedItem(
     title: item.title,
     url: item.url,
     author: item.author,
+    authorHandle: item.authorHandle,
     imageUrl: item.imageUrl,
     content: item.content,
     tags: item.tags,

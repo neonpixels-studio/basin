@@ -28,6 +28,26 @@ describe("TweetCard", () => {
     expect(wrapper.find(".tw-text").exists()).toBe(false);
   });
 
+  // Regression guard for basin#310: the header must show the post author, and
+  // the handle line must show the real handle, not the feed's own title.
+  it("renders the post author's name and handle instead of the feed's title", () => {
+    const wrapper = shallowMount(TweetCard, {
+      props: { item: makeTweet({ author: "Real Author", handle: "@real" }) },
+    });
+    expect(wrapper.find(".tw-id b").text()).toBe("Real Author");
+    expect(wrapper.find(".tw-handle").text()).toContain("@real");
+    expect(wrapper.find(".tw-id b").text()).not.toBe(
+      makeTweet().source as string,
+    );
+  });
+
+  it("falls back to the feed title when the item has no author", () => {
+    const wrapper = shallowMount(TweetCard, {
+      props: { item: makeTweet({ author: null }) },
+    });
+    expect(wrapper.find(".tw-id b").text()).toBe(makeTweet().source as string);
+  });
+
   it("renders no engagement counts (the mock-only likes/reposts are gone)", () => {
     // The synced API returns no engagement data; the like/repost spans that
     // read item.meta must be absent — only the save/star buttons remain.
