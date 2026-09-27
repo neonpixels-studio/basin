@@ -385,21 +385,21 @@ describe("fetchYouTubeSubscriptions", () => {
     ).rejects.toMatchObject({ name: "YouTubeAuthError", status: 403 });
   });
 
-  it("keeps the generic Error for a 403 with a playlistItemsNotAccessible/forbidden reason on the subscriptions endpoint (playlist-inaccessible classification is scoped to fetchChannelUploadsPage only)", async () => {
-    mockFetch.mockResolvedValue({
-      ok: false,
-      status: 403,
-      statusText: "Forbidden",
-      json: () =>
-        Promise.resolve({
-          error: { errors: [{ reason: "forbidden" }] },
-        }),
-    });
+  it.each(["playlistItemsNotAccessible", "forbidden"])(
+    "keeps the generic Error for a 403 with a %s reason on the subscriptions endpoint (playlist-inaccessible classification is scoped to fetchChannelUploadsPage only)",
+    async (reason) => {
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 403,
+        statusText: "Forbidden",
+        json: () => Promise.resolve({ error: { errors: [{ reason }] } }),
+      });
 
-    const rejection = fetchYouTubeSubscriptions("access-token");
-    await expect(rejection).rejects.toMatchObject({ name: "Error" });
-    await expect(rejection).rejects.toThrow("reason: forbidden");
-  });
+      const rejection = fetchYouTubeSubscriptions("access-token");
+      await expect(rejection).rejects.toMatchObject({ name: "Error" });
+      await expect(rejection).rejects.toThrow(`reason: ${reason}`);
+    },
+  );
 
   it("keeps the generic Error for a 403 with a rateLimitExceeded reason (a burst throttle that clears on retry, unlike a day-long quota)", async () => {
     mockFetch.mockResolvedValue({
