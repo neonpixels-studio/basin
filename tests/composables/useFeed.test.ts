@@ -1278,10 +1278,13 @@ describe("useFeedStore", () => {
           expect(loadedItem.starred).toBe(true);
         });
 
-        // #313 guard: a row that carries an id but omits saved/unread/starred
-        // entirely (e.g. a trimmed deep-link payload) must not wipe the
-        // loaded row's real values with `undefined` — the merge only
-        // overwrites a field the incoming row actually carries.
+        // #313 guard: no current caller hands resolveOpenedItem a payload
+        // missing these fields (every real one goes through mapSearchRow or
+        // is a full state.items row), but a row that carries only an id
+        // must not wipe the loaded row's real values with `undefined` —
+        // the merge only overwrites a field the incoming row actually
+        // carries, so this stays safe for any caller that doesn't hold
+        // that invariant in the future.
         it("keeps the loaded row's saved/unread/starred when the incoming item omits them", async () => {
           const loadedItem = state.items[1]; // seeded with id: 2, saved: true, unread: false
           loadedItem.starred = true;

@@ -595,23 +595,14 @@ export const useFeedStore = defineStore("feed", () => {
     }
   }
 
-  // The three server-owned fields resolveOpenedItem reconciles from a
-  // fresher row onto the loaded one. Named here so the merge below (and any
-  // future caller) can't drift out of sync with what "server-owned" means.
-  // @todo state.counts is left untouched by this merge, so a merged
-  // saved/unread flip can leave a count stale by one until the next counts
-  // reload — the same pre-existing "off by one until reload" trade-off the
-  // old unconditional-keep behavior had, just shifted from the item to the
-  // count. Weigh adjusting state.counts[field] alongside a field this merge
-  // actually changes.
+  // The fields resolveOpenedItem reconciles from a fresher row onto the
+  // loaded one — named so the merge below can't drift out of sync with
+  // what "server-owned" means.
   const SERVER_OWNED_ITEM_FIELDS = ["saved", "unread", "starred"] as const;
 
-  // Patches the server-owned fields onto `target` from `source`, but only
-  // for a field `source` actually carries — `source[field] !== undefined`
-  // covers both "the key is missing entirely" (e.g. a partial payload or a
-  // deep-linked item) and "the key is present but explicitly undefined",
-  // without misreading a genuine falsy server value (starred's raw column
-  // is `boolean | null`, so `null` must still be allowed through) as absent.
+  // Only overwrites a field the source actually carries: `undefined` means
+  // "absent" (skip it), but `null` is a real value (starred's raw DB column
+  // is nullable) and must still pass through.
   function mergeServerOwnedFields(
     target: Record<string, unknown>,
     source: Record<string, unknown>,
@@ -642,10 +633,13 @@ export const useFeedStore = defineStore("feed", () => {
   // object. Patching its fields onto that same reference means a change
   // made elsewhere (another device, another tab) since this page's items
   // loaded is no longer silently discarded — see #313.
-  // @todo guard each field against a pending unsynced local change (an
-  // optimistic toggle still sitting in the outbox) before overwriting it,
-  // so a fresher-but-not-yet-caught-up server value can't clobber a change
-  // the client made and is still waiting to sync.
+  // @todo two known follow-ups, both left for a dedicated change rather
+  // than folded in here: (1) guard each field against a pending unsynced
+  // local change (an optimistic toggle still sitting in the outbox) before
+  // overwriting it, so a fresher-but-not-yet-caught-up server value can't
+  // clobber a change the client made and is still waiting to sync; (2)
+  // state.counts isn't adjusted when a merge flips saved/unread, so a count
+  // can read stale by one until the next full counts reload.
   function resolveOpenedItem(
     item: Record<string, unknown>,
   ): Record<string, unknown> {
