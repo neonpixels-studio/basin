@@ -1,9 +1,5 @@
 import { defineStore } from "pinia";
 import { reactive, computed } from "vue";
-import {
-  feeds as seedFeeds,
-  connections as seedConnections,
-} from "~/data/mock";
 import { SOURCES } from "~/lib/icons";
 import { $fetchWithTimeout, FetchTimeoutError } from "~/utils/fetchWithTimeout";
 import {
@@ -11,8 +7,6 @@ import {
   looksLikeHtml,
   hasBlockLevelMarkup,
 } from "~/utils/sanitizeHtml";
-
-const clone = (x: unknown) => JSON.parse(JSON.stringify(x));
 
 // Abort the feed-sync request after this many ms so a never-settling response
 // can't wedge the refresh loading state. Exported so tests advance their fake
@@ -45,8 +39,6 @@ export const useFeedStore = defineStore("feed", () => {
 
   const state = reactive({
     items: [] as Record<string, unknown>[],
-    feeds: clone(seedFeeds),
-    connections: clone(seedConnections),
     filter: "all",
     layout: "timeline",
     unreadOnly: false,
@@ -54,7 +46,6 @@ export const useFeedStore = defineStore("feed", () => {
     revealDone: true,
     activeItem: null as Record<string, unknown> | null,
     detailLoading: false,
-    newFeedUrl: "",
     // Server pagination cursor for /api/feed-items. Null means the first page
     // hasn't loaded yet or the last page returned no further offset (end of feed).
     nextOffset: null as number | null,
@@ -708,39 +699,6 @@ export const useFeedStore = defineStore("feed", () => {
     openItem(list[idx]);
   }
 
-  function addFeed() {
-    const { showToast } = useToast();
-    const url = state.newFeedUrl.trim();
-    if (!url) return;
-    const isPod = /podcast|simplecast|megaphone|\.mp3|audio/i.test(url);
-    state.feeds.unshift({
-      id: "n" + Date.now(),
-      type: isPod ? "podcast" : "rss",
-      name: url.replace(/^https?:\/\//, "").replace(/\/.*$/, ""),
-      url: url.replace(/^https?:\/\//, ""),
-      count: 0,
-      color: isPod ? "var(--src-podcast)" : "var(--src-rss)",
-      status: "ok",
-    });
-    state.newFeedUrl = "";
-    showToast("Feed added · fetching latest");
-  }
-
-  function removeFeed(id: string) {
-    const { showToast } = useToast();
-    state.feeds = state.feeds.filter(
-      (f: Record<string, unknown>) => f.id !== id,
-    );
-    showToast("Feed removed");
-  }
-
-  function toggleConn(c: Record<string, unknown>) {
-    const { showToast } = useToast();
-    c.connected = !c.connected;
-    c.since = c.connected ? "Connected just now" : "";
-    showToast(c.connected ? `${c.name} connected` : `${c.name} disconnected`);
-  }
-
   const cardComponentName = (type: string) =>
     ({
       article: "ArticleCard",
@@ -845,9 +803,6 @@ export const useFeedStore = defineStore("feed", () => {
     openItem,
     closeDetail,
     detailNav,
-    addFeed,
-    removeFeed,
-    toggleConn,
     cardComponentName,
     contentParagraphs,
     postParagraphs,

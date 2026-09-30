@@ -10,7 +10,6 @@ import {
 } from "~/stores/feed";
 import { VALID_MARK_ALL_READ_FILTERS } from "../../server/utils/markAllRead";
 import { mapSearchRow, type SearchRow } from "../../server/utils/search";
-import { makeFeed, makeConnection } from "../fixtures";
 
 const item = (overrides: Record<string, unknown> = {}) => ({
   id: Math.floor(Math.random() * 1e9),
@@ -194,61 +193,6 @@ describe("useFeedStore", () => {
       state.activeItem = null;
       feed.detailNav(1);
       expect(state.activeItem).toBeNull();
-    });
-  });
-
-  describe("addFeed", () => {
-    beforeEach(() => {
-      state.feeds = [];
-      state.newFeedUrl = "";
-    });
-
-    it("adds an RSS feed from a URL", () => {
-      state.newFeedUrl = "https://example.com/feed.xml";
-      feed.addFeed();
-      expect(state.feeds).toHaveLength(1);
-      expect(state.feeds[0].type).toBe("rss");
-      expect(state.newFeedUrl).toBe("");
-    });
-
-    it("detects a podcast URL", () => {
-      state.newFeedUrl = "https://podcast.example.com/feed";
-      feed.addFeed();
-      expect(state.feeds[0].type).toBe("podcast");
-    });
-
-    it("does nothing when URL is empty", () => {
-      state.newFeedUrl = "   ";
-      feed.addFeed();
-      expect(state.feeds).toHaveLength(0);
-    });
-  });
-
-  describe("removeFeed", () => {
-    it("removes the feed with the given id", () => {
-      state.feeds = [makeFeed({ id: "f1" }), makeFeed({ id: "f2" })] as never;
-      feed.removeFeed("f1");
-      expect(state.feeds).toHaveLength(1);
-      expect(state.feeds[0].id).toBe("f2");
-    });
-  });
-
-  describe("toggleConn", () => {
-    it("connects a disconnected connection", () => {
-      const conn = makeConnection({ connected: false, since: "" });
-      feed.toggleConn(conn);
-      expect(conn.connected).toBe(true);
-      expect(conn.since).toBeTruthy();
-    });
-
-    it("disconnects a connected connection", () => {
-      const conn = makeConnection({
-        connected: true,
-        since: "Connected just now",
-      });
-      feed.toggleConn(conn);
-      expect(conn.connected).toBe(false);
-      expect(conn.since).toBe("");
     });
   });
 
