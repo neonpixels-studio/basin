@@ -14,6 +14,7 @@ import {
   fetchNewUploadsForChannel,
   TokenRefreshAuthError,
   YouTubeAuthError,
+  YouTubePlaylistInaccessibleError,
   YouTubeQuotaExceededError,
 } from "../../server/utils/youtubeAdapter";
 import {
@@ -291,43 +292,72 @@ async function resolveValidAccessToken(
   return refreshed.accessToken;
 }
 
+// Logs the structured event for a permanent YouTube API failure, then throws
+// the workload-vocabulary error it maps to. Factored out of
+// mapYouTubeApiFailure below because every one of its three branches is this
+// same "log the original classified error, then throw the translated one"
+// pair — the only things that vary are the event name and the thrown error.
+function logAndThrowPermanentFailure(
+  event: string,
+  feedId: number,
+  error: Error,
+  thrown: Error,
+): never {
+  logSyncEvent(event, { feedId, error: error.message }, "error");
+  throw thrown;
+}
+
 // Translates a classified YouTube Data API failure (see youtubeAdapter.ts's
 // resolveFailedYouTubeResponseError) into the workload's permanent-failure
 // vocabulary, mirroring how refreshYouTubeToken above translates
-// TokenRefreshAuthError: retrying a revoked token or an exhausted quota
-// within the same sync can't succeed, so both skip runAdapterWithRetry's
-// retry-with-delay path instead of burning attempts on it. Only the auth
-// case is attributed to the connection (IntegrationAuthError) so
-// SettingsConnections flags it for reconnect; a quota failure isn't the
-// account's fault — reconnecting doesn't fix it — so it's a feed-only
-// ErrorDoNotRetry instead, left to clear on its own once Google resets the
-// quota (surfaced to the user via the feed's syncError, same as any other
-// feed-level failure). Both branches skip runAdapterWithRetry's own
-// "sync-feed.error" log (thrown as ErrorDoNotRetry, they never reach it), so
-// each logs its own structured event here instead — otherwise a
-// project-wide quota exhaustion, exactly the kind of incident worth paging
-// on, would leave nothing but per-feed syncError rows to notice it by.
+// TokenRefreshAuthError: retrying a revoked token, an exhausted quota, or an
+// inaccessible playlist within the same sync can't succeed, so all three
+// skip runAdapterWithRetry's retry-with-delay path instead of burning
+// attempts on it. Only the auth case is attributed to the connection
+// (IntegrationAuthError) so SettingsConnections flags it for reconnect; a
+// quota failure and an inaccessible playlist aren't the account's fault —
+// reconnecting doesn't fix either — so both are feed-only ErrorDoNotRetry
+// instead: quota clears on its own once Google resets it, while a
+// private/region-blocked playlist stays failed until the user removes the
+// feed or the channel changes its playlist's visibility (surfaced to the
+// user via the feed's syncError, same as any other feed-level failure). All
+// three branches skip runAdapterWithRetry's own "sync-feed.error" log
+// (thrown as ErrorDoNotRetry, they never reach it), so each logs its own
+// structured event here instead — otherwise a project-wide quota
+// exhaustion, exactly the kind of incident worth paging on, would leave
+// nothing but per-feed syncError rows to notice it by.
 function mapYouTubeApiFailure(error: unknown, feedId: number): never {
   if (error instanceof YouTubeAuthError) {
-    logSyncEvent(
+    logAndThrowPermanentFailure(
       "sync-feed.youtube-auth-error",
-      { feedId, error: error.message },
-      "error",
-    );
-    throw new IntegrationAuthError(
-      "youtube",
-      "YouTube authorization expired or was revoked. Re-connect your YouTube account.",
+      feedId,
+      error,
+      new IntegrationAuthError(
+        "youtube",
+        "YouTube authorization expired or was revoked. Re-connect your YouTube account.",
+      ),
     );
   }
 
   if (error instanceof YouTubeQuotaExceededError) {
-    logSyncEvent(
+    logAndThrowPermanentFailure(
       "sync-feed.youtube-quota-exceeded",
-      { feedId, error: error.message },
-      "error",
+      feedId,
+      error,
+      new ErrorDoNotRetry(
+        "YouTube API quota exceeded. This feed will resume syncing automatically once quota resets.",
+      ),
     );
-    throw new ErrorDoNotRetry(
-      "YouTube API quota exceeded. This feed will resume syncing automatically once quota resets.",
+  }
+
+  if (error instanceof YouTubePlaylistInaccessibleError) {
+    logAndThrowPermanentFailure(
+      "sync-feed.youtube-playlist-inaccessible",
+      feedId,
+      error,
+      new ErrorDoNotRetry(
+        "This channel's uploads playlist is private or unavailable and can't be synced.",
+      ),
     );
   }
 
