@@ -899,6 +899,60 @@ describe("fetchNewBlueskyPosts", () => {
     expect(item.guid).toBe("at://did:plc:abc123/app.bsky.feed.post/3kp123");
   });
 
+  // Regression guard for basin#310: the real author handle must be persisted
+  // onto the feed item (not just used to build the permalink and discarded),
+  // so TweetCard can render it instead of falling back to "undefined".
+  it("persists the post author's display name and handle", async () => {
+    const watermark = new Date("2024-05-31T00:00:00.000Z");
+
+    mockDeps.getTimeline.mockResolvedValueOnce({
+      feed: [makePost()],
+    });
+
+    const [item] = await fetchNewBlueskyPosts(
+      makeCredentials(),
+      FEED_ID,
+      watermark,
+      DEFAULT_POST_FILTER_POLICY,
+      mockDeps,
+    );
+
+    expect(item.author).toBe("Alice");
+    expect(item.authorHandle).toBe("alice.bsky.social");
+  });
+
+  it("falls back to the handle for author when the post has no display name", async () => {
+    const watermark = new Date("2024-05-31T00:00:00.000Z");
+    // Reuses makePost()'s defaults for everything but author, so this test
+    // can't drift from them the way a fully hand-duplicated post object could.
+    const basePost = makePost().post;
+
+    mockDeps.getTimeline.mockResolvedValueOnce({
+      feed: [
+        makePost({
+          post: {
+            ...basePost,
+            author: {
+              did: basePost.author.did,
+              handle: basePost.author.handle,
+            },
+          },
+        }),
+      ],
+    });
+
+    const [item] = await fetchNewBlueskyPosts(
+      makeCredentials(),
+      FEED_ID,
+      watermark,
+      DEFAULT_POST_FILTER_POLICY,
+      mockDeps,
+    );
+
+    expect(item.author).toBe("alice.bsky.social");
+    expect(item.authorHandle).toBe("alice.bsky.social");
+  });
+
   it("leaves new posts unsaved and unread by default", async () => {
     const watermark = new Date("2024-05-31T00:00:00.000Z");
 

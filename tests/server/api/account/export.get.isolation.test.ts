@@ -86,6 +86,7 @@ const SCHEMA_DDL = /* sql */ `
     title TEXT NOT NULL,
     url TEXT,
     author TEXT,
+    author_handle TEXT,
     image_url TEXT,
     content TEXT,
     tags TEXT[],

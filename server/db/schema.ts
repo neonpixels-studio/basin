@@ -114,6 +114,12 @@ export const feedItems = pgTable(
     title: text("title").notNull(),
     url: text("url"),
     author: text("author"),
+    // Post author's handle/username, stored raw with no leading "@" (e.g.
+    // Bluesky's "alice.bsky.social" — feedItems.ts's mapRow adds the "@" at
+    // presentation time). Distinct from `author`, which holds the display
+    // name — cards render both together. NULL for feed sources (RSS/podcast)
+    // that have no concept of a handle.
+    authorHandle: text("author_handle"),
     imageUrl: text("image_url"),
     content: text("content"),
     tags: text("tags").array(),

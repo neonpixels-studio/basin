@@ -5,8 +5,16 @@ import { contentText } from "~/utils/itemContent";
 const props = defineProps({ item: { type: Object, required: true } });
 defineEmits(["save", "star", "open"]);
 
+// Real synced posts always carry the post author's display name; only a feed
+// with no per-post author (shouldn't happen for tweet-type items, but keeps
+// this resilient) falls back to the feed's own title. trim() means a
+// whitespace-only author isn't treated as present; the final "" guards a
+// malformed/partial item where neither is set, so initials never throws.
+const displayName = computed(
+  () => props.item.author?.trim() || props.item.source || "",
+);
 const initials = computed(() =>
-  props.item.source
+  displayName.value
     .split(" ")
     .map((s) => s[0])
     .slice(0, 2)
@@ -20,7 +28,7 @@ const postText = computed(() => contentText(props.item.content));
     <div class="tw-head">
       <span class="avatar src-tweet">{{ initials }}</span>
       <div class="tw-id">
-        <b>{{ item.source }}</b>
+        <b>{{ displayName }}</b>
         <span class="tw-handle">{{ item.handle }} · {{ item.time }}</span>
       </div>
       <span class="tw-glyph src-tweet"><RIcon name="chat" :size="15" /></span>

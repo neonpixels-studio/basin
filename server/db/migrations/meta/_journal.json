@@ -120,6 +120,13 @@
       "when": 1787213148916,
       "tag": "0016_bound_tombstone_retention",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1790551164766,
+      "tag": "0017_add_author_handle_to_feed_items",
+      "breakpoints": true
     }
   ]
 }

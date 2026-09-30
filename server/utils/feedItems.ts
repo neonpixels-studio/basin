@@ -95,6 +95,7 @@ export interface FeedItemRow {
   title: string;
   url: string | null;
   author: string | null;
+  authorHandle: string | null;
   imageUrl: string | null;
   content: string | null;
   tags: string[] | null;
@@ -108,10 +109,21 @@ export interface FeedItemRow {
   updatedAt: Date | null;
 }
 
+// authorHandle is stored raw (e.g. "alice.bsky.social", matching what the
+// Bluesky API hands back) so the adapter never has to know how a handle is
+// displayed. The "@" is added here, at the presentation-derivation boundary,
+// the same place formatRelativeTime formats `time` — not in the adapter or
+// the column itself.
+function formatHandle(authorHandle: string): string {
+  return `@${authorHandle}`;
+}
+
 // Enumerates every raw column explicitly (rather than spreading the row) so
 // an unexpected extra column never leaks into the API response unreviewed.
-// `handle` reuses `source`'s value rather than re-deriving it, so the two
-// can't diverge if the fallback rule changes.
+// `handle` prefers the item's own `authorHandle` (e.g. a Bluesky post's real
+// "@handle") so a synced post's card never shows the feed's title in its
+// place; only feed sources with no per-post handle (RSS/podcast) fall back to
+// `source`, matching the pre-existing behavior those cards still rely on.
 function mapRow(row: FeedItemRow): FeedItemResult {
   const { type, source, time, unread, saved } = deriveFeedItemFields(row);
   return {
@@ -136,7 +148,7 @@ function mapRow(row: FeedItemRow): FeedItemResult {
     source,
     time,
     unread,
-    handle: source,
+    handle: row.authorHandle ? formatHandle(row.authorHandle) : source,
     saved,
   };
 }
@@ -159,6 +171,7 @@ export async function fetchFeedItems(
       title: feedItems.title,
       url: feedItems.url,
       author: feedItems.author,
+      authorHandle: feedItems.authorHandle,
       imageUrl: feedItems.imageUrl,
       content: feedItems.content,
       tags: feedItems.tags,
