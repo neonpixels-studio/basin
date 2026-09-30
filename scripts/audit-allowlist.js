@@ -12,11 +12,13 @@
 // via the `overrides` block in package.json — sdk 5.x dropped the
 // @stackbit/* / @netlify/content-engine dependencies entirely.
 //
-// The current entries cover the unpatched `image-size` DoS advisories (no
-// published fix — latest 2.0.2, advisory range <=2.0.2). image-size reaches the
-// PRODUCTION tree via @netlify/async-workloads > @netlify/sdk > @netlify/dev-utils,
-// so the suppression rests on unreachability (basin never feeds bytes to
-// image-size's parsers), NOT on dev-only scope.
+// As of 2026-09-28 the list is empty: the two entries that used to live here
+// (GHSA-w3rx-r6r6-pgpr and GHSA-5p2g-fcmc-qvqq, both filed against
+// `image-size`'s ICNS/JXL/HEIF parsers) were resolved by a plain
+// `npm audit fix` — @netlify/blobs' own dependency bump now resolves
+// `@netlify/dev-utils > image-size` to 2.0.4, which contains the fix. No
+// override or allowlist entry is needed anymore. Re-add an entry here only if
+// a future advisory has no non-breaking fix available.
 //
 // A third entry used to suppress a chained "depends on vulnerable versions of
 // @netlify/sdk" advisory filed against @netlify/async-workloads itself. As of
@@ -57,7 +59,7 @@
 // resolves a single hoisted `sax@1.6.1`. Revisit only if `svgo` is ever
 // removed from the tree, since that constraint is what pins `sax` today.)
 
-export const ALLOWLIST_REVIEW_BY = "2026-09-27";
+export const ALLOWLIST_REVIEW_BY = "2026-10-19";
 
 // `packages` lists the exact npm package name(s) the advisory is filed against
 // (matched against `via.name` from `npm audit`). The gate only suppresses an
@@ -65,35 +67,7 @@ export const ALLOWLIST_REVIEW_BY = "2026-09-27";
 // "dev-only" package later moves into the production path under a different
 // name, the suppression no longer applies and the gate fails as intended.
 /** @type {Array<{ id: string, packages: string[], reason: string }>} */
-export const ALLOWED_ADVISORIES = [
-  {
-    id: "GHSA-w3rx-r6r6-pgpr",
-    packages: ["image-size"],
-    reason:
-      "image-size ICNS-parser DoS (infinite loop). No patched release exists: " +
-      "latest published image-size is 2.0.2 and the advisory range is <=2.0.2, " +
-      "so no override can resolve it. It ships in the PRODUCTION tree via the " +
-      "@netlify/async-workloads runtime dependency " +
-      "(@netlify/async-workloads > @netlify/sdk > ... > @netlify/dev-utils > image-size), " +
-      "but the vulnerable code path — image header parsing — is never invoked by basin: " +
-      "no basin route feeds attacker-controlled bytes to image-size. npm's only 'fix' is a " +
-      "semver-major downgrade of the direct @netlify/async-workloads dependency. " +
-      "Unreachability verified 2026-08-08 via " +
-      "`grep -rniE 'image-size|@netlify/dev-utils|sharp|icns|jxl|heif' server app` — " +
-      "no basin-owned call sites. Re-check for an image-size patch or an @netlify/sdk " +
-      "chain that drops it by ALLOWLIST_REVIEW_BY.",
-  },
-  {
-    id: "GHSA-5p2g-fcmc-qvqq",
-    packages: ["image-size"],
-    reason:
-      "image-size JXL/HEIF-parser DoS (infinite loop). Same root cause and reachability " +
-      "as GHSA-w3rx-r6r6-pgpr: no patched image-size release (latest 2.0.2, advisory " +
-      "range <=2.0.2), and although it ships in the production tree via " +
-      "@netlify/async-workloads > ... > @netlify/dev-utils, basin never passes " +
-      "attacker-controlled bytes to image-size's parsers.",
-  },
-];
+export const ALLOWED_ADVISORIES = [];
 
 // Builds an id::package lookup from a list of allowlist entries. Exported (not
 // just the module-level `isAdvisoryAllowed` singleton below) so tests can
