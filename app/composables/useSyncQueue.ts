@@ -162,8 +162,15 @@ function reportStuckSessionExpiredOnce(
   error: unknown,
 ): void {
   const ageMs = itemAgeMs(item);
+  // lastError is only set once a failure has been recorded for the row, so
+  // this skips an old item whose very first attempt is the 401 (e.g. queued
+  // offline, session expired while the app was closed) - that's routine, not
+  // stuck. Any prior failure counts, not just a 401, since the row doesn't
+  // store the status; a persisted first-401 timestamp would need a migration.
+  const hasFailedBefore = item.lastError !== null;
   const reportKey = stuckReportKey(item);
   if (
+    !hasFailedBefore ||
     ageMs === null ||
     ageMs < STUCK_SESSION_EXPIRED_AGE_MS ||
     reportedStuckItemKeys.has(reportKey)

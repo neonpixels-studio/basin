@@ -380,6 +380,7 @@ describe("useSyncQueue", () => {
       function makeStuckItem(id: number, ageMs: number) {
         return makeItem({
           id,
+          lastError: "Unauthorized",
           createdAt: new Date(FROZEN_NOW.getTime() - ageMs),
         });
       }
@@ -416,6 +417,7 @@ describe("useSyncQueue", () => {
           stage: "sync-queue-item-stuck-unauthorized",
           action: "markRead",
           itemId: 9002,
+          attempts: 0,
           statusCode: 401,
           ageMs: STUCK_SESSION_EXPIRED_AGE_MS,
         });
@@ -434,8 +436,26 @@ describe("useSyncQueue", () => {
         expect(SentrySDK.captureException).toHaveBeenCalledTimes(1);
       });
 
+      it("does not report an old item whose first attempt is the 401", async () => {
+        const item = makeItem({
+          id: 9008,
+          lastError: null,
+          createdAt: new Date(
+            FROZEN_NOW.getTime() - STUCK_SESSION_EXPIRED_AGE_MS * 3,
+          ),
+        });
+
+        await flushWithUnauthorized(item);
+
+        expect(SentrySDK.captureException).not.toHaveBeenCalled();
+      });
+
       it("never reports an item with no createdAt", async () => {
-        const item = makeItem({ id: 9005, createdAt: null });
+        const item = makeItem({
+          id: 9005,
+          lastError: "Unauthorized",
+          createdAt: null,
+        });
 
         await flushWithUnauthorized(item, 3);
 
@@ -444,7 +464,11 @@ describe("useSyncQueue", () => {
       });
 
       it("never reports an item with an invalid createdAt", async () => {
-        const item = makeItem({ id: 9007, createdAt: new Date("invalid") });
+        const item = makeItem({
+          id: 9007,
+          lastError: "Unauthorized",
+          createdAt: new Date("invalid"),
+        });
 
         await flushWithUnauthorized(item, 3);
 
