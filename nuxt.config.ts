@@ -135,10 +135,15 @@ export default defineNuxtConfig({
   modules: ["@pinia/nuxt", "@clerk/nuxt", "@sentry/nuxt/module"],
   sourcemap: { client: "hidden" },
   sentry: {
-    sourceMapsUploadOptions: {
-      org: process.env.SENTRY_ORG,
-      project: process.env.SENTRY_PROJECT,
-      authToken: process.env.SENTRY_AUTH_TOKEN,
+    org: process.env.SENTRY_ORG,
+    project: process.env.SENTRY_PROJECT,
+    authToken: process.env.SENTRY_AUTH_TOKEN,
+    sourcemaps: {
+      // Because `sourcemap.client` is set explicitly above, @sentry/nuxt skips
+      // its automatic post-upload deletion. Without this, the hidden .map
+      // files stay in the publicly served dist/_nuxt/. Deleting
+      // unconditionally also covers a failed upload (bad token, outage).
+      filesToDeleteAfterUpload: ["dist/**/*.map"],
     },
   },
   clerk: {
