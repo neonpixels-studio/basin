@@ -1515,6 +1515,13 @@ describe("sync-feed workload — Bluesky source", () => {
 
     await (handler as Function)(makeBlueskyEvent());
 
-    expect(mockInsertOnConflict).toHaveBeenCalledTimes(1);
+    expect(mockInsertValues).toHaveBeenCalledWith([
+      expect.objectContaining({ guid: "at://x/1" }),
+    ]);
+    expect(mockInsertOnConflict).toHaveBeenCalledWith(
+      expect.objectContaining({
+        set: expect.objectContaining({ authorHandle: expect.anything() }),
+      }),
+    );
   });
 });

@@ -114,6 +114,22 @@ describe("upsertBlueskyFeedItems", () => {
     expect((await storedRow())?.author).toBe("New");
   });
 
+  it("skips the write entirely when nothing changed", async () => {
+    await upsertBlueskyFeedItems(db, [post()]);
+    const versionBefore = await client.query(
+      "SELECT xmin::text AS version FROM feed_items WHERE guid = $1",
+      [GUID],
+    );
+
+    await upsertBlueskyFeedItems(db, [post()]);
+    const versionAfter = await client.query(
+      "SELECT xmin::text AS version FROM feed_items WHERE guid = $1",
+      [GUID],
+    );
+
+    expect(versionAfter.rows).toEqual(versionBefore.rows);
+  });
+
   it("returns 0 for an empty batch", async () => {
     expect(await upsertBlueskyFeedItems(db, [])).toBe(0);
   });

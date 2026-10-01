@@ -9,9 +9,12 @@ const incomingAuthorHandle = sql`coalesce(excluded.author_handle, ${feedItems.au
 
 // A single INSERT ... ON CONFLICT DO UPDATE throws if two rows share a conflict
 // key, so collapse duplicate guids first (last wins, freshest profile data).
-// Callers pass one feed's items, so guid alone is the conflict key here.
 function dedupeByGuid(items: FeedItemInsert[]): FeedItemInsert[] {
-  return [...new Map(items.map((item) => [item.guid, item])).values()];
+  return [
+    ...new Map(
+      items.map((item) => [`${item.feedId}:${item.guid}`, item]),
+    ).values(),
+  ];
 }
 
 // Bluesky rows synced before author_handle existed (or whose profile changed)
