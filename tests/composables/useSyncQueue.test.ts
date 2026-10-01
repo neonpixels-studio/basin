@@ -94,6 +94,15 @@ describe("useSyncQueue", () => {
       expect([...fields].sort()).toEqual(["saved", "unread"]);
     });
 
+    it("ignores a row with an unrecognised action", async () => {
+      vi.mocked(syncQueueStore.getPendingItems).mockResolvedValue([
+        makeItem({ action: "legacyAction" }),
+      ] as never);
+      const { getPendingItemFields } = useSyncQueue();
+
+      expect((await getPendingItemFields(1, "abc")).size).toBe(0);
+    });
+
     it("returns an empty set when nothing is pending", async () => {
       vi.mocked(syncQueueStore.getPendingItems).mockResolvedValue([]);
       const { getPendingItemFields } = useSyncQueue();

@@ -146,16 +146,16 @@ describe("useFeedStore", () => {
   });
 
   describe("openItem", () => {
-    it("sets activeItem and marks it read", async () => {
+    it("sets activeItem and marks it read", () => {
       const i = state.items[0];
       i.unread = true;
-      await feed.openItem(i);
+      feed.openItem(i);
       expect(state.activeItem).toBe(i);
       expect(i.unread).toBe(false);
     });
 
-    it("sets detailLoading=true then false after 520ms", async () => {
-      await feed.openItem(state.items[0]);
+    it("sets detailLoading=true then false after 520ms", () => {
+      feed.openItem(state.items[0]);
       expect(state.detailLoading).toBe(true);
       vi.advanceTimersByTime(520);
       expect(state.detailLoading).toBe(false);
@@ -1351,6 +1351,45 @@ describe("useFeedStore", () => {
 
             expect(loadedItem.saved).toBe(true);
             expect(loadedItem.starred).toBe(false);
+          });
+
+          it("does not let a slow outbox read override a newer open", async () => {
+            const staleRow = state.items[1];
+            const newerRow = state.items[2];
+            let releaseRead: (_fields: Set<string>) => void = () => {};
+            getPendingItemFields.mockReturnValue(
+              new Promise<Set<string>>((resolve) => {
+                releaseRead = resolve;
+              }),
+            );
+            const slowOpen = feed.openItem(
+              searchCopyOf(staleRow, { savedAt: null }),
+            );
+
+            await feed.openItem(newerRow);
+            releaseRead(new Set());
+            await slowOpen;
+
+            expect(state.activeItem).toBe(newerRow);
+          });
+
+          it("keeps a toggle the user made while the outbox was being read", async () => {
+            const loadedItem = state.items[1]; // starred: false
+            let releaseRead: (_fields: Set<string>) => void = () => {};
+            getPendingItemFields.mockReturnValue(
+              new Promise<Set<string>>((resolve) => {
+                releaseRead = resolve;
+              }),
+            );
+            const open = feed.openItem(
+              searchCopyOf(loadedItem, { starred: false, savedAt: null }),
+            );
+            loadedItem.starred = true; // local optimistic toggle, mid-read
+            releaseRead(new Set());
+            await open;
+
+            expect(loadedItem.starred).toBe(true);
+            expect(loadedItem.saved).toBe(false);
           });
 
           it("takes the server value when nothing is queued", async () => {

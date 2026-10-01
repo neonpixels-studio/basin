@@ -604,7 +604,8 @@ export const useFeedStore = defineStore("feed", () => {
     try {
       const { getPendingItemFields } = useSyncQueue();
       return await getPendingItemFields(item.feedId, item.guid);
-    } catch {
+    } catch (error) {
+      console.warn("Outbox read failed; keeping local item fields", error);
       return new Set<string>(SERVER_OWNED_ITEM_FIELDS);
     }
   }
@@ -683,9 +684,16 @@ export const useFeedStore = defineStore("feed", () => {
     item: Record<string, unknown>,
     changed: string[],
   ): Promise<Record<string, unknown>> {
+    const before = Object.fromEntries(
+      changed.map((field) => [field, loadedRow[field]]),
+    );
     const pending = await fieldsWithPendingChange(loadedRow);
+    // A field the user toggled while the outbox was being read has a local
+    // write that is newer than both the incoming row and `pending`.
     changed
-      .filter((field) => !pending.has(field))
+      .filter(
+        (field) => !pending.has(field) && loadedRow[field] === before[field],
+      )
       .forEach((field) => {
         adjustCountsForMerge(field, loadedRow[field], item[field]);
         loadedRow[field] = item[field];
@@ -693,9 +701,16 @@ export const useFeedStore = defineStore("feed", () => {
     return loadedRow;
   }
 
+  let openSequence = 0;
+
   async function openItem(rawItem: Record<string, unknown>) {
+    const openToken = ++openSequence;
     const resolved = resolveOpenedItem(rawItem);
     const item = resolved instanceof Promise ? await resolved : resolved;
+    // A newer open (e.g. a card click) landed while the outbox was being read.
+    if (openToken !== openSequence) {
+      return;
+    }
     const wasUnread = item.unread === true;
     item.unread = false;
     state.activeItem = item;

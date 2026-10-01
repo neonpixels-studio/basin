@@ -342,7 +342,7 @@ function pendingFieldOf(
   try {
     const payload = JSON.parse(row.payload);
     const matchesItem = payload?.feedId === feedId && payload?.guid === guid;
-    return matchesItem ? PENDING_ACTION_FIELD[row.action] : null;
+    return matchesItem ? (PENDING_ACTION_FIELD[row.action] ?? null) : null;
   } catch {
     // An unparseable row will be quarantined on the next flush, never synced.
     return null;
