@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { PGlite } from "@electric-sql/pglite";
@@ -55,6 +55,10 @@ describe("0018 backfill_bluesky_author_handle", () => {
         (5, ${BLUESKY_FEED_ID}, NULL, NULL);
     `);
     await client.exec(migrationSql);
+  });
+
+  afterEach(async () => {
+    await client.close();
   });
 
   it("extracts the handle from the permalink of NULL bluesky rows", async () => {

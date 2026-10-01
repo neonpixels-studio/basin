@@ -169,8 +169,17 @@ async function upsertFeedItems(
 // value when the incoming one is missing. The setWhere skips no-op writes.
 // `xmax = 0` is true only for freshly inserted rows, so refreshed rows don't
 // inflate the "new items" count.
+const incomingAuthor = sql`coalesce(excluded.author, ${feedItems.author})`;
+const incomingAuthorHandle = sql`coalesce(excluded.author_handle, ${feedItems.authorHandle})`;
+
+// A single INSERT ... ON CONFLICT DO UPDATE throws if two rows share a conflict
+// key, so collapse duplicate guids first (last wins, freshest profile data).
+function dedupeByGuid<T extends { guid: string }>(items: T[]): T[] {
+  return [...new Map(items.map((item) => [item.guid, item])).values()];
+}
+
 async function upsertBlueskyFeedItems(
-  items: Awaited<ReturnType<typeof parseRssFeed>>,
+  items: Array<typeof feedItems.$inferInsert>,
 ): Promise<number> {
   if (items.length === 0) {
     return 0;
@@ -179,14 +188,14 @@ async function upsertBlueskyFeedItems(
   const db = createDb();
   const result = await db
     .insert(feedItems)
-    .values(items)
+    .values(dedupeByGuid(items))
     .onConflictDoUpdate({
       target: [feedItems.feedId, feedItems.guid],
       set: {
-        author: sql`coalesce(excluded.author, ${feedItems.author})`,
-        authorHandle: sql`coalesce(excluded.author_handle, ${feedItems.authorHandle})`,
+        author: incomingAuthor,
+        authorHandle: incomingAuthorHandle,
       },
-      setWhere: sql`${feedItems.author} is distinct from coalesce(excluded.author, ${feedItems.author}) or ${feedItems.authorHandle} is distinct from coalesce(excluded.author_handle, ${feedItems.authorHandle})`,
+      setWhere: sql`${feedItems.author} is distinct from ${incomingAuthor} or ${feedItems.authorHandle} is distinct from ${incomingAuthorHandle}`,
     })
     .returning({ id: feedItems.id, inserted: sql<boolean>`(xmax = 0)` });
 

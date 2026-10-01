@@ -1519,7 +1519,12 @@ describe("sync-feed workload — Bluesky source", () => {
       mockFindFirst
         .mockResolvedValueOnce(makeBlueskyFeed({ lastFetched: staleFetch() }))
         .mockResolvedValueOnce(makeBlueskyIntegration());
-      mockFetchNewBlueskyPosts.mockResolvedValue([post]);
+      mockFetchNewBlueskyPosts.mockResolvedValue(
+        returned.map((_row, index) => ({
+          ...post,
+          guid: `${post.guid}-${index}`,
+        })),
+      );
       mockInsertReturning.mockResolvedValue(
         returned.map((row, index) => ({ id: index + 1, ...row })),
       );
@@ -1539,6 +1544,21 @@ describe("sync-feed workload — Bluesky source", () => {
         "authorHandle",
       ]);
       expect(config.setWhere).toBeDefined();
+    });
+
+    it("collapses duplicate guids so ON CONFLICT DO UPDATE cannot hit a row twice", async () => {
+      mockFindFirst
+        .mockResolvedValueOnce(makeBlueskyFeed({ lastFetched: staleFetch() }))
+        .mockResolvedValueOnce(makeBlueskyIntegration());
+      mockFetchNewBlueskyPosts.mockResolvedValue([
+        { ...post, author: "Old name" },
+        post,
+      ]);
+      mockInsertReturning.mockResolvedValue([]);
+
+      await (handler as Function)(makeBlueskyEvent());
+
+      expect(mockInsertValues).toHaveBeenCalledWith([post]);
     });
 
     it("counts only newly inserted rows, not refreshed ones", async () => {
