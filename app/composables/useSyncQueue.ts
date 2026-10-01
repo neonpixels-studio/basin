@@ -26,6 +26,15 @@ const HTTP_SERVER_ERROR_MIN = 500;
 // indefinitely and still sync once it clears (see #311).
 const SESSION_EXPIRED_STATUS = 401;
 
+// How long an item may sit pending (measured from its createdAt) while
+// still hitting 401 before it's reported to Sentry as stuck. Age rather than
+// an attempt count because 401s deliberately don't advance `attempts`, and
+// flush passes fire on every online/visibilitychange event so a count would
+// measure tab-switching, not time. Long enough that a user who just hasn't
+// reopened the app to reauthenticate isn't flagged; a revoked token or a
+// misconfigured server will still be.
+export const STUCK_SESSION_EXPIRED_AGE_MS = 24 * 60 * 60 * 1000;
+
 // 4xx statuses that don't mean "this request can never succeed" — they mean
 // "try again once the underlying condition clears" (session refreshed, rate
 // limit window passed, request timed out). Everything else in the 4xx range
@@ -59,6 +68,12 @@ type QuarantineReason =
 // level so every useSyncQueue() call — the sync plugin, the UI banner —
 // shares the same reactive count instead of each holding its own copy.
 const failedCount = ref(0);
+
+// Ids of items already reported as stuck on 401 this session, so a stuck
+// item reports once rather than on every flush pass. In-memory on purpose: a
+// persisted flag would need a client-side migration, and one report per
+// page load is still a bounded signal.
+const reportedStuckItemIds = new Set<number>();
 
 // Guards against overlapping flush passes — app/plugins/sync.client.ts wires
 // flushSyncQueue to both the "online" and "visibilitychange" events, which
@@ -123,6 +138,37 @@ function reportQuarantinedItem(
   });
 }
 
+function isStuckOnSessionExpired(item: SyncQueueRow): boolean {
+  if (!item.createdAt) {
+    return false;
+  }
+  return Date.now() - item.createdAt.getTime() >= STUCK_SESSION_EXPIRED_AGE_MS;
+}
+
+// Unlike a quarantine, nothing is dropped here: the item keeps retrying (a
+// 401 can legitimately outlast any fixed budget, see #311) but a 401 that
+// has outlived STUCK_SESSION_EXPIRED_AGE_MS is no longer routine, so it
+// gets one Sentry signal. Same stage naming and extras shape as the
+// quarantine reports; never the row's payload.
+function reportStuckSessionExpiredOnce(
+  item: SyncQueueRow,
+  error: unknown,
+): void {
+  if (reportedStuckItemIds.has(item.id) || !isStuckOnSessionExpired(item)) {
+    return;
+  }
+  reportedStuckItemIds.add(item.id);
+  console.error("A sync_queue item is stuck on 401", error);
+  captureException(error, {
+    stage: "sync-queue-item-stuck-unauthorized",
+    action: item.action,
+    itemId: item.id,
+    attempts: item.attempts,
+    statusCode: SESSION_EXPIRED_STATUS,
+    ageMs: Date.now() - (item.createdAt?.getTime() ?? Date.now()),
+  });
+}
+
 // Records a failed sync attempt and decides its fate. Returns whether the
 // item is still retryable — false means it was quarantined (permanent 4xx,
 // or its retry budget is exhausted).
@@ -137,6 +183,7 @@ async function handleSyncFailure(
   if (isSessionExpired(statusCode)) {
     // See SESSION_EXPIRED_STATUS above — attempts is passed through
     // unchanged rather than item.attempts + 1.
+    reportStuckSessionExpiredOnce(item, error);
     await syncQueueStore.recordRetryableFailure(
       db,
       item.id,

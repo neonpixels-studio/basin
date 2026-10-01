@@ -1,5 +1,9 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { useSyncQueue, MAX_SYNC_ATTEMPTS } from "~/composables/useSyncQueue";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import {
+  useSyncQueue,
+  MAX_SYNC_ATTEMPTS,
+  STUCK_SESSION_EXPIRED_AGE_MS,
+} from "~/composables/useSyncQueue";
 import { syncQueueStore } from "~/composables/syncQueueStore";
 // @sentry/nuxt is mocked once, globally, in tests/setup.ts — see that file's
 // comment for why a module-scoped mock here instead would silently miss the
@@ -35,7 +39,7 @@ function makeItem(overrides: Partial<Record<string, unknown>> = {}) {
     status: "pending",
     lastError: null,
     failedAt: null,
-    createdAt: new Date("2026-01-01"),
+    createdAt: FROZEN_NOW,
     syncedAt: null,
     ...overrides,
   };
@@ -47,12 +51,22 @@ function makeHttpError(message: string, statusCode: number): Error {
   return Object.assign(new Error(message), { statusCode });
 }
 
+const FROZEN_NOW = new Date("2026-01-01T00:00:00Z");
+
 describe("useSyncQueue", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    // Date only: makeItem's createdAt is FROZEN_NOW, so an item is exactly
+    // as old as a test makes it, never as old as the real clock says.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(FROZEN_NOW);
     vi.stubGlobal("navigator", { onLine: true });
     mockUseClientDb.mockResolvedValue(fakeDb);
     vi.mocked(syncQueueStore.countFailedItems).mockResolvedValue(0);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   describe("queueAction()", () => {
@@ -358,6 +372,78 @@ describe("useSyncQueue", () => {
       await flushSyncQueue();
 
       expect(SentrySDK.captureException).not.toHaveBeenCalled();
+    });
+
+    describe("stuck 401 reporting", () => {
+      // Module-level dedupe state persists across tests, so each uses its
+      // own item id.
+      function makeStuckItem(id: number, ageMs: number) {
+        return makeItem({
+          id,
+          createdAt: new Date(FROZEN_NOW.getTime() - ageMs),
+        });
+      }
+
+      async function flushWithUnauthorized(items: unknown[], passes = 1) {
+        vi.mocked(syncQueueStore.getPendingItems).mockResolvedValue(
+          items as never,
+        );
+        const { flushSyncQueue } = useSyncQueue();
+        for (let pass = 0; pass < passes; pass += 1) {
+          mockFetch.mockRejectedValueOnce(makeHttpError("Unauthorized", 401));
+          await flushSyncQueue();
+        }
+      }
+
+      it("does not report an item younger than the threshold", async () => {
+        const item = makeStuckItem(9001, STUCK_SESSION_EXPIRED_AGE_MS - 1);
+
+        await flushWithUnauthorized([item], 3);
+
+        expect(SentrySDK.captureException).not.toHaveBeenCalled();
+        expect(syncQueueStore.recordRetryableFailure).toHaveBeenCalledTimes(3);
+      });
+
+      it("reports once, tagged like the other failure paths, at the threshold", async () => {
+        const item = makeStuckItem(9002, STUCK_SESSION_EXPIRED_AGE_MS);
+
+        await flushWithUnauthorized([item]);
+
+        expect(SentrySDK.captureException).toHaveBeenCalledTimes(1);
+        const reportedExtras = vi.mocked(mockSentryScope.setExtras).mock
+          .calls[0]![0];
+        expect(reportedExtras).toMatchObject({
+          stage: "sync-queue-item-stuck-unauthorized",
+          action: "markRead",
+          itemId: 9002,
+          statusCode: 401,
+          ageMs: STUCK_SESSION_EXPIRED_AGE_MS,
+        });
+        expect(reportedExtras).not.toHaveProperty("payload");
+        // Reporting must not change retry behavior.
+        expect(syncQueueStore.quarantine).not.toHaveBeenCalled();
+        expect(syncQueueStore.recordRetryableFailure).toHaveBeenCalledTimes(1);
+      });
+
+      it("does not report again on repeated 401s after the threshold", async () => {
+        const item = makeStuckItem(9003, STUCK_SESSION_EXPIRED_AGE_MS * 3);
+
+        await flushWithUnauthorized([item], 5);
+
+        expect(mockFetch).toHaveBeenCalledTimes(5);
+        expect(SentrySDK.captureException).toHaveBeenCalledTimes(1);
+      });
+
+      it("reports once when the item crosses the threshold between passes", async () => {
+        const item = makeStuckItem(9004, STUCK_SESSION_EXPIRED_AGE_MS - 1);
+        await flushWithUnauthorized([item]);
+        expect(SentrySDK.captureException).not.toHaveBeenCalled();
+
+        vi.setSystemTime(new Date(FROZEN_NOW.getTime() + 1));
+        await flushWithUnauthorized([item], 2);
+
+        expect(SentrySDK.captureException).toHaveBeenCalledTimes(1);
+      });
     });
 
     it("resumes counting from the preserved attempts value after a 401 is followed by a genuine transient failure", async () => {
