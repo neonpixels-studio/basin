@@ -1373,8 +1373,28 @@ describe("useFeedStore", () => {
             expect(state.activeItem).toBe(newerRow);
           });
 
+          it("does not reopen the detail when it was closed during the outbox read", async () => {
+            const loadedItem = state.items[1];
+            let releaseRead: (_fields: Set<string>) => void = () => {};
+            getPendingItemFields.mockReturnValue(
+              new Promise<Set<string>>((resolve) => {
+                releaseRead = resolve;
+              }),
+            );
+            const open = feed.openItem(
+              searchCopyOf(loadedItem, { savedAt: null }),
+            );
+
+            feed.closeDetail();
+            releaseRead(new Set());
+            await open;
+
+            expect(state.activeItem).toBeNull();
+          });
+
           it("keeps a toggle the user made while the outbox was being read", async () => {
-            const loadedItem = state.items[1]; // starred: false
+            const loadedItem = state.items[1];
+            loadedItem.starred = null;
             let releaseRead: (_fields: Set<string>) => void = () => {};
             getPendingItemFields.mockReturnValue(
               new Promise<Set<string>>((resolve) => {

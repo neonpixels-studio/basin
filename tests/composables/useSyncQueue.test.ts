@@ -96,7 +96,10 @@ describe("useSyncQueue", () => {
 
     it("ignores a row with an unrecognised action", async () => {
       vi.mocked(syncQueueStore.getPendingItems).mockResolvedValue([
-        makeItem({ action: "legacyAction" }),
+        makeItem({
+          action: "legacyAction",
+          payload: JSON.stringify({ feedId: 1, guid: "abc" }),
+        }),
       ] as never);
       const { getPendingItemFields } = useSyncQueue();
 

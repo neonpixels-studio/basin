@@ -744,6 +744,8 @@ export const useFeedStore = defineStore("feed", () => {
   }
 
   function closeDetail() {
+    // Cancels any open still waiting on the outbox read (see openItem).
+    openSequence++;
     state.activeItem = null;
     if (import.meta.client) document.body.style.overflow = "";
   }
