@@ -139,10 +139,11 @@ function reportQuarantinedItem(
 }
 
 function itemAgeMs(item: SyncQueueRow): number | null {
-  if (!item.createdAt) {
+  const createdAtMs = item.createdAt?.getTime();
+  if (createdAtMs === undefined || !Number.isFinite(createdAtMs)) {
     return null;
   }
-  return Date.now() - item.createdAt.getTime();
+  return Date.now() - createdAtMs;
 }
 
 // Keyed on createdAt as well as id so a row that reuses an id after the

@@ -30,6 +30,8 @@ const fakeDb = { name: "fake-db" };
 const mockUseClientDb = vi.fn();
 vi.stubGlobal("useClientDb", mockUseClientDb);
 
+const FROZEN_NOW = new Date("2026-01-01T00:00:00Z");
+
 function makeItem(overrides: Partial<Record<string, unknown>> = {}) {
   return {
     id: 1,
@@ -50,8 +52,6 @@ function makeItem(overrides: Partial<Record<string, unknown>> = {}) {
 function makeHttpError(message: string, statusCode: number): Error {
   return Object.assign(new Error(message), { statusCode });
 }
-
-const FROZEN_NOW = new Date("2026-01-01T00:00:00Z");
 
 describe("useSyncQueue", () => {
   beforeEach(() => {
@@ -384,10 +384,10 @@ describe("useSyncQueue", () => {
         });
       }
 
-      async function flushWithUnauthorized(items: unknown[], passes = 1) {
-        vi.mocked(syncQueueStore.getPendingItems).mockResolvedValue(
-          items as never,
-        );
+      async function flushWithUnauthorized(item: unknown, passes = 1) {
+        vi.mocked(syncQueueStore.getPendingItems).mockResolvedValue([
+          item,
+        ] as never);
         const { flushSyncQueue } = useSyncQueue();
         for (let pass = 0; pass < passes; pass += 1) {
           mockFetch.mockRejectedValueOnce(makeHttpError("Unauthorized", 401));
@@ -398,7 +398,7 @@ describe("useSyncQueue", () => {
       it("does not report an item younger than the threshold", async () => {
         const item = makeStuckItem(9001, STUCK_SESSION_EXPIRED_AGE_MS - 1);
 
-        await flushWithUnauthorized([item], 3);
+        await flushWithUnauthorized(item, 3);
 
         expect(SentrySDK.captureException).not.toHaveBeenCalled();
         expect(syncQueueStore.recordRetryableFailure).toHaveBeenCalledTimes(3);
@@ -407,7 +407,7 @@ describe("useSyncQueue", () => {
       it("reports once, tagged like the other failure paths, at the threshold", async () => {
         const item = makeStuckItem(9002, STUCK_SESSION_EXPIRED_AGE_MS);
 
-        await flushWithUnauthorized([item]);
+        await flushWithUnauthorized(item);
 
         expect(SentrySDK.captureException).toHaveBeenCalledTimes(1);
         const reportedExtras = vi.mocked(mockSentryScope.setExtras).mock
@@ -428,7 +428,7 @@ describe("useSyncQueue", () => {
       it("does not report again on repeated 401s after the threshold", async () => {
         const item = makeStuckItem(9003, STUCK_SESSION_EXPIRED_AGE_MS * 3);
 
-        await flushWithUnauthorized([item], 5);
+        await flushWithUnauthorized(item, 5);
 
         expect(mockFetch).toHaveBeenCalledTimes(5);
         expect(SentrySDK.captureException).toHaveBeenCalledTimes(1);
@@ -437,19 +437,38 @@ describe("useSyncQueue", () => {
       it("never reports an item with no createdAt", async () => {
         const item = makeItem({ id: 9005, createdAt: null });
 
-        await flushWithUnauthorized([item], 3);
+        await flushWithUnauthorized(item, 3);
 
         expect(SentrySDK.captureException).not.toHaveBeenCalled();
         expect(syncQueueStore.recordRetryableFailure).toHaveBeenCalledTimes(3);
       });
 
+      it("never reports an item with an invalid createdAt", async () => {
+        const item = makeItem({ id: 9007, createdAt: new Date("invalid") });
+
+        await flushWithUnauthorized(item, 3);
+
+        expect(SentrySDK.captureException).not.toHaveBeenCalled();
+      });
+
+      it("reports again when an id is reused with a different createdAt", async () => {
+        await flushWithUnauthorized(
+          makeStuckItem(9006, STUCK_SESSION_EXPIRED_AGE_MS),
+        );
+        await flushWithUnauthorized(
+          makeStuckItem(9006, STUCK_SESSION_EXPIRED_AGE_MS * 2),
+        );
+
+        expect(SentrySDK.captureException).toHaveBeenCalledTimes(2);
+      });
+
       it("reports once when the item crosses the threshold between passes", async () => {
         const item = makeStuckItem(9004, STUCK_SESSION_EXPIRED_AGE_MS - 1);
-        await flushWithUnauthorized([item]);
+        await flushWithUnauthorized(item);
         expect(SentrySDK.captureException).not.toHaveBeenCalled();
 
         vi.setSystemTime(new Date(FROZEN_NOW.getTime() + 1));
-        await flushWithUnauthorized([item], 2);
+        await flushWithUnauthorized(item, 2);
 
         expect(SentrySDK.captureException).toHaveBeenCalledTimes(1);
       });
