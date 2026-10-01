@@ -69,11 +69,11 @@ type QuarantineReason =
 // shares the same reactive count instead of each holding its own copy.
 const failedCount = ref(0);
 
-// Ids of items already reported as stuck on 401 this session, so a stuck
+// Keys of items already reported as stuck on 401 this session, so a stuck
 // item reports once rather than on every flush pass. In-memory on purpose: a
 // persisted flag would need a client-side migration, and one report per
 // page load is still a bounded signal.
-const reportedStuckItemIds = new Set<number>();
+const reportedStuckItemKeys = new Set<string>();
 
 // Guards against overlapping flush passes — app/plugins/sync.client.ts wires
 // flushSyncQueue to both the "online" and "visibilitychange" events, which
@@ -138,11 +138,17 @@ function reportQuarantinedItem(
   });
 }
 
-function isStuckOnSessionExpired(item: SyncQueueRow): boolean {
+function itemAgeMs(item: SyncQueueRow): number | null {
   if (!item.createdAt) {
-    return false;
+    return null;
   }
-  return Date.now() - item.createdAt.getTime() >= STUCK_SESSION_EXPIRED_AGE_MS;
+  return Date.now() - item.createdAt.getTime();
+}
+
+// Keyed on createdAt as well as id so a row that reuses an id after the
+// local DB is reset isn't mistaken for one already reported.
+function stuckReportKey(item: SyncQueueRow): string {
+  return `${item.id}:${item.createdAt?.getTime()}`;
 }
 
 // Unlike a quarantine, nothing is dropped here: the item keeps retrying (a
@@ -154,10 +160,16 @@ function reportStuckSessionExpiredOnce(
   item: SyncQueueRow,
   error: unknown,
 ): void {
-  if (reportedStuckItemIds.has(item.id) || !isStuckOnSessionExpired(item)) {
+  const ageMs = itemAgeMs(item);
+  const reportKey = stuckReportKey(item);
+  if (
+    ageMs === null ||
+    ageMs < STUCK_SESSION_EXPIRED_AGE_MS ||
+    reportedStuckItemKeys.has(reportKey)
+  ) {
     return;
   }
-  reportedStuckItemIds.add(item.id);
+  reportedStuckItemKeys.add(reportKey);
   console.error("A sync_queue item is stuck on 401", error);
   captureException(error, {
     stage: "sync-queue-item-stuck-unauthorized",
@@ -165,7 +177,7 @@ function reportStuckSessionExpiredOnce(
     itemId: item.id,
     attempts: item.attempts,
     statusCode: SESSION_EXPIRED_STATUS,
-    ageMs: Date.now() - (item.createdAt?.getTime() ?? Date.now()),
+    ageMs,
   });
 }
 

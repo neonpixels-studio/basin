@@ -434,6 +434,15 @@ describe("useSyncQueue", () => {
         expect(SentrySDK.captureException).toHaveBeenCalledTimes(1);
       });
 
+      it("never reports an item with no createdAt", async () => {
+        const item = makeItem({ id: 9005, createdAt: null });
+
+        await flushWithUnauthorized([item], 3);
+
+        expect(SentrySDK.captureException).not.toHaveBeenCalled();
+        expect(syncQueueStore.recordRetryableFailure).toHaveBeenCalledTimes(3);
+      });
+
       it("reports once when the item crosses the threshold between passes", async () => {
         const item = makeStuckItem(9004, STUCK_SESSION_EXPIRED_AGE_MS - 1);
         await flushWithUnauthorized([item]);
