@@ -4,7 +4,7 @@ import {
   ErrorRetryAfterDelay,
 } from "@netlify/async-workloads";
 import type { AsyncWorkloadConfig } from "@netlify/async-workloads";
-import { eq, and, sql } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 import { feeds, feedItems, integrations } from "../../server/db/schema";
 import { parseRssFeed } from "../../server/utils/rssAdapter";
 import { parsePodcastFeed } from "../../server/utils/podcastAdapter";
@@ -33,6 +33,7 @@ import type {
   BlueskySessionTokens,
 } from "../../server/utils/blueskyAdapter";
 import { createDb } from "./db";
+import { upsertBlueskyFeedItems } from "../../server/utils/blueskyFeedItemUpsert";
 import { initSentry, flushSentry } from "./sentry";
 import {
   IntegrationAuthError,
@@ -161,45 +162,6 @@ async function upsertFeedItems(
     .returning({ id: feedItems.id });
 
   return result.length;
-}
-
-// Bluesky rows synced before author_handle existed (or whose profile changed)
-// are refreshed on conflict. Only author/authorHandle are written so user state
-// (saved, starred, read) is never clobbered, and coalesce keeps an existing
-// value when the incoming one is missing. The setWhere skips no-op writes.
-// `xmax = 0` is true only for freshly inserted rows, so refreshed rows don't
-// inflate the "new items" count.
-const incomingAuthor = sql`coalesce(excluded.author, ${feedItems.author})`;
-const incomingAuthorHandle = sql`coalesce(excluded.author_handle, ${feedItems.authorHandle})`;
-
-// A single INSERT ... ON CONFLICT DO UPDATE throws if two rows share a conflict
-// key, so collapse duplicate guids first (last wins, freshest profile data).
-function dedupeByGuid<T extends { guid: string }>(items: T[]): T[] {
-  return [...new Map(items.map((item) => [item.guid, item])).values()];
-}
-
-async function upsertBlueskyFeedItems(
-  items: Array<typeof feedItems.$inferInsert>,
-): Promise<number> {
-  if (items.length === 0) {
-    return 0;
-  }
-
-  const db = createDb();
-  const result = await db
-    .insert(feedItems)
-    .values(dedupeByGuid(items))
-    .onConflictDoUpdate({
-      target: [feedItems.feedId, feedItems.guid],
-      set: {
-        author: incomingAuthor,
-        authorHandle: incomingAuthorHandle,
-      },
-      setWhere: sql`${feedItems.author} is distinct from ${incomingAuthor} or ${feedItems.authorHandle} is distinct from ${incomingAuthorHandle}`,
-    })
-    .returning({ id: feedItems.id, inserted: sql<boolean>`(xmax = 0)` });
-
-  return result.filter((row) => row.inserted).length;
 }
 
 async function syncRssFeed(feedId: number, feedUrl: string): Promise<number> {
@@ -590,7 +552,7 @@ async function syncBlueskyFeed(
       ),
   );
 
-  return upsertBlueskyFeedItems(items);
+  return upsertBlueskyFeedItems(createDb(), items);
 }
 
 async function runAdapter(
