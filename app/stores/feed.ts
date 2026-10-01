@@ -591,19 +591,49 @@ export const useFeedStore = defineStore("feed", () => {
   // what "server-owned" means.
   const SERVER_OWNED_ITEM_FIELDS = ["saved", "unread", "starred"] as const;
 
-  // Only overwrites a field the source actually carries: `undefined` means
-  // "absent" (skip it), but `null` is a real value (starred's raw DB column
-  // is nullable) and must still pass through.
-  function mergeServerOwnedFields(
+  // The subset of server-owned fields that has a whole-account chip count
+  // (see FeedCountsResponse); unread has none, so a flip there moves no count.
+  const COUNTED_ITEM_FIELDS = ["saved", "starred"] as const;
+
+  // The fields a fresher row must not overwrite. On a failed outbox read we
+  // can't tell what is pending, so protect everything: keeping the user's
+  // optimistic value is safer than silently reverting it.
+  async function fieldsWithPendingChange(
+    item: Record<string, unknown>,
+  ): Promise<ReadonlySet<string>> {
+    try {
+      const { getPendingItemFields } = useSyncQueue();
+      return await getPendingItemFields(item.feedId, item.guid);
+    } catch {
+      return new Set<string>(SERVER_OWNED_ITEM_FIELDS);
+    }
+  }
+
+  // `undefined` means "absent" (skip it), but `null` is a real value
+  // (starred's raw DB column is nullable) and must still pass through.
+  function changedServerOwnedFields(
     target: Record<string, unknown>,
     source: Record<string, unknown>,
-  ): void {
-    for (const field of SERVER_OWNED_ITEM_FIELDS) {
-      if (source[field] === undefined) {
-        continue;
-      }
-      target[field] = source[field];
+  ): string[] {
+    return SERVER_OWNED_ITEM_FIELDS.filter(
+      (field) => source[field] !== undefined && source[field] !== target[field],
+    );
+  }
+
+  // Keeps a chip count in step with a merge that flipped a counted field,
+  // the same way an optimistic toggle does.
+  function adjustCountsForMerge(
+    field: string,
+    previous: unknown,
+    next: unknown,
+  ) {
+    const isCounted = (COUNTED_ITEM_FIELDS as readonly string[]).includes(
+      field,
+    );
+    if (!isCounted || Boolean(previous) === Boolean(next)) {
+      return;
     }
+    adjustCount(field, next ? 1 : -1);
   }
 
   // A caller (e.g. SearchOverlay's chooseRow) can hand in a fresh object for
@@ -615,25 +645,20 @@ export const useFeedStore = defineStore("feed", () => {
   // double-count. Operating on the loaded row (when one exists) instead keeps
   // every view mutating the same object.
   //
-  // Merges the server-owned fields (see mergeServerOwnedFields) from the
-  // incoming (potentially fresher, e.g. an /api/search row) item onto the
-  // already-loaded row, rather than either keeping the loaded row's stale
-  // values or replacing the loaded row wholesale. Keeping the loaded row as
-  // the return value (same reference, just patched) preserves the property
-  // above this comment describes: every view keeps mutating the same
-  // object. Patching its fields onto that same reference means a change
-  // made elsewhere (another device, another tab) since this page's items
-  // loaded is no longer silently discarded — see #313.
-  // @todo two known follow-ups, both left for a dedicated change rather
-  // than folded in here: (1) guard each field against a pending unsynced
-  // local change (an optimistic toggle still sitting in the outbox) before
-  // overwriting it, so a fresher-but-not-yet-caught-up server value can't
-  // clobber a change the client made and is still waiting to sync; (2)
-  // state.counts isn't adjusted when a merge flips saved/unread, so a count
-  // can read stale by one until the next full counts reload.
+  // Merges the server-owned fields from the incoming (potentially fresher,
+  // e.g. an /api/search row) item onto the already-loaded row, same
+  // reference, so a change made elsewhere (another device, another tab)
+  // since this page's items loaded isn't silently discarded (#313). Two
+  // guards: a field with an unsynced change still queued in the outbox keeps
+  // its local optimistic value (#325), and a merge that flips saved/starred
+  // moves the matching chip count.
+  //
+  // Returns synchronously unless a merge is actually needed (and so the
+  // outbox must be read): the common path, a caller handing in the loaded row
+  // itself (detailNav, card clicks), still opens the detail in the same tick.
   function resolveOpenedItem(
     item: Record<string, unknown>,
-  ): Record<string, unknown> {
+  ): Record<string, unknown> | Promise<Record<string, unknown>> {
     if (item.id === undefined || item.id === null) {
       return item;
     }
@@ -643,14 +668,34 @@ export const useFeedStore = defineStore("feed", () => {
     if (!loadedRow) {
       return item;
     }
-    if (loadedRow !== item) {
-      mergeServerOwnedFields(loadedRow, item);
+    if (loadedRow === item) {
+      return loadedRow;
     }
+    const changed = changedServerOwnedFields(loadedRow, item);
+    if (changed.length === 0) {
+      return loadedRow;
+    }
+    return mergeUnlessPending(loadedRow, item, changed);
+  }
+
+  async function mergeUnlessPending(
+    loadedRow: Record<string, unknown>,
+    item: Record<string, unknown>,
+    changed: string[],
+  ): Promise<Record<string, unknown>> {
+    const pending = await fieldsWithPendingChange(loadedRow);
+    changed
+      .filter((field) => !pending.has(field))
+      .forEach((field) => {
+        adjustCountsForMerge(field, loadedRow[field], item[field]);
+        loadedRow[field] = item[field];
+      });
     return loadedRow;
   }
 
   async function openItem(rawItem: Record<string, unknown>) {
-    const item = resolveOpenedItem(rawItem);
+    const resolved = resolveOpenedItem(rawItem);
+    const item = resolved instanceof Promise ? await resolved : resolved;
     const wasUnread = item.unread === true;
     item.unread = false;
     state.activeItem = item;

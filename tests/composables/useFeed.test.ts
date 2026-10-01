@@ -146,16 +146,16 @@ describe("useFeedStore", () => {
   });
 
   describe("openItem", () => {
-    it("sets activeItem and marks it read", () => {
+    it("sets activeItem and marks it read", async () => {
       const i = state.items[0];
       i.unread = true;
-      feed.openItem(i);
+      await feed.openItem(i);
       expect(state.activeItem).toBe(i);
       expect(i.unread).toBe(false);
     });
 
-    it("sets detailLoading=true then false after 520ms", () => {
-      feed.openItem(state.items[0]);
+    it("sets detailLoading=true then false after 520ms", async () => {
+      await feed.openItem(state.items[0]);
       expect(state.detailLoading).toBe(true);
       vi.advanceTimersByTime(520);
       expect(state.detailLoading).toBe(false);
@@ -774,13 +774,15 @@ describe("useFeedStore", () => {
 
   describe("sync queue integration", () => {
     let queueAction: ReturnType<typeof vi.fn>;
+    let getPendingItemFields: ReturnType<typeof vi.fn>;
     let showToast: ReturnType<typeof vi.fn>;
 
     beforeEach(() => {
       queueAction = vi.fn().mockResolvedValue(undefined);
+      getPendingItemFields = vi.fn().mockResolvedValue(new Set<string>());
       vi.stubGlobal(
         "useSyncQueue",
-        vi.fn(() => ({ queueAction })),
+        vi.fn(() => ({ queueAction, getPendingItemFields })),
       );
       showToast = vi.fn();
       vi.stubGlobal(
@@ -1249,14 +1251,6 @@ describe("useFeedStore", () => {
         // a redundant markRead sync even though the server already knows
         // it's read.
         it("does not re-fire markRead when the fresher search row shows the item already read", async () => {
-          // Documents the known, pre-existing trade-off named in
-          // resolveOpenedItem's @todo: this merge only reconciles the item
-          // itself, not state.counts, so a count seeded to match the now-
-          // corrected loaded row's *old* value is left untouched here — it
-          // stays stale by one until the next full counts reload, exactly
-          // as it would have if the loaded row had been marked read locally
-          // by some other path. Not a regression this test is asserting
-          // against; a documented gap the follow-up @todo covers.
           state.counts = { unread: 2 };
           const loadedItem = state.items[0]; // seeded with id: 1, unread: true
           const searchCopy = searchCopyOf(loadedItem, {
@@ -1269,6 +1263,7 @@ describe("useFeedStore", () => {
           expect(state.activeItem).toBe(loadedItem);
           expect(loadedItem.unread).toBe(false);
           expect(queueAction).not.toHaveBeenCalled();
+          // unread has no chip count, so this flip leaves counts untouched.
           expect(state.counts.unread).toBe(2);
         });
 
@@ -1307,6 +1302,119 @@ describe("useFeedStore", () => {
 
           expect(state.activeItem).toBe(loadedItem);
           expect(loadedItem.starred).toBeNull();
+        });
+
+        // #325: a fresher server row must not revert a field whose optimistic
+        // toggle is still queued in the outbox (the user's own change wins
+        // until it syncs); fields with nothing queued still take the server
+        // value.
+        describe("with an unsynced change queued in the outbox", () => {
+          it("keeps the local value of a field with a pending change and merges the rest", async () => {
+            const loadedItem = state.items[1]; // id: 2, saved: true, starred: false
+            getPendingItemFields.mockResolvedValue(new Set(["saved"]));
+            const searchCopy = searchCopyOf(loadedItem, {
+              savedAt: null,
+              starred: true,
+            });
+
+            await feed.openItem(searchCopy);
+
+            expect(getPendingItemFields).toHaveBeenCalledWith(
+              loadedItem.feedId,
+              loadedItem.guid,
+            );
+            expect(loadedItem.saved).toBe(true);
+            expect(loadedItem.starred).toBe(true);
+          });
+
+          it("keeps a locally-read item read instead of re-marking it unread", async () => {
+            const loadedItem = state.items[1]; // id: 2, unread: false
+            getPendingItemFields.mockResolvedValue(new Set(["unread"]));
+            const searchCopy = searchCopyOf(loadedItem, { readAt: null });
+            expect(searchCopy.unread).toBe(true);
+
+            await feed.openItem(searchCopy);
+
+            expect(loadedItem.unread).toBe(false);
+            expect(queueAction).not.toHaveBeenCalled();
+          });
+
+          it("protects every server-owned field when the outbox can't be read", async () => {
+            const loadedItem = state.items[1]; // saved: true, starred: false
+            getPendingItemFields.mockRejectedValue(new Error("DB unavailable"));
+            const searchCopy = searchCopyOf(loadedItem, {
+              savedAt: null,
+              starred: true,
+            });
+
+            await feed.openItem(searchCopy);
+
+            expect(loadedItem.saved).toBe(true);
+            expect(loadedItem.starred).toBe(false);
+          });
+
+          it("takes the server value when nothing is queued", async () => {
+            const loadedItem = state.items[1];
+            const searchCopy = searchCopyOf(loadedItem, { savedAt: null });
+
+            await feed.openItem(searchCopy);
+
+            expect(getPendingItemFields).toHaveBeenCalledOnce();
+            expect(loadedItem.saved).toBe(false);
+          });
+
+          it("does not read the outbox when nothing differs from the loaded row", async () => {
+            const loadedItem = state.items[1];
+            const searchCopy = searchCopyOf(loadedItem, {
+              savedAt: new Date("2026-01-01T00:00:00Z"),
+              readAt: new Date("2026-01-01T00:00:00Z"),
+            });
+
+            await feed.openItem(searchCopy);
+
+            expect(getPendingItemFields).not.toHaveBeenCalled();
+          });
+        });
+
+        // #325 (stale-count follow-up from #318): a merge that flips a
+        // counted field moves its chip count like an optimistic toggle.
+        describe("chip counts", () => {
+          it("decrements saved and increments starred when the merge flips them", async () => {
+            state.counts = { saved: 3, starred: 1 };
+            const loadedItem = state.items[1]; // saved: true, starred: false
+            const searchCopy = searchCopyOf(loadedItem, {
+              savedAt: null,
+              starred: true,
+            });
+
+            await feed.openItem(searchCopy);
+
+            expect(state.counts.saved).toBe(2);
+            expect(state.counts.starred).toBe(2);
+          });
+
+          it("leaves the count alone for a field kept because of a pending change", async () => {
+            state.counts = { saved: 3 };
+            getPendingItemFields.mockResolvedValue(new Set(["saved"]));
+            const loadedItem = state.items[1];
+            const searchCopy = searchCopyOf(loadedItem, { savedAt: null });
+
+            await feed.openItem(searchCopy);
+
+            expect(state.counts.saved).toBe(3);
+          });
+
+          it("does not move the count for a starred null-to-false style change", async () => {
+            state.counts = { starred: 2 };
+            const loadedItem = state.items[1];
+            loadedItem.starred = null;
+            const searchCopy = searchCopyOf(loadedItem, { starred: false });
+
+            await feed.openItem(searchCopy);
+
+            expect(loadedItem.starred).toBe(false);
+            expect(state.counts.starred).toBe(2);
+          });
         });
 
         it("falls back to the raw row when no loaded item shares its id", async () => {
