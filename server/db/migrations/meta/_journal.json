@@ -127,6 +127,13 @@
       "when": 1790551164766,
       "tag": "0017_add_author_handle_to_feed_items",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1790829143761,
+      "tag": "0018_backfill_bluesky_author_handle",
+      "breakpoints": true
     }
   ]
 }

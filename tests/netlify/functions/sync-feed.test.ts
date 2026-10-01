@@ -136,7 +136,7 @@ import {
   initSentry as mockInitSentry,
   flushSentry as mockFlushSentry,
 } from "../../../netlify/functions/sentry";
-import { integrations } from "../../../server/db/schema";
+import { feedItems, integrations } from "../../../server/db/schema";
 import {
   TokenRefreshAuthError,
   YouTubeAuthError,
@@ -1256,7 +1256,7 @@ describe("sync-feed workload — Bluesky source", () => {
 
     mockInsert.mockReturnValue({ values: mockInsertValues });
     mockInsertValues.mockReturnValue({
-      onConflictDoNothing: mockInsertOnConflict,
+      onConflictDoUpdate: mockInsertOnConflict,
     });
     mockInsertOnConflict.mockReturnValue({ returning: mockInsertReturning });
     mockInsertReturning.mockResolvedValue([]);
@@ -1503,5 +1503,55 @@ describe("sync-feed workload — Bluesky source", () => {
     ).rejects.toMatchObject({ name: "ServerConfigError" });
 
     expect(mockFetchNewBlueskyPosts).not.toHaveBeenCalled();
+  });
+
+  describe("author handle refresh on conflict", () => {
+    const post = {
+      feedId: 3,
+      guid: "at://did:plc:abc123/app.bsky.feed.post/1",
+      title: "Hello",
+      url: "https://bsky.app/profile/alice.bsky.social/post/1",
+      author: "Alice",
+      authorHandle: "alice.bsky.social",
+    };
+
+    async function syncWithPosts(returned: Array<{ inserted: boolean }>) {
+      mockFindFirst
+        .mockResolvedValueOnce(makeBlueskyFeed({ lastFetched: staleFetch() }))
+        .mockResolvedValueOnce(makeBlueskyIntegration());
+      mockFetchNewBlueskyPosts.mockResolvedValue([post]);
+      mockInsertReturning.mockResolvedValue(
+        returned.map((row, index) => ({ id: index + 1, ...row })),
+      );
+
+      await (handler as Function)(makeBlueskyEvent());
+    }
+
+    it("updates only author and authorHandle on conflict", async () => {
+      await syncWithPosts([{ inserted: true }]);
+
+      expect(mockInsertOnConflict).toHaveBeenCalledTimes(1);
+      const [config] = mockInsertOnConflict.mock.calls[0];
+
+      expect(config.target).toEqual([feedItems.feedId, feedItems.guid]);
+      expect(Object.keys(config.set).sort()).toEqual([
+        "author",
+        "authorHandle",
+      ]);
+      expect(config.setWhere).toBeDefined();
+    });
+
+    it("counts only newly inserted rows, not refreshed ones", async () => {
+      await syncWithPosts([{ inserted: false }, { inserted: true }]);
+
+      const logged = vi
+        .mocked(console.log)
+        .mock.calls.map(([line]) => JSON.parse(String(line)));
+      const completion = logged.find(
+        (entry) => entry.event === "sync-feed.complete",
+      );
+
+      expect(completion.itemsSynced).toBe(1);
+    });
   });
 });
