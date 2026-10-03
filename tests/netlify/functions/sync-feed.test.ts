@@ -1256,7 +1256,7 @@ describe("sync-feed workload — Bluesky source", () => {
 
     mockInsert.mockReturnValue({ values: mockInsertValues });
     mockInsertValues.mockReturnValue({
-      onConflictDoNothing: mockInsertOnConflict,
+      onConflictDoUpdate: mockInsertOnConflict,
     });
     mockInsertOnConflict.mockReturnValue({ returning: mockInsertReturning });
     mockInsertReturning.mockResolvedValue([]);
@@ -1503,5 +1503,25 @@ describe("sync-feed workload — Bluesky source", () => {
     ).rejects.toMatchObject({ name: "ServerConfigError" });
 
     expect(mockFetchNewBlueskyPosts).not.toHaveBeenCalled();
+  });
+
+  it("routes Bluesky items through the author-refreshing upsert", async () => {
+    mockFindFirst
+      .mockResolvedValueOnce(makeBlueskyFeed({ lastFetched: staleFetch() }))
+      .mockResolvedValueOnce(makeBlueskyIntegration());
+    mockFetchNewBlueskyPosts.mockResolvedValue([
+      { feedId: 3, guid: "at://x/1", title: "Hi" },
+    ]);
+
+    await (handler as Function)(makeBlueskyEvent());
+
+    expect(mockInsertValues).toHaveBeenCalledWith([
+      expect.objectContaining({ guid: "at://x/1" }),
+    ]);
+    expect(mockInsertOnConflict).toHaveBeenCalledWith(
+      expect.objectContaining({
+        set: expect.objectContaining({ authorHandle: expect.anything() }),
+      }),
+    );
   });
 });

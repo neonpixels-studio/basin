@@ -33,6 +33,7 @@ import type {
   BlueskySessionTokens,
 } from "../../server/utils/blueskyAdapter";
 import { createDb } from "./db";
+import { upsertBlueskyFeedItems } from "../../server/utils/blueskyFeedItemUpsert";
 import { initSentry, flushSentry } from "./sentry";
 import {
   IntegrationAuthError,
@@ -551,7 +552,7 @@ async function syncBlueskyFeed(
       ),
   );
 
-  return upsertFeedItems(feedId, items);
+  return upsertBlueskyFeedItems(createDb(), items);
 }
 
 async function runAdapter(
