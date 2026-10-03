@@ -392,6 +392,30 @@ async function refreshFailedCount(): Promise<void> {
   }
 }
 
+// Which item field each queued action optimistically changes — what a
+// pending (not yet synced) row of that action would be overwriting if a
+// fresher server value were merged over it.
+const PENDING_ACTION_FIELD: Record<SyncQueueAction, string> = {
+  markRead: "unread",
+  star: "starred",
+  save: "saved",
+};
+
+function pendingFieldOf(
+  row: SyncQueueRow,
+  feedId: unknown,
+  guid: unknown,
+): string | null {
+  try {
+    const payload = JSON.parse(row.payload);
+    const matchesItem = payload?.feedId === feedId && payload?.guid === guid;
+    return matchesItem ? (PENDING_ACTION_FIELD[row.action] ?? null) : null;
+  } catch {
+    // An unparseable row will be quarantined on the next flush, never synced.
+    return null;
+  }
+}
+
 export function useSyncQueue() {
   async function queueAction(
     action: SyncQueueAction,
@@ -399,6 +423,21 @@ export function useSyncQueue() {
   ) {
     const db = await useClientDb();
     await syncQueueStore.insertAction(db, action, JSON.stringify(payload));
+  }
+
+  // The item fields that have an unsynced change still queued in the outbox
+  // for this feedId + guid. Rejects if the local DB can't be read, so the
+  // caller decides how to fail.
+  async function getPendingItemFields(
+    feedId: unknown,
+    guid: unknown,
+  ): Promise<Set<string>> {
+    const db = await useClientDb();
+    const pending = await syncQueueStore.getPendingItems(db);
+    const fields = pending
+      .map((row) => pendingFieldOf(row, feedId, guid))
+      .filter((field): field is string => field !== null);
+    return new Set(fields);
   }
 
   // Callers already in flight share the same pass instead of starting a
@@ -438,6 +477,7 @@ export function useSyncQueue() {
 
   return {
     queueAction,
+    getPendingItemFields,
     flushSyncQueue,
     retryFailedItems,
     failedCount,

@@ -81,6 +81,62 @@ describe("useSyncQueue", () => {
     });
   });
 
+  describe("getPendingItemFields()", () => {
+    it("returns the fields of pending actions queued for that feedId + guid only", async () => {
+      vi.mocked(syncQueueStore.getPendingItems).mockResolvedValue([
+        makeItem({
+          action: "save",
+          payload: JSON.stringify({ feedId: 1, guid: "abc", savedAt: null }),
+        }),
+        makeItem({
+          action: "markRead",
+          payload: JSON.stringify({ feedId: 1, guid: "abc" }),
+        }),
+        makeItem({
+          action: "star",
+          payload: JSON.stringify({ feedId: 2, guid: "abc", starred: true }),
+        }),
+        makeItem({
+          action: "star",
+          payload: JSON.stringify({ feedId: 1, guid: "other", starred: true }),
+        }),
+      ] as never);
+      const { getPendingItemFields } = useSyncQueue();
+
+      const fields = await getPendingItemFields(1, "abc");
+
+      expect([...fields].sort()).toEqual(["saved", "unread"]);
+    });
+
+    it("ignores a row with an unrecognised action", async () => {
+      vi.mocked(syncQueueStore.getPendingItems).mockResolvedValue([
+        makeItem({
+          action: "legacyAction",
+          payload: JSON.stringify({ feedId: 1, guid: "abc" }),
+        }),
+      ] as never);
+      const { getPendingItemFields } = useSyncQueue();
+
+      expect((await getPendingItemFields(1, "abc")).size).toBe(0);
+    });
+
+    it("returns an empty set when nothing is pending", async () => {
+      vi.mocked(syncQueueStore.getPendingItems).mockResolvedValue([]);
+      const { getPendingItemFields } = useSyncQueue();
+
+      expect((await getPendingItemFields(1, "abc")).size).toBe(0);
+    });
+
+    it("ignores a row whose payload can't be parsed", async () => {
+      vi.mocked(syncQueueStore.getPendingItems).mockResolvedValue([
+        makeItem({ payload: "{not json" }),
+      ] as never);
+      const { getPendingItemFields } = useSyncQueue();
+
+      expect((await getPendingItemFields(1, "abc")).size).toBe(0);
+    });
+  });
+
   describe("flushSyncQueue()", () => {
     it("does nothing while offline", async () => {
       vi.stubGlobal("navigator", { onLine: false });
