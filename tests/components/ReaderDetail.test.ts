@@ -433,6 +433,38 @@ describe("ReaderDetail", () => {
       expect(wrapper.find("img.thumb-img").exists()).toBe(true);
     });
 
+    it("shows the post author, not the feed title, in the tweet header", async () => {
+      state.activeItem = makeTweet({
+        author: "Real Author",
+        source: "My Bluesky Feed",
+        handle: "@real",
+      }) as never;
+      const wrapper = mountDetail();
+      await wrapper.vm.$nextTick();
+
+      expect(wrapper.find(".detail-tweet").exists()).toBe(true);
+      expect(wrapper.find("b.text-ink").text()).toBe("Real Author");
+      expect(wrapper.find(".avatar.src-tweet").text()).toBe("RA");
+      expect(wrapper.text()).toContain("@real");
+      expect(wrapper.text()).not.toContain("My Bluesky Feed");
+    });
+
+    it("falls back to the feed title in the tweet header when author is blank", async () => {
+      state.activeItem = makeTweet({ author: "   " }) as never;
+      const wrapper = mountDetail();
+      await wrapper.vm.$nextTick();
+
+      expect(wrapper.find("b.text-ink").text()).toBe("My Bluesky Feed");
+    });
+
+    it("renders no initials rather than throwing when author and source are unset", async () => {
+      state.activeItem = makeTweet({ author: null, source: "" }) as never;
+      const wrapper = mountDetail();
+      await wrapper.vm.$nextTick();
+
+      expect(wrapper.find(".avatar.src-tweet").text()).toBe("");
+    });
+
     it("renders the real tweet body from content", async () => {
       state.activeItem = makeTweet({
         content: "The actual synced post text.",

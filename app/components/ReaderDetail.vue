@@ -17,6 +17,19 @@ const articleMeta = computed(() =>
   [item.value?.source, timeLabel.value].filter(Boolean).join(" · "),
 );
 
+// Mirrors TweetCard: prefer the post author, fall back to the feed title, and
+// end on "" so a malformed item never makes the initials throw.
+const tweetAuthorName = computed(
+  () => item.value?.author?.trim() || item.value?.source || "",
+);
+const tweetInitials = computed(() =>
+  tweetAuthorName.value
+    .split(" ")
+    .map((word) => word[0])
+    .slice(0, 2)
+    .join(""),
+);
+
 const EMPTY_ARTICLE_TEXT =
   "No article text was included in this feed. Open the original to read the full piece.";
 const EMPTY_PODCAST_TEXT = "No show notes were included for this episode.";
@@ -342,17 +355,11 @@ function openOriginal() {
               <span
                 class="avatar src-tweet"
                 style="width: 48px; height: 48px; font-size: 16px"
-                >{{
-                  item.source
-                    .split(" ")
-                    .map((s) => s[0])
-                    .slice(0, 2)
-                    .join("")
-                }}</span
+                >{{ tweetInitials }}</span
               >
               <div class="min-w-0">
                 <b class="text-ink block text-[15px] font-semibold">{{
-                  item.source
+                  tweetAuthorName
                 }}</b>
                 <span class="text-muted text-[13px]">{{ item.handle }}</span>
               </div>
