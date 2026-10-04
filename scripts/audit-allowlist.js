@@ -12,7 +12,7 @@
 // via the `overrides` block in package.json — sdk 5.x dropped the
 // @stackbit/* / @netlify/content-engine dependencies entirely.
 //
-// As of 2026-09-28 the list is empty: the two entries that used to live here
+// As of 2026-09-28 the list was empty (see 2026-10-04 entries below): the two entries that used to live here
 // (GHSA-w3rx-r6r6-pgpr and GHSA-5p2g-fcmc-qvqq, both filed against
 // `image-size`'s ICNS/JXL/HEIF parsers) were resolved by a plain
 // `npm audit fix` — @netlify/blobs' own dependency bump now resolves
@@ -67,7 +67,47 @@ export const ALLOWLIST_REVIEW_BY = "2026-10-19";
 // "dev-only" package later moves into the production path under a different
 // name, the suppression no longer applies and the gate fails as intended.
 /** @type {Array<{ id: string, packages: string[], reason: string }>} */
-export const ALLOWED_ADVISORIES = [];
+export const ALLOWED_ADVISORIES = [
+  {
+    id: "GHSA-vfj7-8cjw-p6xm",
+    packages: ["braces"],
+    reason:
+      "braces stack-exhaustion DoS via deeply nested brace patterns. No patched release " +
+      "exists: latest published braces is 3.0.3 and the advisory range is <=3.0.3, so no " +
+      "override can resolve it. It reaches the tree via chokidar@3 / micromatch (the " +
+      "@netlify/async-workloads > @netlify/sdk > tailwindcss@3 / esbuild-plugin-copy chain, " +
+      "plus nuxt's globby/nitropack build tooling). The vulnerable path needs an " +
+      "attacker-controlled glob pattern; basin never expands untrusted globs. npm's only " +
+      "'fix' is a semver-major downgrade to nuxt@3.15.1. Unreachability verified 2026-10-04 " +
+      "via `grep -rniE 'braces|micromatch|chokidar' server app shared` (no hits).",
+  },
+  {
+    id: "source-r9wdXn7O2uiztOR5s9ltDk9c4yx0hDXk1RkaU9pSoNJVqJmLXcRl91UC3KrdIZ9t2uYi45MzsJzSU5PaJHWC8A==",
+    packages: ["@netlify/async-workloads"],
+    reason:
+      "Chained 'depends on vulnerable versions of @netlify/sdk' advisory that exists " +
+      "solely because @netlify/sdk transitively pulls the unpatched braces above. " +
+      "Not a distinct vulnerability; it clears once braces ships a fix. " +
+      "The only npm-proposed remediation is a semver-major downgrade of the direct dep. " +
+      "The `source-…` id is npm's synthetic id for this url-less chained advisory " +
+      "(regenerate with " +
+      "`npm audit --json | jq '.vulnerabilities[\"@netlify/async-workloads\"].via'`); " +
+      "if it changes, the gate will fail loudly rather than silently pass.",
+  },
+  {
+    id: "GHSA-86w9-cpqp-85rv",
+    packages: ["node-forge"],
+    reason:
+      "node-forge RSA PKCS#1 v1.5 signature verification accepts extra nested " +
+      "DigestAlgorithm elements. No patched release exists: latest published node-forge " +
+      "is 1.4.0 and the advisory range is <=1.4.0. It reaches the tree via " +
+      "@dotenvx/dotenvx (src/lib/proxy/proxyCertificates.js, which only GENERATES " +
+      "self-signed certs for the unused `dotenvx proxy` command) and nuxt > @nuxt/cli > " +
+      "listhen (dev-server HTTPS cert generation). Neither path verifies RSA signatures, " +
+      "and basin never imports node-forge. npm's only 'fix' is downgrading dotenvx to " +
+      "2.26.1. Verified 2026-10-04.",
+  },
+];
 
 // Builds an id::package lookup from a list of allowlist entries. Exported (not
 // just the module-level `isAdvisoryAllowed` singleton below) so tests can
