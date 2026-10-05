@@ -1,0 +1,110 @@
+name: Weekly production deploy
+
+# The cron is the single place the deploy cadence lives (Mondays 14:00 UTC).
+on:
+  schedule:
+    - cron: "0 14 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  deploy:
+    name: Migrate production DB and deploy
+    # The hook always builds main, so a run dispatched from another branch must not deploy.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Migrations run as their own visible step (not buried in the Netlify build) so
+    # a failed migration fails loudly, and ship together with the code they belong
+    # to instead of running ahead of it on every push to main.
+    #
+    # Required repository secrets (Settings → Secrets → Actions):
+    #   NETLIFY_BUILD_HOOK_URL        — Netlify build hook on branch main.
+    #   DOTENV_PRIVATE_KEY_PRODUCTION — decrypts .env.production, which holds the
+    #                                   production DATABASE_URL that drizzle.config
+    #                                   reads. Same key already set in Netlify.
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Full history so the 7-day commit check below sees every recent commit.
+          fetch-depth: 0
+
+      - name: Skip when main has no recent commits
+        id: recent
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT_NAME" != "schedule" ]; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          recent_commit="$(git log --since='7 days ago' -1 --format=%H origin/main)"
+          if [ -n "$recent_commit" ]; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "main has no commits in the last 7 days; skipping the migration and production deploy."
+          echo "skip=true" >> "$GITHUB_OUTPUT"
+
+      # Checked before migrating so a missing secret can't leave the schema ahead of the code.
+      - name: Require the build hook secret
+        if: steps.recent.outputs.skip != 'true'
+        env:
+          NETLIFY_BUILD_HOOK_URL: ${{ secrets.NETLIFY_BUILD_HOOK_URL }}
+        run: |
+          if [ -z "$NETLIFY_BUILD_HOOK_URL" ]; then
+            echo "::error::Repository secret NETLIFY_BUILD_HOOK_URL is not set; cannot trigger the production deploy."
+            exit 1
+          fi
+
+      - name: Require green CI on main HEAD
+        if: steps.recent.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          conclusion="$(gh api "repos/$REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$HEAD_SHA&event=push" --jq '.workflow_runs[0].conclusion // "none"')"
+          if [ "$conclusion" != "success" ]; then
+            echo "::error::CI on main HEAD ($HEAD_SHA) concluded '$conclusion', not 'success'; refusing to migrate or deploy."
+            exit 1
+          fi
+
+      - name: Setup Node
+        if: steps.recent.outputs.skip != 'true'
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        if: steps.recent.outputs.skip != 'true'
+        run: npm ci
+        env:
+          HUSKY: 0
+
+      - name: Apply Drizzle migrations to production
+        if: steps.recent.outputs.skip != 'true'
+        run: npm run db:migrate:production
+        env:
+          DOTENV_PRIVATE_KEY_PRODUCTION: ${{ secrets.DOTENV_PRIVATE_KEY_PRODUCTION }}
+
+      - name: Trigger Netlify production build hook
+        if: steps.recent.outputs.skip != 'true'
+        env:
+          NETLIFY_BUILD_HOOK_URL: ${{ secrets.NETLIFY_BUILD_HOOK_URL }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          trigger_title="Manual+production+deploy"
+          if [ "$EVENT_NAME" = "schedule" ]; then
+            trigger_title="Weekly+production+deploy"
+          fi
+          curl --fail --silent --show-error --max-time 30 -X POST -d '{}' "$NETLIFY_BUILD_HOOK_URL?trigger_title=$trigger_title"
+          echo "Triggered Netlify production build ($trigger_title)."
