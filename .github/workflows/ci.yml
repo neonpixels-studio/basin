@@ -42,39 +42,6 @@ jobs:
       - name: Test
         run: npm run test:ci
 
-  migrate-production:
-    name: Migrate production DB
-    runs-on: ubuntu-latest
-    # Apply committed Drizzle migrations to the production database on every push
-    # to main, as its own job (not buried in the Netlify build) so a failed
-    # migration fails loudly and visibly. Gated on `ci` so a broken build never
-    # migrates prod. Never runs on PRs or feature branches.
-    #
-    # Required repository secret (Settings → Secrets → Actions):
-    #   DOTENV_PRIVATE_KEY_PRODUCTION — decrypts .env.production, which holds the
-    #                                   production DATABASE_URL that drizzle.config
-    #                                   reads. Same key already set in Netlify.
-    needs: [ci]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Setup Node
-        uses: actions/setup-node@v7
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-        env:
-          HUSKY: 0
-
-      - name: Apply Drizzle migrations to production
-        run: npm run db:migrate:production
-        env:
-          DOTENV_PRIVATE_KEY_PRODUCTION: ${{ secrets.DOTENV_PRIVATE_KEY_PRODUCTION }}
-
   changes:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
