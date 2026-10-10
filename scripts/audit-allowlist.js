@@ -107,6 +107,46 @@ export const ALLOWED_ADVISORIES = [
       "and basin never imports node-forge. npm's only 'fix' is downgrading dotenvx to " +
       "2.26.1. Verified 2026-10-04.",
   },
+  {
+    id: "GHSA-858h-whjf-mvg5",
+    packages: ["simple-git"],
+    reason:
+      "simple-git unsafe-operations plugin bypass via git long-option abbreviation. Fixed in simple-git 4, but @nuxt/devtools 3.x imports its " +
+      "removed default export, so upgrading crashes `nuxt build`, `nuxt dev` and vitest; " +
+      "disabling devtools is not acceptable either. Only @nuxt/devtools uses simple-git, " +
+      "and only under `nuxt dev` on a local checkout (dev-only, never in the production " +
+      "bundle). Mirrors the markpost decision (markpost 60a4c2f). Verified 2026-10-10.",
+  },
+  {
+    id: "GHSA-g4wm-2vf7-vfgr",
+    packages: ["simple-git"],
+    reason:
+      "simple-git command execution through unblocked Git configuration includes. Fixed in simple-git 4, but @nuxt/devtools 3.x imports its " +
+      "removed default export, so upgrading crashes `nuxt build`, `nuxt dev` and vitest; " +
+      "disabling devtools is not acceptable either. Only @nuxt/devtools uses simple-git, " +
+      "and only under `nuxt dev` on a local checkout (dev-only, never in the production " +
+      "bundle). Mirrors the markpost decision (markpost 60a4c2f). Verified 2026-10-10.",
+  },
+  {
+    id: "GHSA-x6jw-m9v5-85vh",
+    packages: ["simple-git"],
+    reason:
+      "simple-git unsafe-operation guard does not block trailer command configuration. Fixed in simple-git 4, but @nuxt/devtools 3.x imports its " +
+      "removed default export, so upgrading crashes `nuxt build`, `nuxt dev` and vitest; " +
+      "disabling devtools is not acceptable either. Only @nuxt/devtools uses simple-git, " +
+      "and only under `nuxt dev` on a local checkout (dev-only, never in the production " +
+      "bundle). Mirrors the markpost decision (markpost 60a4c2f). Verified 2026-10-10.",
+  },
+  {
+    id: "GHSA-v5rq-49vh-5v5c",
+    packages: ["@simple-git/argv-parser"],
+    reason:
+      "simple-git (argv-parser) omits the VISUAL editor environment variable from unsafe editor detection. Fixed in simple-git 4, but @nuxt/devtools 3.x imports its " +
+      "removed default export, so upgrading crashes `nuxt build`, `nuxt dev` and vitest; " +
+      "disabling devtools is not acceptable either. Only @nuxt/devtools uses simple-git, " +
+      "and only under `nuxt dev` on a local checkout (dev-only, never in the production " +
+      "bundle). Mirrors the markpost decision (markpost 60a4c2f). Verified 2026-10-10.",
+  },
 ];
 
 // Builds an id::package lookup from a list of allowlist entries. Exported (not
